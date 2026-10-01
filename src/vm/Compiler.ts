@@ -133,6 +133,29 @@ function isCallLike(exp: Expression): boolean {
   return exp.type === "CallExpression" || exp.type === "MethodCallExpression";
 }
 
+// Stage 16D: statically-known numeric-for step sign. Returns 1 when the
+// ascending (LE) comparison is the only reachable one, -1 when only the
+// descending (GE) comparison is reachable, 0 when unknown (computed step —
+// keep the dual runtime dispatch). Missing step means 1. Only pure
+// side-effect-free literal shapes qualify: NumberLiteral, or unary minus
+// applied to one. 0 and -0 classify as -1, exactly matching the runtime
+// GT check (0 > 0 and -0 > 0 are both false, taking the negative path).
+function staticStepSign(step: Expression | undefined): 1 | -1 | 0 {
+  const signOf = (v: number): 1 | -1 | 0 => {
+    if (isNaN(v)) return 0;
+    return v > 0 ? 1 : -1;
+  };
+  if (!step) return 1;
+  if (step.type === "NumberLiteral") {
+    return signOf(Number((step as any).value));
+  }
+  if (step.type === "UnaryExpression" && (step as any).operator === "-" &&
+      (step as any).argument && (step as any).argument.type === "NumberLiteral") {
+    return signOf(-Number((step as any).argument.value));
+  }
+  return 0;
+}
+
 function hasSpreadArg(args: Expression[]): boolean {
   if (args.length === 0) return false;
   const last = args[args.length - 1];
@@ -819,28 +842,57 @@ function compileStatement(ctx: CompileContext, stmt: Statement | LastStatement):
 
       const condStart = c.code.length;
 
-      emit(c, Op.LOAD_L, stepSlot);
-      emit(c, Op.PUSH_K, addConst(c, 0));
-      emit(c, Op.GT);
-      const jmpNegCheck = c.code.length;
-      emit(c, Op.JMP_F, 0);
+      // Stage 16D: constant-step specialization. The runtime sign check
+      // (LOAD step, PUSH 0, GT) plus the untaken comparison block are dead
+      // weight when the step sign is statically known: missing step (= 1),
+      // NumberLiteral, or unary-minus NumberLiteral. step > 0 keeps only the
+      // LE block; step <= 0 keeps only the GE block — matching the runtime
+      // dispatch exactly (GT is false for 0/-0, so 0 takes the negative path
+      // then and now). Computed steps keep the dual dispatch unchanged.
+      // Saves the 4-op sign check per iteration plus the dead 4-op block.
+      // Positions stay consistent by construction (conditional emission, no
+      // post-hoc patching); no fusion window is removed (GT/GE/LE never
+      // fuse) and none is destroyed (guarded windows start with LOAD pairs
+      // the transform never touches).
+      const stepSign = staticStepSign(stmt.step);
+      let jmpEndPos = -1;
+      let jmpEndNeg = -1;
+      if (stepSign === 1) {
+        emit(c, Op.LOAD_L, hiddenCounter);
+        emit(c, Op.LOAD_L, limitSlot);
+        emit(c, Op.LE);
+        jmpEndPos = c.code.length;
+        emit(c, Op.JMP_F, 0);
+      } else if (stepSign === -1) {
+        emit(c, Op.LOAD_L, hiddenCounter);
+        emit(c, Op.LOAD_L, limitSlot);
+        emit(c, Op.GE);
+        jmpEndPos = c.code.length;
+        emit(c, Op.JMP_F, 0);
+      } else {
+        emit(c, Op.LOAD_L, stepSlot);
+        emit(c, Op.PUSH_K, addConst(c, 0));
+        emit(c, Op.GT);
+        const jmpNegCheck = c.code.length;
+        emit(c, Op.JMP_F, 0);
 
-      emit(c, Op.LOAD_L, hiddenCounter);
-      emit(c, Op.LOAD_L, limitSlot);
-      emit(c, Op.LE);
-      const jmpEndPos = c.code.length;
-      emit(c, Op.JMP_F, 0);
-      const jmpToBody = c.code.length;
-      emit(c, Op.JMP, 0);
+        emit(c, Op.LOAD_L, hiddenCounter);
+        emit(c, Op.LOAD_L, limitSlot);
+        emit(c, Op.LE);
+        jmpEndPos = c.code.length;
+        emit(c, Op.JMP_F, 0);
+        const jmpToBody = c.code.length;
+        emit(c, Op.JMP, 0);
 
-      c.code[jmpNegCheck + 1] = c.code.length;
-      emit(c, Op.LOAD_L, hiddenCounter);
-      emit(c, Op.LOAD_L, limitSlot);
-      emit(c, Op.GE);
-      const jmpEndNeg = c.code.length;
-      emit(c, Op.JMP_F, 0);
+        c.code[jmpNegCheck + 1] = c.code.length;
+        emit(c, Op.LOAD_L, hiddenCounter);
+        emit(c, Op.LOAD_L, limitSlot);
+        emit(c, Op.GE);
+        jmpEndNeg = c.code.length;
+        emit(c, Op.JMP_F, 0);
 
-      c.code[jmpToBody + 1] = c.code.length;
+        c.code[jmpToBody + 1] = c.code.length;
+      }
       pushLoop(ctx);
 
       emit(c, Op.CLOSE_UPVAL, counterSlot);
@@ -864,7 +916,7 @@ function compileStatement(ctx: CompileContext, stmt: Statement | LastStatement):
 
       const loopEnd = c.code.length;
       c.code[jmpEndPos + 1] = loopEnd;
-      c.code[jmpEndNeg + 1] = loopEnd;
+      if (jmpEndNeg >= 0) c.code[jmpEndNeg + 1] = loopEnd;
 
       popLoop(ctx);
       popScope(ctx, prev);

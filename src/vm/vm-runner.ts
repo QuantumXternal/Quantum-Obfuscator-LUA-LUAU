@@ -494,6 +494,27 @@ export function runVM(
 
         const b2 = pop(); const a2 = pop(); push(b2); push(a2);
       }
+      else if (op === Op.ITER_PREP) {
+        // Stage 16: ITER_PREP was missing entirely (fell into the no-op
+        // else-branch consuming ZERO args, desyncing all generic-for loops).
+        // Mirrors generated h[56]: non-table iterators pass through; table
+        // iterators resolve via __iter, pass through on __call, else default
+        // to next/state/nil. Uses the harness getMM convention (runner
+        // tables carry __metatable) in place of pcall(getmetatable).
+        const iS = code[ip++]; const sS = code[ip++]; const vS = code[ip++];
+        const it = getLocal(iS);
+        if (it !== null && typeof it === "object") {
+          const mmIter = getMM(it, "__iter");
+          if (typeof mmIter === "function") {
+            setLocal(iS, (mmIter as Function)(it));
+          } else if (typeof getMM(it, "__call") !== "function") {
+            const nextFn = env["next"];
+            setLocal(iS, typeof nextFn === "function" ? nextFn : null);
+            setLocal(sS, it);
+            setLocal(vS, null);
+          }
+        }
+      }
       else if (op === Op.TFOR) {
         const nVars = code[ip++];
         const target = code[ip++];

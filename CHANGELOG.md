@@ -306,6 +306,36 @@ Suite grew 93 → 105 (9 high-sensitivity logic tests + TESTSET unit test).
   260-constant boundary+reuse=359, closure capture), repro-check ALL green,
   server smoke OK, stack/none outputs identical.
 
+## Stage 16 — Constant-step numeric-for specialization ACCEPTED
+
+- `src/vm/Compiler.ts` (ForNumericStatement only): statically-known step
+  signs (missing/=1, NumberLiteral, unary-minus literal) emit only the
+  reachable comparison block; computed steps keep dual dispatch. 0/-0
+  classify negative, matching the runtime GT check exactly. Emission-site
+  (positions consistent by construction, no rebias); no fusion window
+  removed or destroyed.
+- Measured on fornum-heavy (3 literal-step loops), BEFORE/AFTER/DELTA:
+  words 202/154/-48 (-24%), instr 109/82 (-25%), JMP_F 9/3, GT 3/0,
+  debug bytes 13885/13756 (-129, direct effect), max bytes 154647/146508
+  (-8139, -5.3%, cascade-amplified — reported as reshuffle, not pure
+  saving), hot-loop runner 112.6/104.4ms (-7.3%, 200k iters, -4
+  dispatches/iter). Fusion windows intact (6/6); repro green.
+- Rejected/documented: compound-table spill (structurally required —
+  single evaluation for metamethod/side-effect correctness; local-base
+  double-eval already minimal), PUSH_NILS padding (max consecutive run 1,
+  never wins), general STORE/LOAD peephole (needs jump rebias; ForIn tail
+  subsumed in principle but unneeded once D accepted).
+- Runner fidelity prerequisite (no max-output impact): added the missing
+  `Op.ITER_PREP` runner branch (was desyncing every generic-for loop) with
+  an h56-faithful table-iterator mirror (`__iter`/`__call`/next-state-nil).
+  Production arity sets already covered op 56 (early misdiagnosis
+  corrected — no production change was needed or made for this).
+- 229/229 tests (16 new `fornum-step`: behavior incl. break/nested/
+  closures/loop-var-assignment + emission-shape LE/GE/JMP_F counts),
+  repro ALL REPRODUCIBLE, server + CLI smokes green.
+- Decision: ACCEPT — provably identical semantics, -25% loop-control
+  words, measured hot-path win, zero regressions.
+
 ## Stage 15 — CONCAT semantic normalization ACCEPTED
 
 - Contract verdict (15C): the h15 pcall+tostring fallback was an accidental
