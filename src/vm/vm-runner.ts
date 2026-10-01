@@ -602,6 +602,14 @@ export function runVM(
         const a = code[ip++]; const b = code[ip++]; const c = code[ip++];
         setLocal(c, arithMM(getLocal(a), getLocal(b), luaMod, "__mod"));
       }
+      else if (op === 70) {
+        // Stage 14: fused IDIV mirror of generated h[70] (arithMM-delegating).
+        // Uses the SAME Math.floor lambda as unfused IDIV — one authoritative
+        // floor-division model for both paths, preserving the established
+        // x//0 -> inf leniency and __idiv dispatch.
+        const a = code[ip++]; const b = code[ip++]; const c = code[ip++];
+        setLocal(c, arithMM(getLocal(a), getLocal(b), (x, y) => Math.floor(x / y), "__idiv"));
+      }
       else {
 
       }

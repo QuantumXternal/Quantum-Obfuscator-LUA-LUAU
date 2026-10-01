@@ -26,4 +26,11 @@ while i <= 3 do acc = acc // 2 i = i + 1 end
 local cond = 0
 if a > b then cond = a // b else cond = b // a end
 local mixed = a // b + neg // 2
-print(q1, q2, q3, q4, q5, q6, q7, q8, q9, chain, nest, inargs, r, acc, cond, mixed)
+local ce = a
+ce //= b
+local cf = neg
+cf //= 2
+local up = 2
+local function f(x, y) local t = x // y return t + up end
+local clo = f(a, b)
+print(q1, q2, q3, q4, q5, q6, q7, q8, q9, chain, nest, inargs, r, acc, cond, mixed, ce, cf, clo)

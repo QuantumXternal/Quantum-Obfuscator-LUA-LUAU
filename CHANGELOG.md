@@ -306,6 +306,37 @@ Suite grew 93 → 105 (9 high-sensitivity logic tests + TESTSET unit test).
   260-constant boundary+reuse=359, closure capture), repro-check ALL green,
   server smoke OK, stack/none outputs identical.
 
+## Stage 14 — Fused IDIV super-op (opcode 70) ACCEPTED
+
+- `src/vm/vm-gen.ts` (+12/-6, same 6-site pattern): matcher maps
+  `arith===48` to 70; `OPCODES_3ARG` += 70; shuffle space 70→71; new h[70]
+  (244 chars) DELEGATING to generated arithMM with the h48-identical
+  `math.floor(x/y)` lambda — raw `math.floor(a/b)` was explicitly rejected
+  (function call cannot dispatch `__idiv` on tables); handler loop `<71`;
+  alias loop `0,70`. Opcodes 68/69 bytes, 64-67, POW, CONCAT untouched.
+- `src/vm/vm-runner.ts`: op-70 branch via the same Math.floor lambda as
+  unfused IDIV — one authoritative floor-division model (14C verify-only,
+  no new helper needed).
+- Fixtures: `idiv-shapes.lua` += `//=` + closure/upvalue lines (24 source
+  IDIV occurrences); new `idiv-loopheavy.lua` (hot loop-carried site).
+- Measurements (fixed seeds): raw windows 5+1, 0 jump-blocked, fused
+  3-5/seed; loopheavy fused on all seeds. Before/after bytes 5/5 positive
+  (+2793..+7737, mean +4680): static contribution ~0.7-1KB (h70 text +
+  inline copy), remainder is rng-stream-shift noise (DIV/MOD showed ±4KB
+  bidirectional) — reported as unseparated, honestly bounded.
+- Dispatches 4→1 per site (exact); loopheavy wall-time medians
+  +10% / means -6% (contradictory = pure noise; no signal either way,
+  no negative evidence). Accepted on exact dispatch benefit + nil risk,
+  consistent with DIV/MOD precedent.
+- Drift: 6/115 cells, same class (op-60/61/62 ±1-3 via rng repositioning,
+  confined to IDIV-bearing fixtures); within the locked bar.
+- 209/209 tests (18 new `idiv-fusion`: all signs, fractions, strings,
+  zero-divisor inf, inf/NaN operands, `__idiv` left/right/both, 9 compiled
+  contexts, debug/normal/max, determinism, 64-69 exclusion, DIV-68 +
+  MOD-69 regression), repro ALL REPRODUCIBLE, server + CLI smokes green.
+- Decision: ACCEPT — exact h48-identical semantics by construction,
+  deterministic, negligible documented fixed cost.
+
 ## Stage 13 — Fused MOD super-op (opcode 69) ACCEPTED
 
 - `src/vm/vm-gen.ts` (+11/-4, same 6-site pattern as DIV-68): matcher maps
