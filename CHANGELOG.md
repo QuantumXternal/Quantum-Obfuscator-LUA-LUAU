@@ -306,6 +306,40 @@ Suite grew 93 → 105 (9 high-sensitivity logic tests + TESTSET unit test).
   260-constant boundary+reuse=359, closure capture), repro-check ALL green,
   server smoke OK, stack/none outputs identical.
 
+## Stage 17 — CFF/dispatch architecture audit (no implementation)
+
+- Maps: stack normal table-dispatch vs max dual-mode (71-inline-chain +
+  table fallback + per-dispatch stateAcc/ipMask/cycleVar/refresh
+  bookkeeping + dead-state FSM); register 6 dispatch variants + quadratic
+  rotating-XOR + self-mutating mt cipher + outer fake-state machine;
+  4 CFF layers with real-vs-fake separation. No Whileswitch anywhere.
+- CFF cost: stack `disableFeatures:["cff"]` is VESTIGIAL for block
+  flattening (max-nocff bytes identical to max on all classes — proven,
+  do not trust as OFF); normal-vs-max is all-features confounded
+  (18KB→150KB). Structural: +2-7 JMPs (+10-30% words) small fixtures,
+  0 on jump-dense large code; reg CFF ~17% bytes on large (1697-1930
+  blocks), negligible on small inputs; deadCodeInjection off saves 2-8%.
+- Fusion×CFF: single-pass order (fusion→camo→flatten) means CFF can
+  neither create nor destroy fused windows — all fused windows survive
+  intact (measured 3/3, 3/3, 3/3); created/unblocked = 0 by construction.
+  Fake states never match fusion patterns. Real interaction is reverse
+  (fusion shifts the jump layout CFF consumes) + added-JMP dispatch load.
+- Dispatch findings: normal = 1 fetch + 1 lookup + 2 branches (observed
+  in output); max inline chain covers all 71 handlers (always-hit) —
+  miss cost never materializes; hit ≈35 avg comparisons ≈ break-even vs
+  table+call, NOT a clear bottleneck (H3 refuted-as-stated, reframed).
+- Bottlenecks (≤3): H1 CONFIRMED — max per-dispatch bookkeeping (~20
+  primops + ~6 branches + ~8 bit32 calls, unconditional, dwarfs handler
+  bodies); H2 CONFIRMED with nuance (JMP inflation small in bytes,
+  concentrated in dispatch count); H3 REPLACED by hit-cost finding.
+- Alternatives verdict: no dispatch shape wins clearly on evidence;
+  binary/table hybrids save comparisons but keep the call or add
+  branches — bookkeeping diet has 5-10x the leverage. Recommend AGAINST
+  dispatch rewrite; recommend inline hot-subset (C4) + conditional
+  bookkeeping sampling (C3, product-gated: touches anti-tamper timing).
+- Runoff (Stage 18): C4 primary (dispatch-only, polymorphism preserved),
+  C3 conditional. CFF fake-diet is size-only. No implementation in St.17.
+
 ## Stage 16 — Constant-step numeric-for specialization ACCEPTED
 
 - `src/vm/Compiler.ts` (ForNumericStatement only): statically-known step
