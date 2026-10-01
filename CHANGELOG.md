@@ -306,6 +306,33 @@ Suite grew 93 → 105 (9 high-sensitivity logic tests + TESTSET unit test).
   260-constant boundary+reuse=359, closure capture), repro-check ALL green,
   server smoke OK, stack/none outputs identical.
 
+## Stage 15 — CONCAT semantic normalization ACCEPTED
+
+- Contract verdict (15C): the h15 pcall+tostring fallback was an accidental
+  implementation artifact, NOT project contract. Native `..` (coerce
+  strings/numbers, dispatch `__concat`, error otherwise) is now the
+  contract on BOTH stack paths — consistent with fused h63 and with the
+  register VM (already native). h44/CONCAT_MULTI scanned: 0 occurrences in
+  23 fixtures + no stack-compiler emission site = unreachable, untouched.
+- `src/vm/vm-gen.ts`: h15 `164 chars -> 68 chars`, raw `a..b` preserving
+  pop/push structure; removes a per-concat pcall+closure in generated
+  runtime (strictly cheaper). h63, fusion matcher, all else untouched.
+- `src/vm/vm-runner.ts`: ONE shared `concatNative` helper for op-15 and
+  op-63 (old unfused leniency intentionally removed, not preserved).
+- Compat (15F): 5 op-15 / 0 h63-windows on corpus; ZERO corpus cases
+  change behavior (all corpus concats are strings/numbers); general
+  ecosystem impact honestly UNMEASURED. Behavioral break is confined to
+  programs relying on the accidental extension (bool/nil/table concat
+  without `__concat` now errors natively).
+- 213/213 tests (concat matrix rewritten to agreement: bool/nil/table
+  error on both paths; +4 new: `..=`, globals, upvalues, interpolation
+  chains — old-divergence shapes retained as throw-assertions so fallback
+  regression is caught), repro ALL REPRODUCIBLE, server + CLI smokes
+  green. Performance: neutral-to-positive (smaller handler, no pcall);
+  fusion rate structurally unchanged.
+- Decision: ACCEPT — contract clear, paths aligned, suite + repro green,
+  compat documented, tradeoffs understood.
+
 ## Stage 14J/14K — Cumulative super-op assessment (no new implementation)
 
 | Super-op | Opcode | Raw Windows | Fused | Runtime Signal | Fixed Cost | Result |

@@ -2270,7 +2270,12 @@ function buildHandlerTemplates(n: NameMap, doNonLinearJumps: boolean = false, pr
   h[13] = `function() local b,a=${pop}(),${pop}();${push}(${arithMM}(a,b,function(x,y) return x%y end,"__mod")) end`;
   h[14] = `function() local b,a=${pop}(),${pop}();${push}(${arithMM}(a,b,function(x,y) return x^y end,"__pow")) end`;
 
-  h[15] = `function() local b,a=${pop}(),${pop}();local ok,r=pcall(function() return a..b end);if ok then ${push}(r) else ${push}(tostring(a)..tostring(b)) end end`;
+  // Stage 15: normalized to native CONCAT semantics (was pcall + tostring
+  // fallback, an accidental language extension). Raw `..` dispatches
+  // __concat natively and errors on boolean/nil/plain-table operands,
+  // exactly like fused h[63] and register-VM CONCAT. Stack pop/push
+  // structure is unchanged.
+  h[15] = `function() local b,a=${pop}(),${pop}();${push}(a..b) end`;
 
   h[16] = `function() local b,a=${pop}(),${pop}();${push}(a==b) end`;
   h[17] = `function() local b,a=${pop}(),${pop}();${push}(a~=b) end`;

@@ -1,15 +1,20 @@
-// Stage 11D-2 CONCAT semantic matrix (audit only — no production changes).
+// Stage 15 CONCAT semantic matrix (normalization ACTIVE).
 //
 // Three behavior columns, kept explicit:
 //   Luau source semantics : LANGUAGE-SPEC REASONING (no Luau executor exists
 //                           here). Native `..` coerces strings/numbers,
 //                           dispatches __concat, and ERRORS on bool/nil/tables
 //                           without __concat.
-//   Unfused generated h15 : src/vm/vm-gen.ts:2273 — pcall(a..b), else
-//                           tostring(a)..tostring(b) fallback (coercive).
-//   Fused generated h63   : src/vm/vm-gen.ts:2373 — raw `..` (native).
-// The reference runner (dist/vm/vm-runner.js) MODELS both generated paths;
-// runner results are never presented as real Luau execution.
+//   Unfused generated h15 : NORMALIZED Stage 15 — raw `..` (native), same
+//                           contract as h63. The old pcall+tostring fallback
+//                           was an accidental language extension; removed.
+//   Fused generated h63   : raw `..` (native, unchanged).
+// The reference runner (dist/vm/vm-runner.js) MODELS both generated paths
+// via ONE shared concatNative helper; runner results are never presented
+// as real Luau execution.
+// h44/CONCAT_MULTI scope note: the stack compiler has no op-44 emission
+// site (verified by corpus scan: 0 occurrences in 23 fixtures) — h44 is
+// unreachable and untouched by this stage.
 //
 // Opcodes are numeric: Op is a const enum (erased at compile).
 // PUSH_K=4 LOAD_L=5 STORE_L=6 CONCAT=15 RETURN=31 fused-63=[63,a,b,c,0,0,0].
@@ -140,32 +145,33 @@ describe("concat semantics matrix (11D-2 audit)", () => {
     expect(order).toEqual(["L", "L"]);
   });
 
-  test("divergence: boolean operands (unfused coerces, fused throws)", () => {
-    // Luau REASONED: native `..` on booleans ERRORS — fused h63 conforms,
-    // unfused h15 extends the language via its tostring fallback.
+  test("agreement: boolean operands error on BOTH paths (legacy fallback removed)", () => {
+    // Stage 15: unfused h15 no longer coerces via tostring — both paths
+    // implement native `..`. These shapes KEEP exercising the old divergence
+    // so any fallback regression is caught immediately (both must throw).
+    // Luau REASONED: native `..` on booleans ERRORS.
     for (const K of [[true, "x"], ["x", false], [true, true]]) {
       const { runU, runF } = runBoth(K, 0, 1, 2);
-      const u = outcome(runU);
-      const f = outcome(runF);
-      expect(u.ok).toBe(true);
-      expect(f.ok).toBe(false);
+      expect(outcome(runU).ok).toBe(false);
+      expect(outcome(runF).ok).toBe(false);
     }
-    const { runU } = runBoth([true, "x"], 0, 1, 2);
-    expect(runU()).toBe("truex");
+    const { runU, runF } = runBoth([true, "x"], 0, 1, 2);
+    expect(runU).toThrow(); // bare — never "truex" again
+    expect(runF).toThrow();
   });
 
-  test("divergence: nil operands (unfused coerces, fused throws)", () => {
+  test("agreement: nil operands error on BOTH paths", () => {
     for (const K of [[null, "x"], ["x", null], [null, null]]) {
       const { runU, runF } = runBoth(K, 0, 1, 2);
-      expect(outcome(runU).ok).toBe(true);
+      expect(outcome(runU).ok).toBe(false);
       expect(outcome(runF).ok).toBe(false);
     }
   });
 
-  test("divergence: plain tables (unfused coerces, fused throws)", () => {
+  test("agreement: plain tables error on BOTH paths", () => {
     for (const K of [[{ v: 1 }, "x"], ["x", { v: 1 }], [{}, {}]]) {
       const { runU, runF } = runBoth(K, 0, 1, 2);
-      expect(outcome(runU).ok).toBe(true);
+      expect(outcome(runU).ok).toBe(false);
       expect(outcome(runF).ok).toBe(false);
     }
   });
@@ -225,14 +231,56 @@ describe("concat semantics matrix (11D-2 audit)", () => {
     expect(runVM(chunk.K, code, {}, 0, chunk.protos || [])).toBe("n=1");
   });
 
-  test("compiled source: boolean concat diverges (documents the h63 scope)", () => {
-    // Luau REASONED: this program ERRORS natively. Unfused h15 returns
-    // "v=true" (language extension); fused h63 throws (conforming).
+  test("compiled source: boolean concat errors on BOTH paths (normalized)", () => {
+    // Luau REASONED: this program ERRORS natively. Stage 15 normalized h15,
+    // so unfused now throws like fused h63 (previously returned "v=true").
     const chunk = compileSrc('local f = true local p = "v=" local t = p .. f return t');
     const { code, fused } = fuseConcatWindows(chunk.code);
     expect(fused).toBeGreaterThan(0);
-    expect(runVM(chunk.K, chunk.code, {}, 0, chunk.protos || [])).toBe("v=true");
+    expect(() => runVM(chunk.K, chunk.code, {}, 0, chunk.protos || [])).toThrow();
     expect(() => runVM(chunk.K, code, {}, 0, chunk.protos || [])).toThrow();
+  });
+
+  test("compound ..= agrees on strings, errors on booleans (both paths)", () => {
+    // `s ..= t` lowers to LOAD_L,LOAD_L,CONCAT,STORE_L — a fusable window.
+    let chunk = compileSrc('local s = "a" local t = "b" s ..= t return s');
+    let fw = fuseConcatWindows(chunk.code);
+    expect(fw.fused).toBeGreaterThan(0);
+    expect(runVM(chunk.K, chunk.code, {}, 0, chunk.protos || [])).toBe("ab");
+    expect(runVM(chunk.K, fw.code, {}, 0, chunk.protos || [])).toBe("ab");
+    chunk = compileSrc('local s = "a" local f = true s ..= f return s');
+    fw = fuseConcatWindows(chunk.code);
+    expect(fw.fused).toBeGreaterThan(0);
+    expect(() => runVM(chunk.K, chunk.code, {}, 0, chunk.protos || [])).toThrow();
+    expect(() => runVM(chunk.K, fw.code, {}, 0, chunk.protos || [])).toThrow();
+  });
+
+  test("globals agree natively (globals never fuse — no STORE window)", () => {
+    // LOAD_G operands cannot form fusion windows; this pins unfused native
+    // behavior for global sources on both... unfused path only exists here.
+    const K = ["g", "h"];
+    const env = { g: "p", h: "q" };
+    const code = [7, 0, 7, 1, 15, 6, 0].concat(tail(0));
+    expect(runVM(K, code, env, 0, [])).toBe("pq");
+    const benv = { g: "p", h: true };
+    expect(() => runVM(K, code, benv, 0, [])).toThrow();
+  });
+
+  test("upvalues agree natively via closures", () => {
+    // Upvalue operands (LOAD_UPVAL) never fuse; pins native behavior.
+    let chunk = compileSrc('local s = "x" local function f() return s .. "y" end return f()');
+    expect(runVM(chunk.K, chunk.code, {}, 0, chunk.protos || [])).toBe("xy");
+    chunk = compileSrc('local s = true local function f() return s .. "y" end return f()');
+    expect(() => runVM(chunk.K, chunk.code, {}, 0, chunk.protos || [])).toThrow();
+  });
+
+  test("interpolation-shaped chains agree (chained CONCAT, no STORE between)", () => {
+    // `a..b..c` feeds CONCAT into CONCAT — never fuses; unfused must still
+    // be native on every link.
+    const chunk = compileSrc('local a = "x" local b = "y" local c = "z" local t = a .. b .. c return t');
+    expect(runVM(chunk.K, chunk.code, {}, 0, chunk.protos || [])).toBe("xyz");
+    const bad = compileSrc('local a = "x" local b = true local c = "z" local t = a .. b .. c return t');
+    expect(() => runVM(bad.K, bad.code, {}, 0, bad.protos || [])).toThrow();
   });
 
   test("error presence is asserted without message dependence", () => {

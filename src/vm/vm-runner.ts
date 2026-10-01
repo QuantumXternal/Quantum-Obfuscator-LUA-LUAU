@@ -126,6 +126,22 @@ export function runVM(
     return op(a as number, b as number);
   }
 
+  // Stage 15: ONE native-concat model for unfused (op 15) and fused (op 63)
+  // runner paths, mirroring normalized generated h[15]/h[63] (raw `..`).
+  // __concat dispatches; strings/numbers coerce; anything else is a runtime
+  // error (presence only — never message text). The old unfused leniency
+  // (unconditional luaToString coercion) modeled the removed h15 fallback
+  // and is intentionally gone. getMM's env.__string_mt remains harness-only.
+  function concatNative(a: unknown, b: unknown): unknown {
+    const mm = getMM(a, "__concat") ?? getMM(b, "__concat");
+    if (typeof mm === "function") return (mm as Function)(a, b);
+    if (
+      (typeof a === "string" || typeof a === "number") &&
+      (typeof b === "string" || typeof b === "number")
+    ) return luaToString(a) + luaToString(b);
+    throw new Error("attempt to concatenate non-concatenable values");
+  }
+
   function callFunc(f: unknown, args: unknown[]): unknown {
     if (typeof f !== "function") {
       const mm = getMM(f, "__call");
@@ -164,9 +180,7 @@ export function runVM(
       else if (op === Op.POW) { const b = pop(); const a = pop(); push(arithMM(a, b, (x,y) => Math.pow(x,y), "__pow")); }
       else if (op === Op.CONCAT) {
         const b = pop(); const a = pop();
-        const mm = getMM(a, "__concat") ?? getMM(b, "__concat");
-        if (typeof mm === "function") push(mm(a, b));
-        else push(luaToString(a) + luaToString(b));
+        push(concatNative(a, b));
       }
       else if (op === Op.EQ) {
         const b = pop(); const a = pop();
@@ -573,20 +587,11 @@ export function runVM(
         setLocal(c, arithMM(getLocal(a), K[k], (x, y) => x + y, "__add"));
       }
       else if (op === 63) {
-        // Models CURRENT generated fused h[63] (vm-gen.ts: raw `..`):
-        // __concat metamethods dispatch, strings/numbers coerce, anything
-        // else is a runtime error. This deliberately does NOT replicate the
-        // unfused h[15] pcall+tostring fallback — that divergence is the
-        // 11D-2 audit subject. Tests assert error PRESENCE, never messages.
+        // Stage 15: same concatNative model as unfused op 15 — h15/h63 are
+        // semantically identical in generated code now. Tests assert error
+        // PRESENCE, never messages.
         const a = code[ip++]; const b = code[ip++]; const c = code[ip++];
-        const av = getLocal(a); const bv = getLocal(b);
-        const cmm = getMM(av, "__concat") ?? getMM(bv, "__concat");
-        if (typeof cmm === "function") setLocal(c, cmm(av, bv));
-        else if (
-          (typeof av === "string" || typeof av === "number") &&
-          (typeof bv === "string" || typeof bv === "number")
-        ) setLocal(c, luaToString(av) + luaToString(bv));
-        else throw new Error("attempt to concatenate non-concatenable values");
+        setLocal(c, concatNative(getLocal(a), getLocal(b)));
       }
       else if (op === 68) {
         // Stage 12C: fused DIV mirror of generated h[68] (raw `/`). Routes
