@@ -306,6 +306,35 @@ Suite grew 93 → 105 (9 high-sensitivity logic tests + TESTSET unit test).
   260-constant boundary+reuse=359, closure capture), repro-check ALL green,
   server smoke OK, stack/none outputs identical.
 
+## Release 1.0.0-rc.1 (Stage 19 freeze) — RELEASE CANDIDATE READY
+
+Gate: build clean, 243/243 tests, repro ALL REPRODUCIBLE, server cold-start
+SMOKE OK, all 5 CLIs verified (exit codes incl. invalid-input paths),
+profiles FAST/BALANCED/MAXIMUM verified, opcode set 0-70 + 57-63/68/69/70
+integrity verified, `npm audit` 0 vulnerabilities (prod and dev),
+package-lock present, no secrets/paths in tree, distribution manifest
+documented (ship: src+dist build, server, CLI, public/, package.json+lock,
+node_modules prod-only; not ship: benchmarks, tests, fixtures, .git).
+- Consolidated benchmarks: front-end (`none` config) byte-identical to
+  original baseline on all 9 fixtures (+0.0%); stack-normal ±0.3%;
+  reg-normal -3% to -13%; max-level gains per stage records (measured,
+  modeled, and unmeasured results kept separate — see stage entries).
+- Web UI: full error-class matrix verified (200/400/413/500 + cache +
+  profiles + repeats); `public/app.js` hardening (status/content-type
+  checked before JSON parse; NETWORK vs HTTP errors labeled distinctly).
+- Known limitations (non-blocking): degraded `local ? = 1`-class inputs
+  yield empty legacy output (parser tolerance, pre-existing); `lex` CLI
+  exits 0 on invalid input (LOW); body-parser 400/413 bodies are HTML
+  (surfaced distinctly by UI fix; server JSON envelope deferred);
+  real-Luau wall-clock performance unmeasured (no executor); ecosystem
+  concat-compat impact unmeasured; POW deferred (insufficient density).
+- Blocker list: none. Decision: (A) RELEASE CANDIDATE READY.
+- Env: Node v24.16.0, npm 11.13.0, TS 5.9.3, Windows 11, express 5.2.1 only.
+- Stage 20 candidates: C3 bookkeeping sampling (product-gated), CFF
+  fake-state diet (size-only), guarded STORE/LOAD→DUP peephole (needs
+  jump-rebias machinery), POW only on new density evidence, server JSON
+  error envelope, `lex` exit-code hygiene.
+
 ## Stage 18 — Dynamic hot-subset dispatch ACCEPTED
 
 - `src/vm/vm-gen.ts` (+88/-13, only file touched): per-chunk hot set via

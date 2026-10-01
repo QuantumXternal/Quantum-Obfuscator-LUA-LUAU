@@ -199,10 +199,20 @@ document.addEventListener("DOMContentLoaded", () => {
         body: JSON.stringify(payload)
       });
 
-      const result = await response.json();
+      // Stage 19C hardening: inspect status/content-type BEFORE parsing, so
+      // HTTP errors (400/413/500, proxy/HTML error pages) are never masked
+      // as parse failures, and network failures stay distinguishable.
+      const contentType = response.headers.get("content-type") || "";
+      let result = null;
+      if (contentType.includes("application/json")) {
+        result = await response.json();
+      } else {
+        const text = await response.text();
+        throw new Error(`HTTP ERROR ${response.status}: ${(text || response.statusText).slice(0, 160)}`);
+      }
 
       if (!response.ok) {
-        throw new Error(result.error || "Obfuscation failed");
+        throw new Error(result.error || `Obfuscation failed (HTTP ${response.status})`);
       }
 
       outputEditor.value = result.output;
@@ -218,7 +228,11 @@ document.addEventListener("DOMContentLoaded", () => {
       }
 
     } catch (err) {
-      logConsole(`[OBFUSCATION-FAILED] Pipeline error: ${err.message}`, "error");
+      // Stage 19C: network-layer failures (server down/unreachable) are
+      // labeled distinctly from HTTP/pipeline failures so they can never
+      // be confused with a server-side obfuscation error.
+      const network = err instanceof TypeError;
+      logConsole(`[${network ? "NETWORK-ERROR" : "OBFUSCATION-FAILED"}] ${network ? "API unreachable (is the local server running on :3000?): " : "Pipeline error: "}${err.message}`, "error");
       outputEditor.value = "";
       btnCopy.disabled = true;
       updateStatus("red", "Failed");
