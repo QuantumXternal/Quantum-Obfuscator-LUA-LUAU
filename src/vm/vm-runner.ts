@@ -107,6 +107,14 @@ export function runVM(
     return undefined;
   }
 
+  // Luau-faithful floor modulo (Stage 12A): Lua % takes the divisor's sign
+  // (-7 % 3 == 2) while JS % truncates toward zero (-7 % 3 == -1). Generated
+  // h[13] executes native Lua %, so the runner must model floor semantics.
+  // Zero divisor yields NaN on both sides (Lua: 7 % 0 == nan). ONE helper for
+  // the unfused path now and any future fused-MOD mirror — never separate
+  // semantic models. Runner-only; production MOD semantics are untouched.
+  function luaMod(x: number, y: number): number { return ((x % y) + y) % y; }
+
   function arithMM(a: unknown, b: unknown, op: (x: number, y: number) => number, name: string): unknown {
     if (typeof a === "number" && typeof b === "number") return op(a, b);
     const mm = getMM(a, name) ?? getMM(b, name);
@@ -152,7 +160,7 @@ export function runVM(
       else if (op === Op.SUB) { const b = pop(); const a = pop(); push(arithMM(a, b, (x,y) => x-y, "__sub")); }
       else if (op === Op.MUL) { const b = pop(); const a = pop(); push(arithMM(a, b, (x,y) => x*y, "__mul")); }
       else if (op === Op.DIV) { const b = pop(); const a = pop(); push(arithMM(a, b, (x,y) => x/y, "__div")); }
-      else if (op === Op.MOD) { const b = pop(); const a = pop(); push(arithMM(a, b, (x,y) => x%y, "__mod")); }
+      else if (op === Op.MOD) { const b = pop(); const a = pop(); push(arithMM(a, b, luaMod, "__mod")); }
       else if (op === Op.POW) { const b = pop(); const a = pop(); push(arithMM(a, b, (x,y) => Math.pow(x,y), "__pow")); }
       else if (op === Op.CONCAT) {
         const b = pop(); const a = pop();

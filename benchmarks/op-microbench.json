@@ -1,0 +1,203 @@
+{
+  "reps": 51,
+  "warmup": 5,
+  "harness": "reference-runner (NOT Luau wall-time)",
+  "rows": [
+    {
+      "group": "operator-heavy",
+      "op": "DIV",
+      "codeLen": 68,
+      "medianMs": 0.0212,
+      "perInstrUs": 0.312
+    },
+    {
+      "group": "operator-heavy",
+      "op": "MOD",
+      "codeLen": 68,
+      "medianMs": 0.0123,
+      "perInstrUs": 0.181
+    },
+    {
+      "group": "operator-heavy",
+      "op": "POW",
+      "codeLen": 68,
+      "medianMs": 0.0124,
+      "perInstrUs": 0.182
+    },
+    {
+      "group": "operator-heavy",
+      "op": "IDIV",
+      "codeLen": 68,
+      "medianMs": 0.0133,
+      "perInstrUs": 0.196
+    },
+    {
+      "group": "mixed",
+      "op": "DIV",
+      "codeLen": 53,
+      "medianMs": 0.009,
+      "perInstrUs": 0.17
+    },
+    {
+      "group": "mixed",
+      "op": "MOD",
+      "codeLen": 53,
+      "medianMs": 0.01,
+      "perInstrUs": 0.189
+    },
+    {
+      "group": "mixed",
+      "op": "POW",
+      "codeLen": 53,
+      "medianMs": 0.0112,
+      "perInstrUs": 0.211
+    },
+    {
+      "group": "mixed",
+      "op": "IDIV",
+      "codeLen": 53,
+      "medianMs": 0.0089,
+      "perInstrUs": 0.168
+    },
+    {
+      "group": "constant-heavy",
+      "op": "DIV",
+      "codeLen": 31,
+      "medianMs": 0.0064,
+      "perInstrUs": 0.206
+    },
+    {
+      "group": "constant-heavy",
+      "op": "MOD",
+      "codeLen": 31,
+      "medianMs": 0.0023,
+      "perInstrUs": 0.074
+    },
+    {
+      "group": "constant-heavy",
+      "op": "POW",
+      "codeLen": 31,
+      "medianMs": 0.0024,
+      "perInstrUs": 0.077
+    },
+    {
+      "group": "constant-heavy",
+      "op": "IDIV",
+      "codeLen": 31,
+      "medianMs": 0.0025,
+      "perInstrUs": 0.081
+    },
+    {
+      "group": "local-heavy",
+      "op": "DIV",
+      "codeLen": 41,
+      "medianMs": 0.0023,
+      "perInstrUs": 0.056
+    },
+    {
+      "group": "local-heavy",
+      "op": "MOD",
+      "codeLen": 41,
+      "medianMs": 0.002,
+      "perInstrUs": 0.049
+    },
+    {
+      "group": "local-heavy",
+      "op": "POW",
+      "codeLen": 41,
+      "medianMs": 0.0026,
+      "perInstrUs": 0.063
+    },
+    {
+      "group": "local-heavy",
+      "op": "IDIV",
+      "codeLen": 41,
+      "medianMs": 0.0025,
+      "perInstrUs": 0.061
+    },
+    {
+      "group": "branch-heavy",
+      "op": "DIV",
+      "codeLen": 39,
+      "medianMs": 0.0061,
+      "perInstrUs": 0.156
+    },
+    {
+      "group": "branch-heavy",
+      "op": "MOD",
+      "codeLen": 39,
+      "medianMs": 0.0065,
+      "perInstrUs": 0.167
+    },
+    {
+      "group": "branch-heavy",
+      "op": "POW",
+      "codeLen": 39,
+      "medianMs": 0.0055,
+      "perInstrUs": 0.141
+    },
+    {
+      "group": "branch-heavy",
+      "op": "IDIV",
+      "codeLen": 39,
+      "medianMs": 0.0064,
+      "perInstrUs": 0.164
+    },
+    {
+      "group": "loop-heavy",
+      "op": "DIV",
+      "codeLen": 52,
+      "medianMs": 0.5763,
+      "perInstrUs": 11.083
+    },
+    {
+      "group": "loop-heavy",
+      "op": "MOD",
+      "codeLen": 52,
+      "medianMs": 0.5517,
+      "perInstrUs": 10.61
+    },
+    {
+      "group": "loop-heavy",
+      "op": "POW",
+      "codeLen": 52,
+      "medianMs": 0.3415,
+      "perInstrUs": 6.567
+    },
+    {
+      "group": "loop-heavy",
+      "op": "IDIV",
+      "codeLen": 52,
+      "medianMs": 0.326,
+      "perInstrUs": 6.269
+    },
+    {
+      "group": "nonfusible",
+      "op": "DIV",
+      "codeLen": 31,
+      "medianMs": 0.0124,
+      "perInstrUs": 0.4
+    },
+    {
+      "group": "nonfusible",
+      "op": "MOD",
+      "codeLen": 31,
+      "medianMs": 0.0121,
+      "perInstrUs": 0.39
+    },
+    {
+      "group": "nonfusible",
+      "op": "POW",
+      "codeLen": 31,
+      "medianMs": 0.0127,
+      "perInstrUs": 0.41
+    },
+    {
+      "group": "nonfusible",
+      "op": "IDIV",
+      "codeLen": 31,
+      "medianMs": 0.013,
+      "perInstrUs": 0.419
+    }
+  ]
+}
