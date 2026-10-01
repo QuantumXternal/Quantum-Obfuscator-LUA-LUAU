@@ -306,6 +306,35 @@ Suite grew 93 → 105 (9 high-sensitivity logic tests + TESTSET unit test).
   260-constant boundary+reuse=359, closure capture), repro-check ALL green,
   server smoke OK, stack/none outputs identical.
 
+## Stage 18 — Dynamic hot-subset dispatch ACCEPTED
+
+- `src/vm/vm-gen.ts` (+88/-13, only file touched): per-chunk hot set via
+  locked hybrid rule (smallest set covering 80% of fused-mix dispatches,
+  Kmax 12, decoys excluded, ties by (-count, opcode), no hard-coded list);
+  max-level dispatch is now a short comparison chain CALLING aliased
+  handler closures, cold path unchanged (pre-existing table lookup).
+  Handler bodies exist exactly once (71 inline duplicates removed).
+  Non-max levels emit zero chain lines (byte-identical, proven on 7
+  fixtures × debug + normal). Deterministic (pure selection + seeded
+  shuffle); polymorphism preserved.
+- Evidence (18B grid + 18B.5): corpus coverage 51-89% (dynamic per-input;
+  K adapts 3-12, small inputs use small chains); weighted work 11.5/16.5/
+  26.5 vs 35.5 baseline at call-cost 5/10/20 (2.2-3.1x at plausible costs;
+  break-even call cost ~27-31 compares, implausible); fused ops
+  (DIV_F/MOD_F/IDIV_F/ADD_F) go hot when locally frequent, cold otherwise
+  — always reachable via table. No native Luau runtime exists locally;
+  real wall-clock speed marked UNMEASURED throughout (no third-party
+  executors used).
+- Measured: max output -17% to -24% (inline-body removal exceeds the
+  conservative model); debug/normal byte-identical pre/post on all 7
+  probed fixtures; gen time neutral band; same-seed determinism green.
+- 243/243 tests (14 new `dispatch-hotsubset`: rule properties, determinism,
+  modes, unknown-op grace), `dispatch-work.mjs` permanent protection
+  (structural invariants only, no effectiveness gate), repro ALL
+  REPRODUCIBLE, server + CLI smokes green.
+- Decision: ACCEPT — 2-3x modeled dispatch-work improvement, ~20% smaller
+  max output, nil semantic risk, deterministic, contained diff.
+
 ## Stage 17 — CFF/dispatch architecture audit (no implementation)
 
 - Maps: stack normal table-dispatch vs max dual-mode (71-inline-chain +

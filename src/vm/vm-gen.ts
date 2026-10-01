@@ -59,6 +59,41 @@ const OPCODES_2ARG = new Set([39, 53, 60, 61, 66]);
 
 const OPCODES_3ARG = new Set([56, 57, 58, 59, 62, 63, 68, 69, 70]);
 
+// Stage 18: dynamic hot-subset dispatch (hybrid rule). Smallest opcode set
+// covering SELECTION_TARGET of measured dispatches, capped at SELECTION_KMAX
+// entries. Selected per emitted code unit from post-transform real-opcode
+// frequencies (fused super-ops included as first-class candidates). Decoys
+// and NOP pads (0, 64-66) are excluded by policy: they are obfuscation
+// overhead, not program ops. Ties broken by (-count, opcode): total order,
+// deterministic, independent of iteration order. No hard-coded opcode list.
+const SELECTION_TARGET = 0.8;
+const SELECTION_KMAX = 12;
+const HOT_EXCLUDED = new Set([0, 64, 65, 66]);
+export function selectHotOps(counts: Map<number, number>, total: number): number[] {
+  if (total <= 0) return [];
+  const cands = [...counts.entries()]
+    .filter(([op, n]) => !HOT_EXCLUDED.has(op) && n > 0);
+  cands.sort((a, b) => b[1] - a[1] || a[0] - b[0]);
+  const set: number[] = [];
+  let covered = 0;
+  for (const [op, n] of cands) {
+    if (covered / total >= SELECTION_TARGET) break;
+    if (set.length >= SELECTION_KMAX) break;
+    set.push(op);
+    covered += n;
+  }
+  return set;
+}
+
+function countOpcodes(code: number[], hist: Map<number, number>): void {
+  let i = 0;
+  while (i < code.length) {
+    const op = code[i];
+    hist.set(op, (hist.get(op) ?? 0) + 1);
+    i += 1 + (OPCODES_3ARG.has(op) ? 3 : OPCODES_2ARG.has(op) ? 2 : OPCODES_1ARG.has(op) ? 1 : 0);
+  }
+}
+
 function mapBytecode(code: number[], opcodeEncode: number[]): number[] {
   const result = [...code];
   let i = 0;
@@ -2622,6 +2657,7 @@ function buildVMFunction(
   doMutation: boolean = false,
   doPooling: boolean = false,
   poolsVarName: string = "",
+  hotRealOps: number[] = [],
 ): string {
   const doLazyDecode = lazyBaseKey !== 0;
   const doStringPools = poolsVarName !== "";
@@ -2931,6 +2967,27 @@ function buildVMFunction(
     }
   }
 
+  // Stage 18: hot-subset partition (function scope; emission happens below
+  // in the max-only region, consumption in the dispatch chain). Maps the
+  // selected real opcodes through the shuffle; eligibility requires an
+  // inline body (hence an emitted handler closure to call). Shuffled order
+  // preserves polymorphic variability. At non-max levels inlineBodies is
+  // empty, so the hot set is empty and output is byte-identical to before.
+  const hotShuffled: number[] = [];
+  const hotAlias = new Map<number, string>();
+  if (level === "max") {
+    for (const realOp of hotRealOps) {
+      const sOp = opcodeEncode[realOp];
+      if (sOp === undefined || hotShuffled.includes(sOp) || !inlineBodies.has(sOp)) continue;
+      hotShuffled.push(sOp);
+      hotAlias.set(sOp, randomName(3));
+    }
+    for (let si = hotShuffled.length - 1; si > 0; si--) {
+      const sj = Math.floor(rng() * (si + 1));
+      [hotShuffled[si], hotShuffled[sj]] = [hotShuffled[sj], hotShuffled[si]];
+    }
+  }
+
   const detFlag = level === "max" ? randomName(4) : "";
   const sigTable = level === "max" ? randomName(4) : "";
   const punishDelay = level === "max" ? randomName(3) : "";
@@ -2969,6 +3026,14 @@ function buildVMFunction(
       lines.push(`for _ak=0,127 do local _xk=bit32.bxor(_ak,${hxk});if ${n.handlers}[_xk] then ${n.handlers}[_xk+128]=${n.handlers}[_xk] end end`);
     } else {
       lines.push(`for _ak=0,70 do if ${n.handlers}[_ak] then ${n.handlers}[_ak+128]=${n.handlers}[_ak] end end`);
+    }
+
+    // Stage 18: one-time hot-handler aliases (pre-loop). Each bound alias
+    // calls the SAME closure the cold table path uses — bodies exist exactly
+    // once. Key expression mirrors the fallback lookup (xor-aware).
+    for (const sOp of hotShuffled) {
+      const key = handlerXorKey ? `bit32.bxor(${sOp},${hxk})` : `${sOp}`;
+      lines.push(`local ${hotAlias.get(sOp)}=${n.handlers}[${key}]`);
     }
 
     lines.push(`local ${detFlag}=0`);
@@ -3090,21 +3155,18 @@ function buildVMFunction(
     lines.push(`${n.ip}=${n.ip}+1`);
     lines.push(`${lastOp}=${opA}`);
 
-    const inlineOps = Array.from(inlineBodies.keys());
-
-    for (let si = inlineOps.length - 1; si > 0; si--) {
-      const sj = Math.floor(rng() * (si + 1));
-      [inlineOps[si], inlineOps[sj]] = [inlineOps[sj], inlineOps[si]];
-    }
-    for (let bi = 0; bi < inlineOps.length; bi++) {
-      const sOp = inlineOps[bi];
-      const body = inlineBodies.get(sOp)!;
+    // Stage 18: two-tier dispatch. Hot ops take a short comparison chain
+    // that CALLS the aliased handler closure; every other opcode falls
+    // through to the pre-existing table lookup below, so all opcodes stay
+    // reachable through exactly one path. No handler body is duplicated.
+    for (let bi = 0; bi < hotShuffled.length; bi++) {
+      const sOp = hotShuffled[bi];
+      const hh = hotAlias.get(sOp)!;
       if (bi === 0) {
-        lines.push(`if ${opA}==${sOp} then`);
+        lines.push(`if ${opA}==${sOp} then ${hh}()`);
       } else {
-        lines.push(`elseif ${opA}==${sOp} then`);
+        lines.push(`elseif ${opA}==${sOp} then ${hh}()`);
       }
-      lines.push(`do ${body} end`);
     }
 
     lines.push(`else`);
@@ -3519,6 +3581,19 @@ export function generateVM(chunk: BytecodeChunk, options: VMGenOptions = {}): st
 
   const mappedCode = doShuffle ? mapBytecode(chunk.code, opcodeEncode) : chunk.code;
 
+  // Stage 18: hot-subset selection over the final real-opcode stream. The
+  // main chunk and all protos share one dispatch structure, so frequencies
+  // are combined. Deterministic: chunk content is fixed per input+seed at
+  // this pipeline point, and selectHotOps is a pure total-ordered function.
+  const hotCounts = new Map<number, number>();
+  countOpcodes(chunk.code, hotCounts);
+  const countProtoOps = (ps?: BytecodeChunk[]): void => {
+    for (const p of ps || []) { countOpcodes(p.code, hotCounts); countProtoOps(p.protos); }
+  };
+  countProtoOps(chunk.protos);
+  const hotTotal = [...hotCounts.values()].reduce((a, b) => a + b, 0);
+  const hotRealOps = selectHotOps(hotCounts, hotTotal);
+
   const n = createNames(level);
 
   const envSetup = buildEnvSetup(n, level, includeExecutor);
@@ -3546,7 +3621,7 @@ export function generateVM(chunk: BytecodeChunk, options: VMGenOptions = {}): st
   const doStringPools = level === "max" && doLazyDecode;
   const poolsVarName = doStringPools ? randomName(3) : "";
 
-  const vmFunction = buildVMFunction(n, opcodeEncode, level, encodeStrings, xorKey, xorStep, effectiveCodeXorKey, codeHash, lazyBaseKey, lazyKeyPrime, ctxInit, ctxPrime, jumpKey, protoKeys, cipherSeeds, doMutation, doPooling, poolsVarName);
+  const vmFunction = buildVMFunction(n, opcodeEncode, level, encodeStrings, xorKey, xorStep, effectiveCodeXorKey, codeHash, lazyBaseKey, lazyKeyPrime, ctxInit, ctxPrime, jumpKey, protoKeys, cipherSeeds, doMutation, doPooling, poolsVarName, hotRealOps);
 
   const honeypotPool = [
     "RemoteEvent","FireServer","InvokeServer","OnServerEvent","OnClientEvent",
