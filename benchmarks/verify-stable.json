@@ -1,0 +1,478 @@
+{
+  "meta": {
+    "seed": 1234,
+    "node": "v24.16.0",
+    "date": "2026-10-01T11:47:34.934Z",
+    "outPath": "benchmarks/verify-stable.json"
+  },
+  "fixtures": [
+    {
+      "file": "flow-heavy.lua",
+      "bytes": 330,
+      "sha": "0acc96975cb5",
+      "configs": [
+        {
+          "config": "none",
+          "ms": {
+            "lex": 2.73,
+            "parse": 6.19,
+            "transforms": 10.47,
+            "compile": 0,
+            "generate": 0,
+            "total": 19.38
+          },
+          "outBytes": 746,
+          "outSha": "cb14751a6dd7",
+          "heapDelta": 553136,
+          "ok": true
+        },
+        {
+          "config": "stack-normal",
+          "ms": {
+            "lex": 0.52,
+            "parse": 0.44,
+            "transforms": 0.66,
+            "compile": 6.05,
+            "generate": 12.63,
+            "total": 20.3
+          },
+          "outBytes": 20168,
+          "outSha": "3a6d3bbd20a2",
+          "heapDelta": 1155816,
+          "ok": true
+        },
+        {
+          "config": "reg-normal",
+          "ms": {
+            "lex": 0.33,
+            "parse": 0.26,
+            "transforms": 0.43,
+            "compile": 5.38,
+            "generate": 41.35,
+            "total": 47.75
+          },
+          "outBytes": 28389,
+          "outSha": "9689aaa8d5ae",
+          "heapDelta": 1320560,
+          "ok": true
+        }
+      ]
+    },
+    {
+      "file": "function-heavy.lua",
+      "bytes": 415,
+      "sha": "1f65e36c41a7",
+      "configs": [
+        {
+          "config": "none",
+          "ms": {
+            "lex": 0.46,
+            "parse": 1.42,
+            "transforms": 0.76,
+            "compile": 0,
+            "generate": 0,
+            "total": 2.64
+          },
+          "outBytes": 627,
+          "outSha": "6df1e0ae40c4",
+          "heapDelta": 149504,
+          "ok": true
+        },
+        {
+          "config": "stack-normal",
+          "ms": {
+            "lex": 0.38,
+            "parse": 0.58,
+            "transforms": 1.28,
+            "compile": 0.7,
+            "generate": 2.71,
+            "total": 5.65
+          },
+          "outBytes": 19924,
+          "outSha": "1f54fab0e4fc",
+          "heapDelta": 0,
+          "ok": true
+        },
+        {
+          "config": "reg-normal",
+          "ms": {
+            "lex": 0.27,
+            "parse": 0.23,
+            "transforms": 0.55,
+            "compile": 0.85,
+            "generate": 7.2,
+            "total": 9.1
+          },
+          "outBytes": 27648,
+          "outSha": "10f19f66be07",
+          "heapDelta": 391136,
+          "ok": true
+        }
+      ]
+    },
+    {
+      "file": "large.lua",
+      "bytes": 30043,
+      "sha": "938cb4ef469c",
+      "configs": [
+        {
+          "config": "none",
+          "ms": {
+            "lex": 10.57,
+            "parse": 10.22,
+            "transforms": 24.06,
+            "compile": 0,
+            "generate": 0,
+            "total": 44.85
+          },
+          "outBytes": 39855,
+          "outSha": "7b270d7c32c9",
+          "heapDelta": 4711056,
+          "ok": true
+        },
+        {
+          "config": "stack-normal",
+          "ms": {
+            "lex": 4.68,
+            "parse": 6.32,
+            "transforms": 7.89,
+            "compile": 23.27,
+            "generate": 5.5,
+            "total": 47.66
+          },
+          "outBytes": 96678,
+          "outSha": "5e6607511947",
+          "heapDelta": 9992920,
+          "ok": true
+        },
+        {
+          "config": "reg-normal",
+          "ms": {
+            "lex": 8.5,
+            "parse": 4.25,
+            "transforms": 29.42,
+            "compile": 26.61,
+            "generate": 129.54,
+            "total": 198.31
+          },
+          "outBytes": 220123,
+          "outSha": "bd9344478b0f",
+          "heapDelta": 0,
+          "ok": true
+        }
+      ]
+    },
+    {
+      "file": "medium.lua",
+      "bytes": 4505,
+      "sha": "7efe8ccbc4bd",
+      "configs": [
+        {
+          "config": "none",
+          "ms": {
+            "lex": 16.16,
+            "parse": 1.02,
+            "transforms": 1.73,
+            "compile": 0,
+            "generate": 0,
+            "total": 18.91
+          },
+          "outBytes": 4919,
+          "outSha": "cf6067875b40",
+          "heapDelta": 1195424,
+          "ok": true
+        },
+        {
+          "config": "stack-normal",
+          "ms": {
+            "lex": 0.62,
+            "parse": 7.06,
+            "transforms": 7.08,
+            "compile": 17.69,
+            "generate": 1.74,
+            "total": 34.19
+          },
+          "outBytes": 29077,
+          "outSha": "78e7cae3c123",
+          "heapDelta": 1748384,
+          "ok": true
+        },
+        {
+          "config": "reg-normal",
+          "ms": {
+            "lex": 0.57,
+            "parse": 0.35,
+            "transforms": 5.44,
+            "compile": 2.53,
+            "generate": 14.19,
+            "total": 23.09
+          },
+          "outBytes": 36422,
+          "outSha": "97b18b7c9ee9",
+          "heapDelta": 4048552,
+          "ok": true
+        }
+      ]
+    },
+    {
+      "file": "small.lua",
+      "bytes": 189,
+      "sha": "fe5c541afef0",
+      "configs": [
+        {
+          "config": "none",
+          "ms": {
+            "lex": 0.35,
+            "parse": 0.21,
+            "transforms": 0.73,
+            "compile": 0,
+            "generate": 0,
+            "total": 1.29
+          },
+          "outBytes": 464,
+          "outSha": "4a165e90dbc5",
+          "heapDelta": 94552,
+          "ok": true
+        },
+        {
+          "config": "stack-normal",
+          "ms": {
+            "lex": 0.08,
+            "parse": 0.12,
+            "transforms": 0.3,
+            "compile": 1,
+            "generate": 1.17,
+            "total": 2.67
+          },
+          "outBytes": 19835,
+          "outSha": "862f0f96040e",
+          "heapDelta": 402728,
+          "ok": true
+        },
+        {
+          "config": "reg-normal",
+          "ms": {
+            "lex": 0.2,
+            "parse": 0.08,
+            "transforms": 0.22,
+            "compile": 0.4,
+            "generate": 9.46,
+            "total": 10.36
+          },
+          "outBytes": 27373,
+          "outSha": "1902d68a6fe6",
+          "heapDelta": 1995744,
+          "ok": true
+        }
+      ]
+    },
+    {
+      "file": "string-heavy.lua",
+      "bytes": 251,
+      "sha": "a8744b94b972",
+      "configs": [
+        {
+          "config": "none",
+          "ms": {
+            "lex": 1.66,
+            "parse": 0.52,
+            "transforms": 0.79,
+            "compile": 0,
+            "generate": 0,
+            "total": 2.96
+          },
+          "outBytes": 763,
+          "outSha": "dc53cea2e268",
+          "heapDelta": 147784,
+          "ok": true
+        },
+        {
+          "config": "stack-normal",
+          "ms": {
+            "lex": 0.21,
+            "parse": 0.07,
+            "transforms": 0.35,
+            "compile": 0.38,
+            "generate": 1.02,
+            "total": 2.04
+          },
+          "outBytes": 21779,
+          "outSha": "13a2f15b987b",
+          "heapDelta": 463624,
+          "ok": true
+        },
+        {
+          "config": "reg-normal",
+          "ms": {
+            "lex": 0.16,
+            "parse": 0.07,
+            "transforms": 0.31,
+            "compile": 0.8,
+            "generate": 11.19,
+            "total": 12.54
+          },
+          "outBytes": 28594,
+          "outSha": "0f597f7aacef",
+          "heapDelta": 1829680,
+          "ok": true
+        }
+      ]
+    },
+    {
+      "file": "table-heavy.lua",
+      "bytes": 315,
+      "sha": "09aa96f9c983",
+      "configs": [
+        {
+          "config": "none",
+          "ms": {
+            "lex": 0.11,
+            "parse": 0.26,
+            "transforms": 1.05,
+            "compile": 0,
+            "generate": 0,
+            "total": 1.42
+          },
+          "outBytes": 599,
+          "outSha": "64e930a79b40",
+          "heapDelta": 126320,
+          "ok": true
+        },
+        {
+          "config": "stack-normal",
+          "ms": {
+            "lex": 0.25,
+            "parse": 0.29,
+            "transforms": 0.59,
+            "compile": 7.12,
+            "generate": 3.84,
+            "total": 12.09
+          },
+          "outBytes": 20322,
+          "outSha": "13480463ba27",
+          "heapDelta": 0,
+          "ok": true
+        },
+        {
+          "config": "reg-normal",
+          "ms": {
+            "lex": 0.16,
+            "parse": 0.15,
+            "transforms": 0.28,
+            "compile": 0.76,
+            "generate": 7.28,
+            "total": 8.63
+          },
+          "outBytes": 27853,
+          "outSha": "6f91584a674f",
+          "heapDelta": 1721464,
+          "ok": true
+        }
+      ]
+    },
+    {
+      "file": "tiny.lua",
+      "bytes": 25,
+      "sha": "4c3371fe7a47",
+      "configs": [
+        {
+          "config": "none",
+          "ms": {
+            "lex": 0.03,
+            "parse": 0.02,
+            "transforms": 0.16,
+            "compile": 0,
+            "generate": 0,
+            "total": 0.21
+          },
+          "outBytes": 260,
+          "outSha": "bd6e94e3834a",
+          "heapDelta": 40128,
+          "ok": true
+        },
+        {
+          "config": "stack-normal",
+          "ms": {
+            "lex": 0.02,
+            "parse": 0.01,
+            "transforms": 0.1,
+            "compile": 0.08,
+            "generate": 0.77,
+            "total": 0.99
+          },
+          "outBytes": 19123,
+          "outSha": "dfa040079ed3",
+          "heapDelta": 328384,
+          "ok": true
+        },
+        {
+          "config": "reg-normal",
+          "ms": {
+            "lex": 0.03,
+            "parse": 0.02,
+            "transforms": 0.11,
+            "compile": 0.11,
+            "generate": 4.97,
+            "total": 5.25
+          },
+          "outBytes": 25318,
+          "outSha": "3e46b7016c99",
+          "heapDelta": 1528000,
+          "ok": true
+        }
+      ]
+    },
+    {
+      "file": "vm-heavy.lua",
+      "bytes": 364,
+      "sha": "b7ae5ac2e566",
+      "configs": [
+        {
+          "config": "none",
+          "ms": {
+            "lex": 0.13,
+            "parse": 0.53,
+            "transforms": 0.67,
+            "compile": 0,
+            "generate": 0,
+            "total": 1.34
+          },
+          "outBytes": 589,
+          "outSha": "8cfd0c70423d",
+          "heapDelta": 122600,
+          "ok": true
+        },
+        {
+          "config": "stack-normal",
+          "ms": {
+            "lex": 0.11,
+            "parse": 0.13,
+            "transforms": 0.19,
+            "compile": 0.22,
+            "generate": 0.93,
+            "total": 1.58
+          },
+          "outBytes": 20079,
+          "outSha": "f13e1c03a623",
+          "heapDelta": 448648,
+          "ok": true
+        },
+        {
+          "config": "reg-normal",
+          "ms": {
+            "lex": 0.12,
+            "parse": 0.14,
+            "transforms": 0.2,
+            "compile": 0.18,
+            "generate": 5.55,
+            "total": 6.18
+          },
+          "outBytes": 27174,
+          "outSha": "137177b0812b",
+          "heapDelta": 1863688,
+          "ok": true
+        }
+      ]
+    }
+  ]
+}

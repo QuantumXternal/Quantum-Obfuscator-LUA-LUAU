@@ -1,16 +1,12 @@
 #!/usr/bin/env node
 
 import { readFileSync, writeFileSync } from "fs";
-import { lex } from "../lexer/Lexer.js";
-import { parse } from "../parser/Parser.js";
-import { obfuscate } from "../obfuscator/Obfuscator.js";
-import { regCompile } from "../vm/RegCompiler.js";
-import { generateRegVM } from "../vm/reg-vm-gen.js";
-import type { RegVMLevel } from "../vm/reg-vm-gen.js";
+import { runObfuscatePipeline, PipelineLexError } from "../engine/obfuscatePipeline.js";
+import type { PipelineVmLevel } from "../engine/obfuscatePipeline.js";
 
 const args = process.argv.slice(2);
 
-let level: RegVMLevel = "normal";
+let level: PipelineVmLevel = "normal";
 if (args.includes("--debug")) level = "debug";
 if (args.includes("--max")) level = "max";
 
@@ -32,36 +28,37 @@ console.error(`[RegVM] Level: ${level}`);
 
 const t0 = Date.now();
 
-// Lex
-const { tokens, errors: lexErrors } = lex(source);
-if (lexErrors.length > 0) {
-  console.error("Lexer errors:", lexErrors.map(e => e.message));
-  process.exit(1);
-}
-
-// Parse
-const ast = parse(tokens);
-
-// Obfuscate AST (rename locals)
-const obfuscated = obfuscate(ast, {
-  renameLocals: true,
-  preserveGlobals: true,
-});
-
-// Compile to register bytecode
-const chunk = regCompile(obfuscated);
-console.error(`[RegVM] Bytecode: ${chunk.code.length / 4} instructions, ${chunk.K.length} constants, ${(chunk.protos || []).length} protos, maxRegs=${chunk.maxRegs}`);
-
-// Generate VM
+// Obfuscate AST (rename locals) + compile + generate via shared engine.
+// NOTE: no encode/scramble passes here (historical behavior preserved).
 const disableFeatures: string[] = [];
 if (args.includes("--no-cff")) disableFeatures.push("controlFlowFlattening");
-const output = generateRegVM(chunk, {
-  level,
-  executorGlobals: level !== "debug",
-  polymorphicSeed: Date.now(),
-  debugTrace: false,
-  disableFeatures: disableFeatures as any[],
-});
+let output: string;
+try {
+  output = runObfuscatePipeline(source, {
+    renameLocals: true,
+    preserveGlobals: true,
+    encodeStrings: false,
+    scramble: false,
+    oneLine: false,
+    vmType: "register",
+    vmLevel: level,
+    executorGlobals: level !== "debug",
+    polymorphicSeed: Date.now(),
+    debugTrace: false,
+    disableFeatures,
+    onBytecode: (info) => console.error(
+      `[RegVM] Bytecode: ${info.instructions} instructions, ${info.constants} constants, ${info.protos} protos, maxRegs=${info.maxRegs}`
+    ),
+  });
+} catch (err: any) {
+  if (err instanceof PipelineLexError) {
+    console.error("Lexer errors:", (err.details as any[]).map(e => e.message));
+  } else {
+    console.error("Obfuscation error:", err?.message ?? err);
+  }
+  process.exit(1);
+  throw err;
+}
 
 const elapsed = Date.now() - t0;
 console.error(`[RegVM] Output: ${output.length} chars (${elapsed}ms)`);

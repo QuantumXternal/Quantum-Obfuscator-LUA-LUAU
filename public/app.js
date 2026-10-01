@@ -9,6 +9,38 @@ document.addEventListener("DOMContentLoaded", () => {
   const optOneLine = document.getElementById("opt-oneline");
   const optVmType = document.getElementById("opt-vm-type");
   const optVmLevel = document.getElementById("opt-vm-level");
+  const optProfile = document.getElementById("opt-profile");
+
+  // Profile defaults for all option controls. Manual changes mark fields
+  // dirty so they are sent as explicit overrides; changing the profile
+  // resets every control to the profile defaults and clears dirtiness.
+  // This keeps FAST from silently inheriting BALANCED checkbox state.
+  const PROFILE_DEFAULTS = {
+    FAST: { rename: true, preserve: true, encode: false, scramble: false, vmType: "none", vmLevel: "normal" },
+    BALANCED: { rename: true, preserve: true, encode: true, scramble: true, vmType: "register", vmLevel: "normal" },
+    MAXIMUM: { rename: true, preserve: true, encode: true, scramble: true, vmType: "register", vmLevel: "max" },
+  };
+  const dirty = {};
+  function applyProfile(name) {
+    const d = PROFILE_DEFAULTS[name] || PROFILE_DEFAULTS.BALANCED;
+    optRename.checked = d.rename;
+    optPreserve.checked = d.preserve;
+    optEncode.checked = d.encode;
+    optScramble.checked = d.scramble;
+    optVmType.value = d.vmType;
+    optVmLevel.value = d.vmLevel;
+    for (const k of Object.keys(dirty)) delete dirty[k];
+  }
+  if (optProfile) {
+    optProfile.addEventListener("change", () => applyProfile(optProfile.value));
+  }
+  optRename.addEventListener("change", () => { dirty.noRename = !optRename.checked; });
+  optPreserve.addEventListener("change", () => { dirty.noPreserve = !optPreserve.checked; });
+  optEncode.addEventListener("change", () => { dirty.encodeStrings = optEncode.checked; });
+  optScramble.addEventListener("change", () => { dirty.scramble = optScramble.checked; });
+  optOneLine.addEventListener("change", () => { dirty.oneLine = optOneLine.checked; });
+  optVmType.addEventListener("change", () => { dirty.vmType = optVmType.value; });
+  optVmLevel.addEventListener("change", () => { dirty.vmLevel = optVmLevel.value; });
   
   const btnObfuscate = document.getElementById("btn-obfuscate");
   const btnCopy = document.getElementById("btn-copy");
@@ -152,17 +184,12 @@ document.addEventListener("DOMContentLoaded", () => {
 
     logConsole("[SYSTEM] Initiating obfuscation pipeline...", "system");
 
+    const profile = optProfile ? optProfile.value : "BALANCED";
     const payload = {
       code,
-      options: {
-        noRename: !optRename.checked,
-        noPreserve: !optPreserve.checked,
-        encodeStrings: optEncode.checked,
-        scramble: optScramble.checked,
-        oneLine: optOneLine.checked,
-        vmType: optVmType.value,
-        vmLevel: optVmLevel.value
-      }
+      // Only manually overridden fields are sent; profile defaults apply
+      // server-side for everything else.
+      options: { profile, ...dirty },
     };
 
     try {
@@ -183,8 +210,11 @@ document.addEventListener("DOMContentLoaded", () => {
 
       updateStatus("green", "Success");
       logConsole("[SUCCESS] Obfuscation completed successfully!", "success");
-      if (payload.options.vmType !== "none") {
-        logConsole(`[VM-GENERATOR] Virtual machine generated (${payload.options.vmType.toUpperCase()} architecture, Level: ${payload.options.vmLevel.toUpperCase()}).`, "success");
+      const effVm = payload.options.vmType || (profile === "FAST" ? "none" : profile === "MAXIMUM" ? "register(max)" : "register");
+      if (effVm !== "none") {
+        logConsole(`[VM-GENERATOR] Profile ${profile}, VM generated (${effVm.toUpperCase()} architecture).`, "success");
+      } else {
+        logConsole(`[VM-GENERATOR] Profile ${profile} (AST obfuscation, no VM).`, "success");
       }
 
     } catch (err) {

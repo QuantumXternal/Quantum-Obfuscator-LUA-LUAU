@@ -6,6 +6,12 @@ export interface BootstrapConfig {
   checksum: number;
   chunkName?: string;
   rng: () => number;
+  /**
+   * Roblox-specific anti-debug block (debug-info tripwire + warn flood +
+   * Players:Kick). Default false — the generic engine stays generic and only
+   * emits this when explicitly requested via target === "roblox".
+   */
+  robloxAntiTamper?: boolean;
 }
 
 function longStringLevel(s: string): number {
@@ -435,7 +441,9 @@ export function generateBootstrap(config: BootstrapConfig): string {
   assembled.push(`local ${nEnvCheck}=${nType}(${nLoad})..${nType}(${nPcall})`);
   assembled.push(`if ${nEnvCheck}~="functionfunction" then return nil end`);
 
-  {
+  // Roblox-only anti-debug block. Gated: generic output must not reference
+  // game/Players/Kick or punish debuggers outside Roblox.
+  if (config.robloxAntiTamper === true) {
     const chL2 = obfuscateNum(108, rng);
     const chWarn = [119,97,114,110].map(c => obfuscateNum(c, rng)).join(',');
     const chGame = [103,97,109,101].map(c => obfuscateNum(c, rng)).join(',');

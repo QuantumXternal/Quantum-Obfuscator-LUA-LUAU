@@ -1027,7 +1027,16 @@ function compileStatement(ctx: CompileContext, stmt: Statement | LastStatement):
         if (slot !== undefined) {
           emit(c, Op.STORE_L, slot);
         } else {
-          emit(c, Op.STORE_G, addConst(c, fn.base.name));
+          // Mirror RegCompiler.compileFuncStmt: an assigned function name can
+          // refer to an enclosing upvalue, not only a global. Without this,
+          // `local x function x.y()`-style closures inside functions silently
+          // became globals.
+          const uv = resolveUpvalue(ctx, fn.base.name);
+          if (uv !== null) {
+            emit(c, Op.STORE_UPVAL, uv);
+          } else {
+            emit(c, Op.STORE_G, addConst(c, fn.base.name));
+          }
         }
       } else if (fn.base.type === "MemberExpression") {
         compileExpression(ctx, fn.base.object);

@@ -120,8 +120,21 @@ print("Square of 5 is: " .. tostring(square(5)))</textarea>
           </fieldset>
 
           <fieldset class="web-fieldset">
-            <legend class="web-legend">Bytecode Virtualization</legend>
-            
+            <legend class="web-legend">Protection Profile</legend>
+
+            <div class="select-group">
+              <label for="opt-profile" class="select-label">Profile:</label>
+              <select id="opt-profile">
+                <option value="FAST">Fast (AST only, fastest build, smallest output)</option>
+                <option value="BALANCED" selected>Balanced (Register VM, generic target)</option>
+                <option value="MAXIMUM">Maximum (Heaviest VM, generic unless Roblox target)</option>
+              </select>
+            </div>
+          </fieldset>
+
+          <fieldset class="web-fieldset">
+            <legend class="web-legend">Bytecode Virtualization (advanced override)</legend>
+
             <div class="select-group">
               <label for="opt-vm-type" class="select-label">VM Architecture:</label>
               <select id="opt-vm-type">
@@ -134,8 +147,8 @@ print("Square of 5 is: " .. tostring(square(5)))</textarea>
             <div class="select-group">
               <label for="opt-vm-level" class="select-label">Hardening Grade:</label>
               <select id="opt-vm-level">
-                <option value="max" selected>Max (LZSS, Anti-Dump, S-Box Cipher)</option>
-                <option value="normal">Normal (XOR Table, Instruction Shuffling)</option>
+                <option value="max">Max (LZSS, Anti-Dump, S-Box Cipher)</option>
+                <option value="normal" selected>Normal (XOR Table, Instruction Shuffling)</option>
                 <option value="debug">Debug (Readable VM for stack tracing)</option>
               </select>
             </div>

@@ -1,10 +1,21 @@
 export { lex, Lexer, type LexResult } from "./lexer/Lexer.js";
 export { parse, parseWithErrors, Parser, type ParseResult } from "./parser/Parser.js";
 export { obfuscate, printChunk, printExpression, type ObfuscatorOptions } from "./obfuscator/index.js";
+export { encodeStrings, type StringEncoderOptions } from "./obfuscator/StringEncoder.js";
+export { scrambleControlFlow, type ControlFlowScramblerOptions } from "./obfuscator/ControlFlowScrambler.js";
 export type { Token, SourceLocation } from "./tokens.js";
 export type { Chunk, Statement, Expression } from "./ast/types.js";
 export { compile } from "./vm/Compiler.js";
-export type { BytecodeChunk, Constant } from "./vm/bytecode.js";
+export { regCompile } from "./vm/RegCompiler.js";
+export { runReg } from "./vm/reg-runner.js";
+export type { RegRunnerEnv, RegRunnerOptions } from "./vm/reg-runner.js";
+export type { BytecodeChunk, Constant, RegBytecodeChunk } from "./vm/bytecode.js";
 export { generateVM, type VMGenOptions, type VMGenLevel } from "./vm/vm-gen.js";
+export { generateRegVM, type RegVMGenOptions, type RegVMLevel } from "./vm/reg-vm-gen.js";
+export { countFusionMatches, type FusionMatchCounts } from "./vm/reg-vm-gen.js";
 export { validate, type ValidationResult, type ValidationError } from "./compiler/LuauCompiler.js";
+export { runObfuscatePipeline, PipelineLexError } from "./engine/obfuscatePipeline.js";
+export type { PipelineOptions, PipelineVmType, PipelineVmLevel } from "./engine/obfuscatePipeline.js";
+export { resolveProfile, profileDefaults } from "./engine/profiles.js";
+export type { ProtectionProfile, ObfuscationTarget, ProfileRequest } from "./engine/profiles.js";
 

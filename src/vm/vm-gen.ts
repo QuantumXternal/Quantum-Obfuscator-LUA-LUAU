@@ -3370,7 +3370,9 @@ function featureEnabled(options: VMGenOptions, flag: FeatureFlag, levelDefault: 
 export function generateVM(chunk: BytecodeChunk, options: VMGenOptions = {}): string {
   const nesting = options.nesting ?? 0;
 
-  const seed = options.polymorphicSeed || (Date.now() ^ (Math.random() * 0xFFFFFFFF));
+  // `??` (not `||`) so an explicit seed of 0 is honored as deterministic.
+  const seed = options.polymorphicSeed ?? (Date.now() ^ (Math.random() * 0xFFFFFFFF));
+  const seeded = options.polymorphicSeed !== undefined && options.polymorphicSeed !== null;
   seedRandom(seed);
 
   if (nesting > 0 && !options.forceSingleVM) {
@@ -3643,8 +3645,10 @@ export function generateVM(chunk: BytecodeChunk, options: VMGenOptions = {}): st
 
   if (!options._noWatermark) {
 
-    const buildTS = Math.floor(Date.now() / 1000) & 0xFFFFFFFF;
-    const buildRand = Math.floor(Math.random() * 0xFFFF);
+    // Deterministic under an explicit seed (fingerprint drawn from the seeded
+    // stream, still unique per seed); wall-clock/random only when unseeded.
+    const buildTS = seeded ? Math.floor(rng() * 0xFFFFFFFF) : Math.floor(Date.now() / 1000) & 0xFFFFFFFF;
+    const buildRand = seeded ? Math.floor(rng() * 0xFFFF) : Math.floor(Math.random() * 0xFFFF);
     const fingerprint = ((buildTS ^ (buildRand << 16)) >>> 0);
     const fpHex = fingerprint.toString(16).padStart(8, '0').toUpperCase();
 

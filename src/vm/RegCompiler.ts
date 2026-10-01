@@ -409,10 +409,12 @@ function compileComparison(ctx: Ctx, exp: any, dest: number): number {
     regEmit(c, cmpOp, invertA, rb, rc);
   }
 
-  const skip = emitJump(ctx);
-  regEmit(c, RegOp.LOADBOOL, dest, 1, 1);
-  patchJump(ctx, skip, regPC(c));
-  regEmit(c, RegOp.LOADBOOL, dest, 0, 0);
+  // Materialize the boolean with LOADBOOL's own skip slot instead of a
+  // separate JMP: cond-true skips the false case, cond-false executes it and
+  // skips the true case. 3 instructions instead of 4; the EQ/LT/LE skip
+  // behavior is unchanged for all operators and inversions.
+  regEmit(c, RegOp.LOADBOOL, dest, 0, 1);
+  regEmit(c, RegOp.LOADBOOL, dest, 1, 0);
   restoreFree(ctx, s);
   return dest;
 }

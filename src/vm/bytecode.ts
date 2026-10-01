@@ -77,11 +77,32 @@ export function emit(chunk: BytecodeChunk, op: Op, ...args: number[]): void {
   for (const arg of args) chunk.code.push(arg);
 }
 
+// Intern map for O(1) dedup. Preserves indexOf semantics for NaN
+// (NaN !== NaN, so NaN is never deduped — same as Array.indexOf).
+const constCache = new WeakMap<BytecodeChunk, Map<Constant, number>>();
+const regConstCache = new WeakMap<RegBytecodeChunk, Map<Constant, number>>();
+
 export function addConst(chunk: BytecodeChunk, value: Constant): number {
-  const i = chunk.K.indexOf(value);
-  if (i >= 0) return i;
+  if (typeof value === "number" && Number.isNaN(value)) {
+    chunk.K.push(value);
+    return chunk.K.length - 1;
+  }
+  let map = constCache.get(chunk);
+  if (!map) {
+    map = new Map<Constant, number>();
+    for (let i = 0; i < chunk.K.length; i++) {
+      const existing = chunk.K[i] as Constant;
+      if (typeof existing === "number" && Number.isNaN(existing)) continue;
+      if (!map.has(existing)) map.set(existing, i);
+    }
+    constCache.set(chunk, map);
+  }
+  const hit = map.get(value);
+  if (hit !== undefined) return hit;
   chunk.K.push(value);
-  return chunk.K.length - 1;
+  const idx = chunk.K.length - 1;
+  map.set(value, idx);
+  return idx;
 }
 
 export const RK_OFFSET = 256;
@@ -208,10 +229,26 @@ export function regPC(chunk: RegBytecodeChunk): number {
 }
 
 export function regAddConst(chunk: RegBytecodeChunk, value: Constant): number {
-  const i = chunk.K.indexOf(value);
-  if (i >= 0) return i;
+  if (typeof value === "number" && Number.isNaN(value)) {
+    chunk.K.push(value);
+    return chunk.K.length - 1;
+  }
+  let map = regConstCache.get(chunk);
+  if (!map) {
+    map = new Map<Constant, number>();
+    for (let i = 0; i < chunk.K.length; i++) {
+      const existing = chunk.K[i] as Constant;
+      if (typeof existing === "number" && Number.isNaN(existing)) continue;
+      if (!map.has(existing)) map.set(existing, i);
+    }
+    regConstCache.set(chunk, map);
+  }
+  const hit = map.get(value);
+  if (hit !== undefined) return hit;
   chunk.K.push(value);
-  return chunk.K.length - 1;
+  const idx = chunk.K.length - 1;
+  map.set(value, idx);
+  return idx;
 }
 
 export function createRegChunk(): RegBytecodeChunk {

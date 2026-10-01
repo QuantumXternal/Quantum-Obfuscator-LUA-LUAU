@@ -66,6 +66,9 @@ interface BuildCtx {
   spiralOffset: number;
   layerVariants: number[];
 
+  handlerNoise: boolean;
+  /** Never-called decoder twins + junk fragments. Default true = historical output. */
+  deadCodeInjection: boolean;
   dispatchVariant: number;
   dispatchMask: number;
   rotSeed: number;
@@ -1071,6 +1074,73 @@ function buildFusionPatterns(enabled: Set<number>): FusionPattern[] {
   return patterns;
 }
 
+export interface FusionMatchCounts {
+  perPattern: { id: number; name: string; matches: number }[];
+  /** Greedy disjoint site count in registration order (what a rate-1.0 pass would fuse). */
+  greedyTotal: number;
+}
+
+const ALL_FUSION_IDS = [
+  RegOp.FUSED_GGET_CALL as number,
+  RegOp.FUSED_TEST_JMP as number,
+  RegOp.FUSED_EQ_JMP as number,
+  RegOp.FUSED_LT_JMP as number,
+  RegOp.FUSED_LE_JMP as number,
+  RegOp.FUSED_TESTSET_JMP as number,
+  RegOp.FUSED_GGET as number,
+  RegOp.FUSED_LOADKK as number,
+  RegOp.FUSED_MOVE_MOVE as number,
+  RegOp.FUSED_SELF_CALL as number,
+  RegOp.FUSED_LOADK_RET as number,
+  RegOp.FUSED_MOVE_RET as number,
+];
+
+/**
+ * Read-only fusion census over compiler output (main chunk + protos).
+ * Counts raw matcher hits per pattern independently (sites may match
+ * multiple patterns, e.g. a GGET_CALL site also matches the GGET prefix),
+ * plus a greedy disjoint total in registration order mirroring fuseCode
+ * minus jump-veto and probabilistic rate. Does not mutate the chunk.
+ * Pure observation for the metric layer — no behavior change anywhere.
+ */
+export function countFusionMatches(chunk: RegBytecodeChunk): FusionMatchCounts {
+  const patterns = buildFusionPatterns(new Set(ALL_FUSION_IDS));
+  const perPattern = patterns.map((p) => ({ id: p.id, name: p.name, matches: 0 }));
+  let greedyTotal = 0;
+
+  const scanIndependent = (code: number[]): void => {
+    for (let i = 0; i + 4 <= code.length; i += 4) {
+      patterns.forEach((p, pi) => {
+        if (i + p.slots * 4 <= code.length && p.match(code, i)) perPattern[pi]!.matches++;
+      });
+    }
+  };
+
+  const scanGreedy = (code: number[]): void => {
+    let i = 0;
+    while (i + 4 <= code.length) {
+      let consumed = false;
+      for (const p of patterns) {
+        if (i + p.slots * 4 <= code.length && p.match(code, i)) {
+          greedyTotal++;
+          i += p.slots * 4;
+          consumed = true;
+          break;
+        }
+      }
+      if (!consumed) i += 4;
+    }
+  };
+
+  const walk = (c: RegBytecodeChunk): void => {
+    scanIndependent(c.code);
+    scanGreedy(c.code);
+    for (const proto of c.protos ?? []) walk(proto);
+  };
+  walk(chunk);
+  return { perPattern, greedyTotal };
+}
+
 function applyFusionPass(chunk: RegBytecodeChunk, enabledPatterns: Set<number>, fusionRate: number): number {
   const patterns = buildFusionPatterns(enabledPatterns);
   let totalFused = 0;
@@ -1154,7 +1224,7 @@ function generateHandlerNoise(n: NameMap, op: number): string {
 
 function buildHandlerBodies(n: NameMap, ctx: BuildCtx, usedOps?: Set<number>): Map<number, string> {
   const bodies = new Map<number, string>();
-  const doNoise = ctx.level !== "debug";
+  const doNoise = ctx.handlerNoise && ctx.level !== "debug";
   for (const [op, gen] of handlerRegistry) {
 
     if (usedOps && !usedOps.has(op as number)) continue;
@@ -1311,17 +1381,26 @@ function buildVMRuntime(ctx: BuildCtx, assignStyle: boolean = false): string {
   L.push(`local _ac=${n.bSelect}("#",...)`);
   L.push(`for _i=1,((_ac<${n.nParams}) and _ac or ${n.nParams}) do ${n.R}[_i]=_args[_i] end`);
 
-  L.push(`local ${n.varargs}={}`);
-  L.push(`local ${n.vaCount}=0`);
-  L.push(`if _isVararg then ${n.vaCount}=_ac-${n.nParams};if ${n.vaCount}<0 then ${n.vaCount}=0 end;for _i=1,${n.vaCount} do ${n.varargs}[_i]=_args[${n.nParams}+_i] end end`);
+  // Conditional init: omit tables no emitted handler can reference (usedOps
+  // is post-fusion and covers main+protos; debug path has usedOps undefined
+  // and keeps historical output). Fused GGET/GGET_CALL bypass ic by design.
+  const usedInit = ctx.usedOps;
+  const needsIc = !usedInit || usedInit.has(RegOp.GETGLOBAL as number) || usedInit.has(RegOp.SETGLOBAL as number);
+  const needsOpenUVs = !usedInit || usedInit.has(RegOp.CLOSEUPVAL as number) || usedInit.has(RegOp.CLOSURE as number);
+  const needsVarargs = !usedInit || usedInit.has(RegOp.VARARG as number);
+  if (needsVarargs) {
+    L.push(`local ${n.varargs}={}`);
+    L.push(`local ${n.vaCount}=0`);
+    L.push(`if _isVararg then ${n.vaCount}=_ac-${n.nParams};if ${n.vaCount}<0 then ${n.vaCount}=0 end;for _i=1,${n.vaCount} do ${n.varargs}[_i]=_args[${n.nParams}+_i] end end`);
+  }
 
   if (ctx.level !== "debug") {
     L.push(`do local _c={};for _ci=1,#${n.code} do _c[_ci]=${n.code}[_ci] end;${n.code}=_c end`);
   }
 
   L.push(`local ${n.ip}=1`);
-  L.push(`local ${n.openUVs}={}`);
-  L.push(`local ${n.ic}={}`);
+  if (needsOpenUVs) L.push(`local ${n.openUVs}={}`);
+  if (needsIc) L.push(`local ${n.ic}={}`);
   L.push(`local ${n.top}=0`);
 
   const nTwVm = ctx.level !== "debug" ? randomName(2) : "_tw";
@@ -2051,20 +2130,26 @@ function buildDecoderChain(
     fragments.push({ code: wrapA(nF, `local _0t={};for _0j=1,#_0v do _0t[_0j]=string.char(_0v[_0j]) end;_0K[_0i]=table.concat(_0t)`), layer: 0 });
   }
 
-  const junkCount = 3 + Math.floor(rng() * 4);
-  const junkTemplates = [
-    (nm: string) => wrapA(nm, `for _0j=1,#_0v do _0v[_0j]=bit32.bxor(_0v[_0j],bit32.band(_0j*${1+Math.floor(rng()*200)}+${Math.floor(rng()*200)},0xFF)) end`),
-    (nm: string) => wrapA(nm, `for _0j=2,#_0v do _0v[_0j]=bit32.band(_0v[_0j]+_0v[_0j-1]*${1+Math.floor(rng()*7)}+${Math.floor(rng()*200)},0xFF) end`),
-    (nm: string) => wrapA(nm, `local _0a=${Math.floor(rng()*200)};for _0j=1,#_0v do _0v[_0j]=bit32.band(_0v[_0j]-bit32.band(_0a,0xFF)+256,0xFF);_0a=_0a+${1+Math.floor(rng()*30)} end`),
-    (nm: string) => wrapA(nm, `for _0j=1,#_0v do _0v[_0j]=bit32.bxor(_0v[_0j],((_0j-1)*${SPIRAL_PRIMES[Math.floor(rng()*SPIRAL_PRIMES.length)]}+${Math.floor(rng()*200)})%251) end`),
-  ];
-  const junkNames: string[] = [];
-  for (let i = 0; i < junkCount; i++) {
-    const tpl = junkTemplates[Math.floor(rng() * junkTemplates.length)];
-    const jn = randomName(6);
-    junkNames.push(jn);
-    forwardDecls.push(jn);
-    fragments.push({ code: tpl(jn), layer: Math.floor(rng() * 3) });
+  // Never-called decoder twins. Gated: no emitted caller exists (chainCalls
+  // and all nAll variants close only over realFns). Skipping shifts the rng
+  // stream for subsequent stages, which is fine — determinism is per
+  // (seed, options), and default-ON output is unchanged.
+  if (ctx.deadCodeInjection) {
+    const junkCount = 3 + Math.floor(rng() * 4);
+    const junkTemplates = [
+      (nm: string) => wrapA(nm, `for _0j=1,#_0v do _0v[_0j]=bit32.bxor(_0v[_0j],bit32.band(_0j*${1+Math.floor(rng()*200)}+${Math.floor(rng()*200)},0xFF)) end`),
+      (nm: string) => wrapA(nm, `for _0j=2,#_0v do _0v[_0j]=bit32.band(_0v[_0j]+_0v[_0j-1]*${1+Math.floor(rng()*7)}+${Math.floor(rng()*200)},0xFF) end`),
+      (nm: string) => wrapA(nm, `local _0a=${Math.floor(rng()*200)};for _0j=1,#_0v do _0v[_0j]=bit32.band(_0v[_0j]-bit32.band(_0a,0xFF)+256,0xFF);_0a=_0a+${1+Math.floor(rng()*30)} end`),
+      (nm: string) => wrapA(nm, `for _0j=1,#_0v do _0v[_0j]=bit32.bxor(_0v[_0j],((_0j-1)*${SPIRAL_PRIMES[Math.floor(rng()*SPIRAL_PRIMES.length)]}+${Math.floor(rng()*200)})%251) end`),
+    ];
+    const junkNames: string[] = [];
+    for (let i = 0; i < junkCount; i++) {
+      const tpl = junkTemplates[Math.floor(rng() * junkTemplates.length)];
+      const jn = randomName(6);
+      junkNames.push(jn);
+      forwardDecls.push(jn);
+      fragments.push({ code: tpl(jn), layer: Math.floor(rng() * 3) });
+    }
   }
 
   const chainVariant = Math.floor(rng() * 3);
@@ -2123,7 +2208,15 @@ function buildDecoderChain(
   return { fragments, forwardDecls, chainCalls };
 }
 
-function generateJunkFragments(fragments: Fragment[], forwardDecls: string[], n?: NameMap): void {
+function generateJunkFragments(
+  fragments: Fragment[],
+  forwardDecls: string[],
+  n?: NameMap,
+  // Never-called junk (bare dead-store assignments + uninvoked function defs).
+  // Default true preserves historical output exactly.
+  enabled: boolean = true,
+): void {
+  if (!enabled) return;
   const count = 5 + Math.floor(rng() * 6);
 
   const liveRefs = n ? [
@@ -3318,12 +3411,22 @@ function serializeBytecodeAsBinary(chunk: RegBytecodeChunk, ctx: BuildCtx): Uint
 
 export function generateRegVM(chunk: RegBytecodeChunk, options: RegVMGenOptions = {}): string {
   const level = options.level ?? "normal";
-  const seed = options.polymorphicSeed || generateDynamicSeed(chunk);
+  // `??` (not `||`) so an explicit seed of 0 is honored as deterministic.
+  const seed = options.polymorphicSeed ?? generateDynamicSeed(chunk);
   seedRandom(seed);
   resetNames();
 
   const doShuffle = level !== "debug" && featureEnabled(options, "opcodeShuffle", true);
   const encodeStrings = level !== "debug" && featureEnabled(options, "stringEncoding", true);
+  // Handler noise locals (`local dv=...`, never read) are a deterministic
+  // per-op fingerprint with real per-instruction RHS cost and zero hiding
+  // value. The flag existed but was never consulted; default OFF.
+  // Explicit forceFeatures: ["handlerNoise"] restores legacy emission.
+  const handlerNoise = level !== "debug" && featureEnabled(options, "handlerNoise", false);
+  // Dead-code injection (never-called decoder twins + junk fragments).
+  // Default ON preserves historical output exactly; disableFeatures:
+  // ["deadCodeInjection"] omits only provably uninvoked material.
+  const deadCodeInjection = featureEnabled(options, "deadCodeInjection", true);
   const includeExecutor = options.executorGlobals ?? (level !== "debug");
 
   const { encode, decode } = shuffleOpcodes(doShuffle);
@@ -3364,7 +3467,7 @@ export function generateRegVM(chunk: RegBytecodeChunk, options: RegVMGenOptions 
 
   const ctx: BuildCtx = {
     level, seed, names, opcodeEncode: encode, opcodeDecode: decode,
-    doShuffle, encodeStrings, xorKey: 0, xorStep: 0, includeExecutor, protoKeys,
+    doShuffle, encodeStrings, handlerNoise, deadCodeInjection, xorKey: 0, xorStep: 0, includeExecutor, protoKeys,
     debugTrace: options.debugTrace ?? (level === "debug"),
     sbox, sboxInverse, helixSeed, helixMul, cascadeKey, cascadeMul,
     checkKeyA, checkKeyB, checkStepA, checkStepB,
@@ -3485,7 +3588,7 @@ export function generateRegVM(chunk: RegBytecodeChunk, options: RegVMGenOptions 
       chainCalls = decResult.chainCalls;
     }
 
-    generateJunkFragments(allFragments, forwardDecls, names);
+    generateJunkFragments(allFragments, forwardDecls, names, ctx.deadCodeInjection);
 
     const minLayer = allFragments.reduce((mn, f) => Math.min(mn, f.layer), 0);
     const maxLayer = allFragments.reduce((mx, f) => Math.max(mx, f.layer), 0);
@@ -3681,6 +3784,9 @@ export function generateRegVM(chunk: RegBytecodeChunk, options: RegVMGenOptions 
       checksum,
       chunkName: "Clyde",
       rng,
+      // Environment-specific anti-tamper is strictly opt-in.
+      // Generic output stays generic; only target === "roblox" emits it.
+      robloxAntiTamper: options.target === "roblox",
     });
     console.log(`[RegVM] Blob: final output = ${output.length} chars`);
   }

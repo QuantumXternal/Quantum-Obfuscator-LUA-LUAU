@@ -316,6 +316,236 @@ function detectFeatures(body: (Statement | LastStatement)[]): Set<string> {
   return features;
 }
 
+// Single-pass stats: replaces 5 separate full-tree walks
+// (countStatements + countFunctions + countLocals + collectGlobals +
+// detectFeatures) with one traversal. Keeps the exact scoping semantics of
+// collectGlobals (two-phase local pre-scan per block) and the exact feature
+// set of detectFeatures. Old helpers are kept for backwards compatibility.
+function collectStatsSinglePass(body: (Statement | LastStatement)[]): {
+  statements: number;
+  functions: number;
+  locals: number;
+  globals: Set<string>;
+  features: Set<string>;
+} {
+  let statements = 0;
+  let functions = 0;
+  let locals = 0;
+  const globals = new Set<string>();
+  const features = new Set<string>();
+
+  function markStatementFeatures(stmt: Statement | LastStatement): void {
+    switch (stmt.type) {
+      case "TypeStatement":
+      case "ExportTypeStatement":
+        features.add("type-annotations");
+        break;
+      case "TypeFunctionStatement":
+      case "ExportTypeFunctionStatement":
+        features.add("type-functions");
+        functions++;
+        break;
+      case "FunctionStatement":
+      case "LocalFunctionStatement":
+        functions++;
+        break;
+      case "ContinueStatement":
+        features.add("continue");
+        break;
+      case "CompoundAssignmentStatement":
+        features.add("compound-assignment");
+        break;
+      case "ForInStatement":
+        features.add("for-in");
+        break;
+      case "ForNumericStatement":
+        features.add("for-numeric");
+        break;
+      case "RepeatStatement":
+        features.add("repeat-until");
+        break;
+      case "LocalStatement":
+        locals += stmt.vars.length;
+        break;
+    }
+  }
+
+  function markExpressionFeatures(node: any): void {
+    if (!node || typeof node !== "object") return;
+    if (node.type === "StringInterpolation") features.add("string-interpolation");
+    if (node.type === "IfElseExpression") features.add("if-else-expression");
+    if (node.type === "TypeAssertion") features.add("type-assertion");
+    if (node.type === "FunctionExpression") features.add("anonymous-functions");
+    if (node.type === "VarargExpression") features.add("varargs");
+    if (node.type === "MethodCallExpression") features.add("method-calls");
+    if (node.attributes && node.attributes.length > 0) features.add("attributes");
+    for (const key of Object.keys(node)) {
+      const val = node[key];
+      if (Array.isArray(val)) {
+        for (const item of val) {
+          if (item && typeof item === "object" && (item as any).type) markExpressionFeatures(item);
+        }
+      } else if (val && typeof val === "object" && (val as any).type) {
+        markExpressionFeatures(val);
+      }
+    }
+  }
+
+  function walkExpression(exp: Expression, localScope: Set<string>): void {
+    if (!exp) return;
+    switch (exp.type) {
+      case "Identifier":
+        if (!localScope.has(exp.name)) globals.add(exp.name);
+        break;
+      case "BinaryExpression":
+        walkExpression(exp.left, localScope);
+        walkExpression(exp.right, localScope);
+        break;
+      case "UnaryExpression":
+        walkExpression(exp.argument, localScope);
+        break;
+      case "CallExpression":
+        walkExpression(exp.callee, localScope);
+        for (const a of exp.args) walkExpression(a, localScope);
+        break;
+      case "MethodCallExpression":
+        walkExpression(exp.object, localScope);
+        for (const a of exp.args) walkExpression(a, localScope);
+        break;
+      case "IndexExpression":
+        walkExpression(exp.object, localScope);
+        walkExpression(exp.index, localScope);
+        break;
+      case "MemberExpression":
+        walkExpression(exp.object, localScope);
+        break;
+      case "TableConstructor":
+        for (const f of exp.fields) {
+          if (f.kind === "index") {
+            walkExpression(f.index, localScope);
+            walkExpression(f.value, localScope);
+          } else {
+            walkExpression(f.value, localScope);
+          }
+        }
+        break;
+      case "FunctionExpression": {
+        const innerScope = new Set(localScope);
+        for (const p of exp.params) innerScope.add(p.name);
+        walkBody(exp.body, innerScope);
+        break;
+      }
+      case "ParenExpression":
+        walkExpression(exp.expression, localScope);
+        break;
+      case "TypeAssertion":
+        walkExpression(exp.expression, localScope);
+        break;
+      case "IfElseExpression":
+        walkExpression(exp.condition, localScope);
+        walkExpression(exp.thenExp, localScope);
+        for (const c of exp.elseifClauses) {
+          walkExpression(c.condition, localScope);
+          walkExpression(c.value, localScope);
+        }
+        walkExpression(exp.elseExp, localScope);
+        break;
+      case "StringInterpolation":
+        for (const p of exp.parts) {
+          if (typeof p !== "string") walkExpression(p, localScope);
+        }
+        break;
+    }
+  }
+
+  function walkBody(stmts: (Statement | LastStatement)[], localScope: Set<string>): void {
+    // Phase 1: pre-scan locals (same semantics as collectGlobals).
+    for (const stmt of stmts) {
+      if (stmt.type === "LocalStatement") {
+        for (const v of stmt.vars) localScope.add(v.name);
+      } else if (stmt.type === "LocalFunctionStatement") {
+        localScope.add(stmt.name);
+      }
+    }
+    for (const stmt of stmts) {
+      statements++;
+      markStatementFeatures(stmt);
+      markExpressionFeatures(stmt);
+      if (stmt.type === "LocalStatement") {
+        if (stmt.values) {
+          for (const val of stmt.values) walkExpression(val, localScope);
+        }
+      } else if (stmt.type === "LocalFunctionStatement") {
+        const innerScope = new Set(localScope);
+        for (const p of stmt.params) innerScope.add(p.name);
+        walkBody(stmt.body, innerScope);
+      } else if (stmt.type === "FunctionStatement") {
+        const innerScope = new Set(localScope);
+        for (const p of stmt.params) innerScope.add(p.name);
+        walkBody(stmt.body, innerScope);
+      } else if (stmt.type === "ForNumericStatement") {
+        const innerScope = new Set(localScope);
+        innerScope.add(stmt.var.name);
+        walkExpression(stmt.start, localScope);
+        walkExpression(stmt.end, localScope);
+        if (stmt.step) walkExpression(stmt.step, localScope);
+        walkBody(stmt.body, innerScope);
+      } else if (stmt.type === "ForInStatement") {
+        const innerScope = new Set(localScope);
+        for (const v of stmt.vars) innerScope.add(v.name);
+        for (const e of stmt.iter) walkExpression(e, localScope);
+        walkBody(stmt.body, innerScope);
+      } else if (stmt.type === "AssignmentStatement") {
+        for (const v of stmt.vars) {
+          if (v.type === "Identifier" && !localScope.has(v.name)) {
+            globals.add(v.name);
+          }
+          walkExpression(v as unknown as Expression, localScope);
+        }
+        for (const val of stmt.values) walkExpression(val, localScope);
+      } else if (stmt.type === "FunctionCallStatement") {
+        walkExpression(stmt.call as unknown as Expression, localScope);
+      } else if (stmt.type === "ReturnStatement" && stmt.values) {
+        for (const val of stmt.values) walkExpression(val, localScope);
+      } else if (stmt.type === "WhileStatement") {
+        walkExpression(stmt.condition, localScope);
+        walkBody(stmt.body, new Set(localScope));
+      } else if (stmt.type === "RepeatStatement") {
+        walkBody(stmt.body, new Set(localScope));
+        walkExpression(stmt.condition, localScope);
+      } else if (stmt.type === "IfStatement") {
+        walkExpression(stmt.condition, localScope);
+        walkBody(stmt.thenBody, new Set(localScope));
+        for (const clause of stmt.elseifClauses) {
+          walkExpression(clause.condition, localScope);
+          walkBody(clause.body, new Set(localScope));
+        }
+        if (stmt.elseBody) walkBody(stmt.elseBody, new Set(localScope));
+      } else if (stmt.type === "DoStatement") {
+        walkBody(stmt.body, new Set(localScope));
+      } else if (stmt.type === "CompoundAssignmentStatement") {
+        walkExpression(stmt.var as unknown as Expression, localScope);
+        walkExpression(stmt.value, localScope);
+      } else {
+        // Type statements and other bodies: recurse generically so nested
+        // statement counts match countStatements/countFunctions.
+        const anyStmt = stmt as any;
+        if (anyStmt && Array.isArray(anyStmt.body)) {
+          walkBody(anyStmt.body, new Set(localScope));
+        }
+        if (anyStmt && anyStmt.thenBody) walkBody(anyStmt.thenBody, new Set(localScope));
+        if (anyStmt && anyStmt.elseBody) walkBody(anyStmt.elseBody, new Set(localScope));
+        if (anyStmt && anyStmt.elseifClauses) {
+          for (const c of anyStmt.elseifClauses) walkBody(c.body, new Set(localScope));
+        }
+      }
+    }
+  }
+
+  walkBody(body, new Set<string>());
+  return { statements, functions, locals, globals, features };
+}
+
 export function validate(source: string): ValidationResult {
   const errors: ValidationError[] = [];
 
@@ -355,11 +585,12 @@ export function validate(source: string): ValidationResult {
     };
   }
 
-  const globals = collectGlobals(ast.body);
-  const features = detectFeatures(ast.body);
-  const stmtCount = countStatements(ast.body);
-  const funcCount = countFunctions(ast.body);
-  const localCount = countLocals(ast.body);
+  const statsSingle = collectStatsSinglePass(ast.body);
+  const globals = statsSingle.globals;
+  const features = statsSingle.features;
+  const stmtCount = statsSingle.statements;
+  const funcCount = statsSingle.functions;
+  const localCount = statsSingle.locals;
 
   const knownGlobals = new Set([
     "_G", "true", "false", "nil", "self", "_VERSION",

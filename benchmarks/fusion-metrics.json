@@ -1,0 +1,468 @@
+{
+  "seed": 1234,
+  "level": "normal",
+  "rows": [
+    {
+      "file": "assign-heavy.lua",
+      "srcBytes": 236,
+      "instructions": 110,
+      "opcodes": {
+        "MOVE": 26,
+        "LOADK": 11,
+        "LOADKX": 0,
+        "EXTRAARG": 0,
+        "JMP": 3,
+        "EQ": 1,
+        "LT": 0,
+        "LE": 0,
+        "TEST": 2,
+        "TESTSET": 0
+      },
+      "fusionMatches": {
+        "GGET_CALL": 0,
+        "TEST_JMP": 2,
+        "EQ_JMP": 0,
+        "LT_JMP": 0,
+        "LE_JMP": 0,
+        "TESTSET_JMP": 0,
+        "GGET": 3,
+        "LOADKK": 2,
+        "MOVE_MOVE": 10,
+        "SELF_CALL": 0,
+        "LOADK_RET": 0,
+        "MOVE_RET": 1
+      },
+      "greedyTotal": 14,
+      "fusedTelemetry": {
+        "count": 10,
+        "patterns": 8,
+        "ratePct": 12
+      },
+      "cff": 16,
+      "dispatch": "xor-masked",
+      "genMs": 28.21,
+      "heapDelta": 864272,
+      "outBytes": 26821
+    },
+    {
+      "file": "flow-heavy.lua",
+      "srcBytes": 330,
+      "instructions": 149,
+      "opcodes": {
+        "MOVE": 10,
+        "LOADK": 9,
+        "LOADKX": 0,
+        "EXTRAARG": 0,
+        "JMP": 24,
+        "EQ": 10,
+        "LT": 4,
+        "LE": 0,
+        "TEST": 15,
+        "TESTSET": 0
+      },
+      "fusionMatches": {
+        "GGET_CALL": 0,
+        "TEST_JMP": 15,
+        "EQ_JMP": 0,
+        "LT_JMP": 0,
+        "LE_JMP": 0,
+        "TESTSET_JMP": 0,
+        "GGET": 3,
+        "LOADKK": 3,
+        "MOVE_MOVE": 0,
+        "SELF_CALL": 0,
+        "LOADK_RET": 0,
+        "MOVE_RET": 1
+      },
+      "greedyTotal": 21,
+      "fusedTelemetry": {
+        "count": 14,
+        "patterns": 8,
+        "ratePct": 12
+      },
+      "cff": 54,
+      "dispatch": "xor-masked",
+      "genMs": 7.72,
+      "heapDelta": 0,
+      "outBytes": 27455
+    },
+    {
+      "file": "function-heavy.lua",
+      "srcBytes": 415,
+      "instructions": 113,
+      "opcodes": {
+        "MOVE": 15,
+        "LOADK": 8,
+        "LOADKX": 0,
+        "EXTRAARG": 0,
+        "JMP": 7,
+        "EQ": 2,
+        "LT": 1,
+        "LE": 0,
+        "TEST": 5,
+        "TESTSET": 0
+      },
+      "fusionMatches": {
+        "GGET_CALL": 0,
+        "TEST_JMP": 5,
+        "EQ_JMP": 0,
+        "LT_JMP": 0,
+        "LE_JMP": 0,
+        "TESTSET_JMP": 0,
+        "GGET": 3,
+        "LOADKK": 1,
+        "MOVE_MOVE": 4,
+        "SELF_CALL": 0,
+        "LOADK_RET": 0,
+        "MOVE_RET": 2
+      },
+      "greedyTotal": 14,
+      "fusedTelemetry": {
+        "count": 10,
+        "patterns": 8,
+        "ratePct": 12
+      },
+      "cff": 27,
+      "dispatch": "xor-masked",
+      "genMs": 8.3,
+      "heapDelta": 0,
+      "outBytes": 27457
+    },
+    {
+      "file": "large.lua",
+      "srcBytes": 30043,
+      "instructions": 8334,
+      "opcodes": {
+        "MOVE": 804,
+        "LOADK": 402,
+        "LOADKX": 146,
+        "EXTRAARG": 146,
+        "JMP": 1203,
+        "EQ": 801,
+        "LT": 0,
+        "LE": 0,
+        "TEST": 802,
+        "TESTSET": 0
+      },
+      "fusionMatches": {
+        "GGET_CALL": 0,
+        "TEST_JMP": 802,
+        "EQ_JMP": 0,
+        "LT_JMP": 0,
+        "LE_JMP": 0,
+        "TESTSET_JMP": 0,
+        "GGET": 3,
+        "LOADKK": 0,
+        "MOVE_MOVE": 0,
+        "SELF_CALL": 0,
+        "LOADK_RET": 0,
+        "MOVE_RET": 1
+      },
+      "greedyTotal": 806,
+      "fusedTelemetry": {
+        "count": 662,
+        "patterns": 8,
+        "ratePct": 12
+      },
+      "cff": 2559,
+      "dispatch": "xor-masked",
+      "genMs": 79.49,
+      "heapDelta": 3326376,
+      "outBytes": 193888
+    },
+    {
+      "file": "medium.lua",
+      "srcBytes": 4505,
+      "instructions": 642,
+      "opcodes": {
+        "MOVE": 124,
+        "LOADK": 2,
+        "LOADKX": 0,
+        "EXTRAARG": 0,
+        "JMP": 3,
+        "EQ": 1,
+        "LT": 0,
+        "LE": 0,
+        "TEST": 2,
+        "TESTSET": 0
+      },
+      "fusionMatches": {
+        "GGET_CALL": 0,
+        "TEST_JMP": 2,
+        "EQ_JMP": 0,
+        "LT_JMP": 0,
+        "LE_JMP": 0,
+        "TESTSET_JMP": 0,
+        "GGET": 3,
+        "LOADKK": 0,
+        "MOVE_MOVE": 60,
+        "SELF_CALL": 0,
+        "LOADK_RET": 0,
+        "MOVE_RET": 1
+      },
+      "greedyTotal": 66,
+      "fusedTelemetry": {
+        "count": 54,
+        "patterns": 8,
+        "ratePct": 12
+      },
+      "cff": 13,
+      "dispatch": "xor-masked",
+      "genMs": 16.64,
+      "heapDelta": 0,
+      "outBytes": 36272
+    },
+    {
+      "file": "multiret-heavy.lua",
+      "srcBytes": 207,
+      "instructions": 69,
+      "opcodes": {
+        "MOVE": 8,
+        "LOADK": 8,
+        "LOADKX": 0,
+        "EXTRAARG": 0,
+        "JMP": 3,
+        "EQ": 1,
+        "LT": 0,
+        "LE": 0,
+        "TEST": 2,
+        "TESTSET": 0
+      },
+      "fusionMatches": {
+        "GGET_CALL": 0,
+        "TEST_JMP": 2,
+        "EQ_JMP": 0,
+        "LT_JMP": 0,
+        "LE_JMP": 0,
+        "TESTSET_JMP": 0,
+        "GGET": 3,
+        "LOADKK": 3,
+        "MOVE_MOVE": 0,
+        "SELF_CALL": 0,
+        "LOADK_RET": 0,
+        "MOVE_RET": 1
+      },
+      "greedyTotal": 8,
+      "fusedTelemetry": {
+        "count": 4,
+        "patterns": 8,
+        "ratePct": 12
+      },
+      "cff": 14,
+      "dispatch": "xor-masked",
+      "genMs": 4.09,
+      "heapDelta": 1537896,
+      "outBytes": 25627
+    },
+    {
+      "file": "small.lua",
+      "srcBytes": 189,
+      "instructions": 87,
+      "opcodes": {
+        "MOVE": 9,
+        "LOADK": 8,
+        "LOADKX": 0,
+        "EXTRAARG": 0,
+        "JMP": 6,
+        "EQ": 2,
+        "LT": 1,
+        "LE": 0,
+        "TEST": 4,
+        "TESTSET": 0
+      },
+      "fusionMatches": {
+        "GGET_CALL": 0,
+        "TEST_JMP": 4,
+        "EQ_JMP": 0,
+        "LT_JMP": 0,
+        "LE_JMP": 0,
+        "TESTSET_JMP": 0,
+        "GGET": 3,
+        "LOADKK": 3,
+        "MOVE_MOVE": 2,
+        "SELF_CALL": 0,
+        "LOADK_RET": 0,
+        "MOVE_RET": 1
+      },
+      "greedyTotal": 11,
+      "fusedTelemetry": {
+        "count": 7,
+        "patterns": 8,
+        "ratePct": 12
+      },
+      "cff": 26,
+      "dispatch": "xor-masked",
+      "genMs": 4.29,
+      "heapDelta": 1529936,
+      "outBytes": 26000
+    },
+    {
+      "file": "string-heavy.lua",
+      "srcBytes": 251,
+      "instructions": 181,
+      "opcodes": {
+        "MOVE": 18,
+        "LOADK": 13,
+        "LOADKX": 0,
+        "EXTRAARG": 0,
+        "JMP": 3,
+        "EQ": 1,
+        "LT": 0,
+        "LE": 0,
+        "TEST": 2,
+        "TESTSET": 0
+      },
+      "fusionMatches": {
+        "GGET_CALL": 0,
+        "TEST_JMP": 2,
+        "EQ_JMP": 0,
+        "LT_JMP": 0,
+        "LE_JMP": 0,
+        "TESTSET_JMP": 0,
+        "GGET": 4,
+        "LOADKK": 0,
+        "MOVE_MOVE": 3,
+        "SELF_CALL": 0,
+        "LOADK_RET": 0,
+        "MOVE_RET": 1
+      },
+      "greedyTotal": 9,
+      "fusedTelemetry": {
+        "count": 8,
+        "patterns": 8,
+        "ratePct": 12
+      },
+      "cff": 11,
+      "dispatch": "xor-masked",
+      "genMs": 11.39,
+      "heapDelta": 1636768,
+      "outBytes": 28274
+    },
+    {
+      "file": "table-heavy.lua",
+      "srcBytes": 315,
+      "instructions": 118,
+      "opcodes": {
+        "MOVE": 12,
+        "LOADK": 8,
+        "LOADKX": 0,
+        "EXTRAARG": 0,
+        "JMP": 8,
+        "EQ": 3,
+        "LT": 0,
+        "LE": 0,
+        "TEST": 4,
+        "TESTSET": 0
+      },
+      "fusionMatches": {
+        "GGET_CALL": 0,
+        "TEST_JMP": 4,
+        "EQ_JMP": 0,
+        "LT_JMP": 0,
+        "LE_JMP": 0,
+        "TESTSET_JMP": 0,
+        "GGET": 3,
+        "LOADKK": 1,
+        "MOVE_MOVE": 1,
+        "SELF_CALL": 0,
+        "LOADK_RET": 0,
+        "MOVE_RET": 2
+      },
+      "greedyTotal": 11,
+      "fusedTelemetry": {
+        "count": 8,
+        "patterns": 8,
+        "ratePct": 12
+      },
+      "cff": 24,
+      "dispatch": "xor-masked",
+      "genMs": 11.49,
+      "heapDelta": 1654920,
+      "outBytes": 27494
+    },
+    {
+      "file": "tiny.lua",
+      "srcBytes": 25,
+      "instructions": 46,
+      "opcodes": {
+        "MOVE": 5,
+        "LOADK": 2,
+        "LOADKX": 0,
+        "EXTRAARG": 0,
+        "JMP": 3,
+        "EQ": 1,
+        "LT": 0,
+        "LE": 0,
+        "TEST": 2,
+        "TESTSET": 0
+      },
+      "fusionMatches": {
+        "GGET_CALL": 0,
+        "TEST_JMP": 2,
+        "EQ_JMP": 0,
+        "LT_JMP": 0,
+        "LE_JMP": 0,
+        "TESTSET_JMP": 0,
+        "GGET": 3,
+        "LOADKK": 0,
+        "MOVE_MOVE": 0,
+        "SELF_CALL": 0,
+        "LOADK_RET": 0,
+        "MOVE_RET": 1
+      },
+      "greedyTotal": 6,
+      "fusedTelemetry": {
+        "count": 4,
+        "patterns": 8,
+        "ratePct": 12
+      },
+      "cff": 18,
+      "dispatch": "xor-masked",
+      "genMs": 11.21,
+      "heapDelta": 0,
+      "outBytes": 25347
+    },
+    {
+      "file": "vm-heavy.lua",
+      "srcBytes": 364,
+      "instructions": 107,
+      "opcodes": {
+        "MOVE": 12,
+        "LOADK": 17,
+        "LOADKX": 0,
+        "EXTRAARG": 0,
+        "JMP": 6,
+        "EQ": 1,
+        "LT": 0,
+        "LE": 0,
+        "TEST": 5,
+        "TESTSET": 0
+      },
+      "fusionMatches": {
+        "GGET_CALL": 0,
+        "TEST_JMP": 5,
+        "EQ_JMP": 0,
+        "LT_JMP": 0,
+        "LE_JMP": 0,
+        "TESTSET_JMP": 0,
+        "GGET": 3,
+        "LOADKK": 6,
+        "MOVE_MOVE": 1,
+        "SELF_CALL": 0,
+        "LOADK_RET": 0,
+        "MOVE_RET": 2
+      },
+      "greedyTotal": 15,
+      "fusedTelemetry": {
+        "count": 9,
+        "patterns": 8,
+        "ratePct": 12
+      },
+      "cff": 31,
+      "dispatch": "xor-masked",
+      "genMs": 6.1,
+      "heapDelta": 1637856,
+      "outBytes": 27037
+    }
+  ]
+}

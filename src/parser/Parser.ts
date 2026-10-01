@@ -57,6 +57,23 @@ export class Parser {
   private errors: { message: string; loc: SourceLocation }[] = [];
 
   constructor(tokens: Token[]) {
+    // Fast path: Lexer.lex() guarantees exactly one trailing EOF and no
+    // interior EOF. Sharing the array avoids a full filter-copy per parse.
+    // Fall back to the defensive copy only for hand-built token streams.
+    const last = tokens.length > 0 ? tokens[tokens.length - 1] : undefined;
+    if (last && last.type === "EOF") {
+      let hasInteriorEof = false;
+      for (let i = 0; i < tokens.length - 1; i++) {
+        if (tokens[i]!.type === "EOF") {
+          hasInteriorEof = true;
+          break;
+        }
+      }
+      if (!hasInteriorEof) {
+        this.tokens = tokens;
+        return;
+      }
+    }
     const eof = tokens.find((t) => t.type === "EOF");
     this.tokens = tokens.filter((t) => t.type !== "EOF");
     if (eof) this.tokens.push(eof);

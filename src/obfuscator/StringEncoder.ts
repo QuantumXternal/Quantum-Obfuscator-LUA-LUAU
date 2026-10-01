@@ -54,8 +54,13 @@ function makeDecodeCall(
   };
 }
 
-function makeDecoderStatements(key: number, loc: SourceLocation, decoderName: string): Statement[] {
-  const cacheName = `_c_${Math.random().toString(36).substring(2, 6)}`;
+function makeDecoderStatements(
+  key: number,
+  loc: SourceLocation,
+  decoderName: string,
+  rng: () => number = Math.random,
+): Statement[] {
+  const cacheName = `_c_${randomSuffix(rng, 4)}`;
 
   const cacheStmt: Statement = {
     type: "LocalStatement",
@@ -395,6 +400,28 @@ export interface StringEncoderOptions {
   key?: number;
 
   enabled?: boolean;
+
+  // When provided, decoder/cache names are derived deterministically from
+  // this seed (mulberry32) instead of Math.random(), enabling reproducible
+  // builds, caching, and snapshot tests. Omitted = legacy random behavior.
+  seed?: number;
+}
+
+function mulberry32(seed: number): () => number {
+  let a = seed >>> 0;
+  return () => {
+    a |= 0;
+    a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function randomSuffix(rng: () => number, len: number): string {
+  let s = "";
+  while (s.length < len) s += rng().toString(36).substring(2);
+  return s.substring(0, len);
 }
 
 export function encodeStrings(ast: Chunk, options: StringEncoderOptions = {}): Chunk {
@@ -403,9 +430,10 @@ export function encodeStrings(ast: Chunk, options: StringEncoderOptions = {}): C
 
   if (!enabled) return ast;
 
-  const decoderName = `_clydeDec_${Math.random().toString(36).substring(2, 8)}`;
+  const rng = options.seed !== undefined ? mulberry32(options.seed) : Math.random;
+  const decoderName = `_clydeDec_${randomSuffix(rng, 6)}`;
   const loc = ast.body[0]?.loc ?? { start: { line: 1, column: 1, offset: 0 }, end: { line: 1, column: 1, offset: 0 } };
-  const decoders = makeDecoderStatements(key, loc, decoderName);
+  const decoders = makeDecoderStatements(key, loc, decoderName, rng);
 
   const transformedBody = ast.body.map((s) => transformStatement(s, key, decoderName));
 
