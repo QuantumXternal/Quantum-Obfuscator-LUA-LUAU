@@ -25,4 +25,8 @@ while i <= 3 do acc = acc % 7 i = i + 1 end
 local cond = 0
 if a > b then cond = a % b else cond = b % a end
 local mixed = a % b + neg % 3
-print(m1, m2, m3, m4, m5, m6, m7, m8, m9, m10, chain, nest, inargs, r, acc, cond, mixed)
+local ce = a
+ce %= b
+local cf = neg
+cf %= 3
+print(m1, m2, m3, m4, m5, m6, m7, m8, m9, m10, chain, nest, inargs, r, acc, cond, mixed, ce, cf)

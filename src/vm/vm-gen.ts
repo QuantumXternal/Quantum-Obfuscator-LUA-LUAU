@@ -33,7 +33,7 @@ function compileString(luaSource: string): BytecodeChunk {
 }
 
 function shuffleOpcodes(doShuffle: boolean): { encode: number[]; decode: number[] } {
-  const n = 69;
+  const n = 70;
   const arr = Array.from({ length: n }, (_, i) => i);
   if (doShuffle) {
     for (let i = n - 1; i > 0; i--) {
@@ -57,7 +57,7 @@ const OPCODES_1ARG = new Set([
 
 const OPCODES_2ARG = new Set([39, 53, 60, 61, 66]);
 
-const OPCODES_3ARG = new Set([56, 57, 58, 59, 62, 63, 68]);
+const OPCODES_3ARG = new Set([56, 57, 58, 59, 62, 63, 68, 69]);
 
 function mapBytecode(code: number[], opcodeEncode: number[]): number[] {
   const result = [...code];
@@ -118,7 +118,7 @@ function fuseOpcodes(code: number[]): number[] {
         const b = result[i + 3];
         const arith = result[i + 4];
         const c = result[i + 6];
-        const superOp = arith === 9 ? 57 : arith === 10 ? 58 : arith === 11 ? 59 : arith === 12 ? 68 : arith === 15 ? 63 : -1;
+        const superOp = arith === 9 ? 57 : arith === 10 ? 58 : arith === 11 ? 59 : arith === 12 ? 68 : arith === 13 ? 69 : arith === 15 ? 63 : -1;
         if (superOp !== -1 && canFuse(i, 7, jt) && rng() > 0.25) {
           result[i] = superOp; result[i+1] = a; result[i+2] = b; result[i+3] = c;
           result[i+4] = 0; result[i+5] = 0; result[i+6] = 0;
@@ -2377,6 +2377,11 @@ function buildHandlerTemplates(n: NameMap, doNonLinearJumps: boolean = false, pr
   // div-by-zero (inf/nan) exactly as unfused h[12] via generated arithMM.
   h[68] = `function() local a=${code}[${ip}];${ip}=${ip}+1;local b=${code}[${ip}];${ip}=${ip}+1;local c=${code}[${ip}];${ip}=${ip}+1;${setLocal}(c,${getLocal}(a)/${getLocal}(b)) end`;
 
+  // Stage 13: fused MOD super-op (opcode 69). Raw `%` like the h[57-59]/h[68]
+  // family: native Lua floor modulo (sign follows the divisor) and `__mod`
+  // dispatch, exactly as unfused h[13] via generated arithMM.
+  h[69] = `function() local a=${code}[${ip}];${ip}=${ip}+1;local b=${code}[${ip}];${ip}=${ip}+1;local c=${code}[${ip}];${ip}=${ip}+1;${setLocal}(c,${getLocal}(a)%${getLocal}(b)) end`;
+
   h[67] = `function() local _a=${code}[${ip}];${ip}=${ip}+1;if ${n.ctxBit}==0 then ${push}(${getLocal}(_a)) else ${push}(${resolveK}(_a+1)) end end`;
 
   h[64] = `function() local _=${stackTop} end`;
@@ -2854,7 +2859,7 @@ function buildVMFunction(
   const handlerAssignments: string[] = [];
 
   const inlineBodies: Map<number, string> = new Map();
-  for (let realOp = 0; realOp < 69; realOp++) {
+  for (let realOp = 0; realOp < 70; realOp++) {
     if (!handlers[realOp]) continue;
     const shuffledOp = opcodeEncode[realOp];
     usedOps.add(shuffledOp);
@@ -2950,7 +2955,7 @@ function buildVMFunction(
     if (handlerXorKey) {
       lines.push(`for _ak=0,127 do local _xk=bit32.bxor(_ak,${hxk});if ${n.handlers}[_xk] then ${n.handlers}[_xk+128]=${n.handlers}[_xk] end end`);
     } else {
-      lines.push(`for _ak=0,68 do if ${n.handlers}[_ak] then ${n.handlers}[_ak+128]=${n.handlers}[_ak] end end`);
+      lines.push(`for _ak=0,69 do if ${n.handlers}[_ak] then ${n.handlers}[_ak+128]=${n.handlers}[_ak] end end`);
     }
 
     lines.push(`local ${detFlag}=0`);

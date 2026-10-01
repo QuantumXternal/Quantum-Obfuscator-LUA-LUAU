@@ -595,6 +595,13 @@ export function runVM(
         const a = code[ip++]; const b = code[ip++]; const c = code[ip++];
         setLocal(c, arithMM(getLocal(a), getLocal(b), (x, y) => x / y, "__div"));
       }
+      else if (op === 69) {
+        // Stage 13: fused MOD mirror of generated h[69] (raw `%`). Uses the
+        // SAME luaMod helper as unfused MOD — one floor-modulo model for both
+        // paths, matching native Lua semantics (sign follows divisor).
+        const a = code[ip++]; const b = code[ip++]; const c = code[ip++];
+        setLocal(c, arithMM(getLocal(a), getLocal(b), luaMod, "__mod"));
+      }
       else {
 
       }

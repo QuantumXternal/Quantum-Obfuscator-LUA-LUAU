@@ -306,6 +306,32 @@ Suite grew 93 → 105 (9 high-sensitivity logic tests + TESTSET unit test).
   260-constant boundary+reuse=359, closure capture), repro-check ALL green,
   server smoke OK, stack/none outputs identical.
 
+## Stage 13 — Fused MOD super-op (opcode 69) ACCEPTED
+
+- `src/vm/vm-gen.ts` (+11/-4, same 6-site pattern as DIV-68): matcher maps
+  `arith===13` to 69; `OPCODES_3ARG` += 69; shuffle space 69→70; new
+  raw-`%` h[69] (182 chars, native floor-mod + `__mod` dispatch, exactly as
+  unfused h[13]); handler loop `<70`; alias loop `0,69`. Opcode 68 bytes,
+  64-67, POW/IDIV, CONCAT paths untouched (verified by diff).
+- `src/vm/vm-runner.ts`: op-69 branch via the already-unified `luaMod`
+  helper — one floor-modulo model for fused and unfused paths.
+- Fixtures: `mod-shapes.lua` += `%=` cases (22 source MOD occurrences);
+  new `mod-loopheavy.lua` (hot loop-carried site).
+- Measurements (fixed seeds): 5 raw windows, 0 jump-blocked, fused 3-4
+  per seed (80% rate); mod-loopheavy fused on all 5 seeds. Before/after
+  bytes (+6236/+6215/-1395/-3459/+1598) are seed-polymorphism noise —
+  fixed cost bounded statically at ~250-400B/output. Dispatches 4→1 per
+  site (exact); loopheavy medians -2%, means inconclusive (reported
+  honestly — weaker wall-time signal than DIV, no negative evidence).
+- Drift: 6/110 cells, same class as DIV (op-60/61/62 ±1-2 via rng-stream
+  repositioning, confined to MOD-bearing fixtures); within the locked bar.
+- 191/191 tests (17 new `mod-fusion`: all sign combos, floats, numeric
+  strings, NaN divisor, `__mod` left/right/both, 9 compiled contexts,
+  debug/normal/max, determinism, 64-68 exclusion, DIV-68 regression),
+  repro ALL REPRODUCIBLE, server + CLI smokes green.
+- Decision: ACCEPT — exact dispatch benefit, nil semantic risk,
+  deterministic, negligible documented fixed cost.
+
 ## Stage 12C — Fused DIV super-op (opcode 68) ACCEPTED
 
 - `src/vm/vm-gen.ts` (+11/-4): matcher maps `arith===12` to 68;
