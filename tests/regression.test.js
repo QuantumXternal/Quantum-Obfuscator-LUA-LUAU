@@ -523,6 +523,33 @@ describe("register runner equivalence", () => {
     lines.push("return k299");
     expect(runRegSrc(lines.join("\n"))[0]).toBe("v299");
   });
+  test("reg: large constant indices load directly (no LOADKX/EXTRAARG emitted)", () => {
+    const lines = [];
+    for (let i = 0; i < 300; i++) lines.push(`local k${i} = "v${i}"`);
+    lines.push("return k299");
+    const chunk = regCompile(parse(lex(lines.join("\n")).tokens));
+    const ops = [];
+    const walk = (c) => { for (let i = 0; i < c.code.length; i += 4) ops.push(c.code[i]); for (const p of c.protos || []) walk(p); };
+    walk(chunk);
+    expect(ops).not.toContain(43); // LOADKX
+    expect(ops).not.toContain(44); // EXTRAARG
+    expect(runReg(chunk, {})).toEqual(["v299"]);
+  });
+  test("reg: spill-range constants correct at boundary and under reuse", () => {
+    const lines = ["local t = {}"];
+    for (let i = 0; i < 260; i++) lines.push(`t[${100000 + i}] = ${i}`);
+    lines.push("local function g() return t[100000] + t[100259] + t[100100] end");
+    lines.push("return g() + t[100000]");
+    // 0 + 259 + 100 + 0 = 359
+    expect(runRegSrc(lines.join("\n"))[0]).toBe(359);
+  });
+  test("reg: spilled constants inside closures capture correctly", () => {
+    const lines = [];
+    for (let i = 0; i < 260; i++) lines.push(`local c${i} = ${200000 + i}`);
+    lines.push("local function f() return c0 + c259 end");
+    lines.push("return f()");
+    expect(runRegSrc(lines.join("\n"))[0]).toBe(200000 + 200259);
+  });
   test("reg: unsupported opcodes throw instead of guessing", () => {
     // TAILCALL (28) is never emitted by regCompile.
     expect(() => runReg({ K: [], code: [28, 0, 0, 0], nInstructions: 1, maxRegs: 1, nParams: 0, isVararg: false }, {})).toThrow(/unsupported/);

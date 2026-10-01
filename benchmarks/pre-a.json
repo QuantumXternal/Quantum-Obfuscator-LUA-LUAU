@@ -40,8 +40,8 @@
       },
       "cff": 16,
       "dispatch": "xor-masked",
-      "genMs": 33.73,
-      "heapDelta": 629872,
+      "genMs": 45.58,
+      "heapDelta": 643824,
       "outBytes": 26821
     },
     {
@@ -82,8 +82,8 @@
       },
       "cff": 36,
       "dispatch": "xor-masked",
-      "genMs": 11.68,
-      "heapDelta": 267576,
+      "genMs": 12.63,
+      "heapDelta": 324968,
       "outBytes": 26530
     },
     {
@@ -124,7 +124,7 @@
       },
       "cff": 63,
       "dispatch": "xor-masked",
-      "genMs": 7.6,
+      "genMs": 5.36,
       "heapDelta": 0,
       "outBytes": 28980
     },
@@ -166,8 +166,8 @@
       },
       "cff": 54,
       "dispatch": "xor-masked",
-      "genMs": 7.56,
-      "heapDelta": 81600,
+      "genMs": 6.98,
+      "heapDelta": 33920,
       "outBytes": 27455
     },
     {
@@ -208,7 +208,7 @@
       },
       "cff": 27,
       "dispatch": "xor-masked",
-      "genMs": 6.45,
+      "genMs": 6.52,
       "heapDelta": 0,
       "outBytes": 27457
     },
@@ -250,19 +250,19 @@
       },
       "cff": 15,
       "dispatch": "xor-masked",
-      "genMs": 4.88,
+      "genMs": 4.27,
       "heapDelta": 0,
       "outBytes": 25349
     },
     {
       "file": "large.lua",
       "srcBytes": 30043,
-      "instructions": 8188,
+      "instructions": 8334,
       "opcodes": {
         "MOVE": 804,
-        "LOADK": 548,
-        "LOADKX": 0,
-        "EXTRAARG": 0,
+        "LOADK": 402,
+        "LOADKX": 146,
+        "EXTRAARG": 146,
         "JMP": 1203,
         "EQ": 801,
         "LT": 0,
@@ -278,23 +278,23 @@
         "LE_JMP": 0,
         "TESTSET_JMP": 0,
         "GGET": 3,
-        "LOADKK": 146,
+        "LOADKK": 0,
         "MOVE_MOVE": 0,
         "SELF_CALL": 0,
         "LOADK_RET": 0,
         "MOVE_RET": 1
       },
-      "greedyTotal": 952,
+      "greedyTotal": 806,
       "fusedTelemetry": {
         "count": 662,
         "patterns": 8,
         "ratePct": 12
       },
-      "cff": 2511,
+      "cff": 2559,
       "dispatch": "xor-masked",
-      "genMs": 53.55,
-      "heapDelta": 2171352,
-      "outBytes": 192039
+      "genMs": 75.92,
+      "heapDelta": 2150056,
+      "outBytes": 193888
     },
     {
       "file": "loadkret-shape.lua",
@@ -334,8 +334,8 @@
       },
       "cff": 16,
       "dispatch": "xor-masked",
-      "genMs": 4.29,
-      "heapDelta": 1503656,
+      "genMs": 4.99,
+      "heapDelta": 1504408,
       "outBytes": 25654
     },
     {
@@ -376,8 +376,8 @@
       },
       "cff": 13,
       "dispatch": "xor-masked",
-      "genMs": 7.76,
-      "heapDelta": 2375040,
+      "genMs": 34.89,
+      "heapDelta": 2391704,
       "outBytes": 36272
     },
     {
@@ -418,8 +418,8 @@
       },
       "cff": 14,
       "dispatch": "xor-masked",
-      "genMs": 4.19,
-      "heapDelta": 1494368,
+      "genMs": 10.4,
+      "heapDelta": 1504888,
       "outBytes": 25627
     },
     {
@@ -460,8 +460,8 @@
       },
       "cff": 15,
       "dispatch": "xor-masked",
-      "genMs": 5.2,
-      "heapDelta": 1541304,
+      "genMs": 11.11,
+      "heapDelta": 1557904,
       "outBytes": 26544
     },
     {
@@ -502,19 +502,19 @@
       },
       "cff": 26,
       "dispatch": "xor-masked",
-      "genMs": 5.1,
+      "genMs": 35.06,
       "heapDelta": 0,
       "outBytes": 26000
     },
     {
       "file": "spill-heavy.lua",
       "srcBytes": 4520,
-      "instructions": 691,
+      "instructions": 736,
       "opcodes": {
         "MOVE": 305,
-        "LOADK": 48,
-        "LOADKX": 0,
-        "EXTRAARG": 0,
+        "LOADK": 3,
+        "LOADKX": 45,
+        "EXTRAARG": 45,
         "JMP": 3,
         "EQ": 1,
         "LT": 0,
@@ -544,9 +544,9 @@
       },
       "cff": 15,
       "dispatch": "xor-masked",
-      "genMs": 7.53,
-      "heapDelta": 1137792,
-      "outBytes": 36083
+      "genMs": 7.32,
+      "heapDelta": 2714208,
+      "outBytes": 37350
     },
     {
       "file": "string-heavy.lua",
@@ -586,8 +586,8 @@
       },
       "cff": 11,
       "dispatch": "xor-masked",
-      "genMs": 5.56,
-      "heapDelta": 1650600,
+      "genMs": 8.13,
+      "heapDelta": 1666080,
       "outBytes": 28274
     },
     {
@@ -628,8 +628,8 @@
       },
       "cff": 24,
       "dispatch": "xor-masked",
-      "genMs": 4.39,
-      "heapDelta": 1072512,
+      "genMs": 6.83,
+      "heapDelta": 1613592,
       "outBytes": 27494
     },
     {
@@ -670,7 +670,7 @@
       },
       "cff": 18,
       "dispatch": "xor-masked",
-      "genMs": 5.26,
+      "genMs": 8.19,
       "heapDelta": 0,
       "outBytes": 25347
     },
@@ -712,8 +712,8 @@
       },
       "cff": 31,
       "dispatch": "xor-masked",
-      "genMs": 5.72,
-      "heapDelta": 1625440,
+      "genMs": 4.32,
+      "heapDelta": 1612368,
       "outBytes": 27037
     }
   ]

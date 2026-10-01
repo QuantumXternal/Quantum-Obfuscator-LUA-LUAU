@@ -40,9 +40,9 @@
       },
       "cff": 16,
       "dispatch": "xor-masked",
-      "genMs": 33.73,
-      "heapDelta": 629872,
-      "outBytes": 26821
+      "genMs": 27.65,
+      "heapDelta": 627592,
+      "outBytes": 26886
     },
     {
       "file": "branch-heavy.lua",
@@ -82,9 +82,9 @@
       },
       "cff": 36,
       "dispatch": "xor-masked",
-      "genMs": 11.68,
-      "heapDelta": 267576,
-      "outBytes": 26530
+      "genMs": 94.85,
+      "heapDelta": 363216,
+      "outBytes": 26655
     },
     {
       "file": "cmp-heavy.lua",
@@ -124,9 +124,9 @@
       },
       "cff": 63,
       "dispatch": "xor-masked",
-      "genMs": 7.6,
-      "heapDelta": 0,
-      "outBytes": 28980
+      "genMs": 6.97,
+      "heapDelta": 200064,
+      "outBytes": 29170
     },
     {
       "file": "flow-heavy.lua",
@@ -166,9 +166,9 @@
       },
       "cff": 54,
       "dispatch": "xor-masked",
-      "genMs": 7.56,
-      "heapDelta": 81600,
-      "outBytes": 27455
+      "genMs": 22.68,
+      "heapDelta": 569600,
+      "outBytes": 27580
     },
     {
       "file": "function-heavy.lua",
@@ -208,9 +208,9 @@
       },
       "cff": 27,
       "dispatch": "xor-masked",
-      "genMs": 6.45,
+      "genMs": 7.44,
       "heapDelta": 0,
-      "outBytes": 27457
+      "outBytes": 27581
     },
     {
       "file": "ggetcall-shape.lua",
@@ -250,19 +250,19 @@
       },
       "cff": 15,
       "dispatch": "xor-masked",
-      "genMs": 4.88,
+      "genMs": 4.38,
       "heapDelta": 0,
-      "outBytes": 25349
+      "outBytes": 25409
     },
     {
       "file": "large.lua",
       "srcBytes": 30043,
-      "instructions": 8188,
+      "instructions": 8334,
       "opcodes": {
         "MOVE": 804,
-        "LOADK": 548,
-        "LOADKX": 0,
-        "EXTRAARG": 0,
+        "LOADK": 402,
+        "LOADKX": 146,
+        "EXTRAARG": 146,
         "JMP": 1203,
         "EQ": 801,
         "LT": 0,
@@ -278,23 +278,23 @@
         "LE_JMP": 0,
         "TESTSET_JMP": 0,
         "GGET": 3,
-        "LOADKK": 146,
+        "LOADKK": 0,
         "MOVE_MOVE": 0,
         "SELF_CALL": 0,
         "LOADK_RET": 0,
         "MOVE_RET": 1
       },
-      "greedyTotal": 952,
+      "greedyTotal": 806,
       "fusedTelemetry": {
         "count": 662,
         "patterns": 8,
         "ratePct": 12
       },
-      "cff": 2511,
+      "cff": 2559,
       "dispatch": "xor-masked",
-      "genMs": 53.55,
-      "heapDelta": 2171352,
-      "outBytes": 192039
+      "genMs": 65.21,
+      "heapDelta": 2310856,
+      "outBytes": 193948
     },
     {
       "file": "loadkret-shape.lua",
@@ -334,9 +334,9 @@
       },
       "cff": 16,
       "dispatch": "xor-masked",
-      "genMs": 4.29,
-      "heapDelta": 1503656,
-      "outBytes": 25654
+      "genMs": 4.05,
+      "heapDelta": 1489240,
+      "outBytes": 25714
     },
     {
       "file": "medium.lua",
@@ -376,9 +376,9 @@
       },
       "cff": 13,
       "dispatch": "xor-masked",
-      "genMs": 7.76,
-      "heapDelta": 2375040,
-      "outBytes": 36272
+      "genMs": 4.55,
+      "heapDelta": 2397640,
+      "outBytes": 36337
     },
     {
       "file": "multiret-heavy.lua",
@@ -418,9 +418,9 @@
       },
       "cff": 14,
       "dispatch": "xor-masked",
-      "genMs": 4.19,
-      "heapDelta": 1494368,
-      "outBytes": 25627
+      "genMs": 3.67,
+      "heapDelta": 1500192,
+      "outBytes": 25692
     },
     {
       "file": "selfcall-shape.lua",
@@ -460,9 +460,9 @@
       },
       "cff": 15,
       "dispatch": "xor-masked",
-      "genMs": 5.2,
-      "heapDelta": 1541304,
-      "outBytes": 26544
+      "genMs": 3.27,
+      "heapDelta": 1551896,
+      "outBytes": 26608
     },
     {
       "file": "small.lua",
@@ -502,19 +502,19 @@
       },
       "cff": 26,
       "dispatch": "xor-masked",
-      "genMs": 5.1,
+      "genMs": 7.16,
       "heapDelta": 0,
-      "outBytes": 26000
+      "outBytes": 26125
     },
     {
       "file": "spill-heavy.lua",
       "srcBytes": 4520,
-      "instructions": 691,
+      "instructions": 736,
       "opcodes": {
         "MOVE": 305,
-        "LOADK": 48,
-        "LOADKX": 0,
-        "EXTRAARG": 0,
+        "LOADK": 3,
+        "LOADKX": 45,
+        "EXTRAARG": 45,
         "JMP": 3,
         "EQ": 1,
         "LT": 0,
@@ -544,9 +544,9 @@
       },
       "cff": 15,
       "dispatch": "xor-masked",
-      "genMs": 7.53,
-      "heapDelta": 1137792,
-      "outBytes": 36083
+      "genMs": 9.76,
+      "heapDelta": 2473688,
+      "outBytes": 37415
     },
     {
       "file": "string-heavy.lua",
@@ -586,9 +586,9 @@
       },
       "cff": 11,
       "dispatch": "xor-masked",
-      "genMs": 5.56,
-      "heapDelta": 1650600,
-      "outBytes": 28274
+      "genMs": 5.87,
+      "heapDelta": 1671776,
+      "outBytes": 28340
     },
     {
       "file": "table-heavy.lua",
@@ -628,9 +628,9 @@
       },
       "cff": 24,
       "dispatch": "xor-masked",
-      "genMs": 4.39,
-      "heapDelta": 1072512,
-      "outBytes": 27494
+      "genMs": 4.62,
+      "heapDelta": 0,
+      "outBytes": 27559
     },
     {
       "file": "tiny.lua",
@@ -670,9 +670,9 @@
       },
       "cff": 18,
       "dispatch": "xor-masked",
-      "genMs": 5.26,
-      "heapDelta": 0,
-      "outBytes": 25347
+      "genMs": 3.93,
+      "heapDelta": 1479192,
+      "outBytes": 25412
     },
     {
       "file": "vm-heavy.lua",
@@ -712,9 +712,9 @@
       },
       "cff": 31,
       "dispatch": "xor-masked",
-      "genMs": 5.72,
-      "heapDelta": 1625440,
-      "outBytes": 27037
+      "genMs": 3.38,
+      "heapDelta": 1656536,
+      "outBytes": 27103
     }
   ]
 }

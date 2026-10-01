@@ -169,9 +169,13 @@ function patchJump(ctx: Ctx, jmpPC: number, targetPC: number): void {
 function constRK(ctx: Ctx, value: Constant): number {
   const ki = regAddConst(ctx.chunk, value);
   if (ki < RK_OFFSET) return RK(ki);
+  // Flat number[] encoding has no operand width limit, and LOADK already
+  // carries full constant indices (cf. the literal sites below), so a
+  // two-instruction LOADKX+EXTRAARG spill is pure overhead: an extra dispatch
+  // slot plus an extra code[] fetch per execution. Single LOADK keeps the
+  // temp-register discipline identical (same allocTemp, same lifetime).
   const tmp = allocTemp(ctx);
-  regEmit(ctx.chunk, RegOp.LOADKX, tmp);
-  regEmit(ctx.chunk, RegOp.EXTRAARG, ki, 0, 0);
+  regEmit(ctx.chunk, RegOp.LOADK, tmp, ki);
   return tmp;
 }
 

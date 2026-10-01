@@ -40,8 +40,8 @@
       },
       "cff": 16,
       "dispatch": "xor-masked",
-      "genMs": 33.73,
-      "heapDelta": 629872,
+      "genMs": 33.82,
+      "heapDelta": 652104,
       "outBytes": 26821
     },
     {
@@ -82,8 +82,8 @@
       },
       "cff": 36,
       "dispatch": "xor-masked",
-      "genMs": 11.68,
-      "heapDelta": 267576,
+      "genMs": 11.8,
+      "heapDelta": 318864,
       "outBytes": 26530
     },
     {
@@ -124,7 +124,7 @@
       },
       "cff": 63,
       "dispatch": "xor-masked",
-      "genMs": 7.6,
+      "genMs": 8.53,
       "heapDelta": 0,
       "outBytes": 28980
     },
@@ -166,8 +166,8 @@
       },
       "cff": 54,
       "dispatch": "xor-masked",
-      "genMs": 7.56,
-      "heapDelta": 81600,
+      "genMs": 7.6,
+      "heapDelta": 12888,
       "outBytes": 27455
     },
     {
@@ -208,7 +208,7 @@
       },
       "cff": 27,
       "dispatch": "xor-masked",
-      "genMs": 6.45,
+      "genMs": 10.61,
       "heapDelta": 0,
       "outBytes": 27457
     },
@@ -250,7 +250,7 @@
       },
       "cff": 15,
       "dispatch": "xor-masked",
-      "genMs": 4.88,
+      "genMs": 4.52,
       "heapDelta": 0,
       "outBytes": 25349
     },
@@ -292,8 +292,8 @@
       },
       "cff": 2511,
       "dispatch": "xor-masked",
-      "genMs": 53.55,
-      "heapDelta": 2171352,
+      "genMs": 88.44,
+      "heapDelta": 2121904,
       "outBytes": 192039
     },
     {
@@ -334,8 +334,8 @@
       },
       "cff": 16,
       "dispatch": "xor-masked",
-      "genMs": 4.29,
-      "heapDelta": 1503656,
+      "genMs": 4.84,
+      "heapDelta": 1483904,
       "outBytes": 25654
     },
     {
@@ -376,8 +376,8 @@
       },
       "cff": 13,
       "dispatch": "xor-masked",
-      "genMs": 7.76,
-      "heapDelta": 2375040,
+      "genMs": 6.5,
+      "heapDelta": 2374912,
       "outBytes": 36272
     },
     {
@@ -418,8 +418,8 @@
       },
       "cff": 14,
       "dispatch": "xor-masked",
-      "genMs": 4.19,
-      "heapDelta": 1494368,
+      "genMs": 4.66,
+      "heapDelta": 1489816,
       "outBytes": 25627
     },
     {
@@ -460,8 +460,8 @@
       },
       "cff": 15,
       "dispatch": "xor-masked",
-      "genMs": 5.2,
-      "heapDelta": 1541304,
+      "genMs": 5.69,
+      "heapDelta": 1568032,
       "outBytes": 26544
     },
     {
@@ -502,7 +502,7 @@
       },
       "cff": 26,
       "dispatch": "xor-masked",
-      "genMs": 5.1,
+      "genMs": 5.13,
       "heapDelta": 0,
       "outBytes": 26000
     },
@@ -544,8 +544,8 @@
       },
       "cff": 15,
       "dispatch": "xor-masked",
-      "genMs": 7.53,
-      "heapDelta": 1137792,
+      "genMs": 6.95,
+      "heapDelta": 2924528,
       "outBytes": 36083
     },
     {
@@ -586,8 +586,8 @@
       },
       "cff": 11,
       "dispatch": "xor-masked",
-      "genMs": 5.56,
-      "heapDelta": 1650600,
+      "genMs": 6.52,
+      "heapDelta": 1677464,
       "outBytes": 28274
     },
     {
@@ -628,8 +628,8 @@
       },
       "cff": 24,
       "dispatch": "xor-masked",
-      "genMs": 4.39,
-      "heapDelta": 1072512,
+      "genMs": 4.45,
+      "heapDelta": 1622512,
       "outBytes": 27494
     },
     {
@@ -670,7 +670,7 @@
       },
       "cff": 18,
       "dispatch": "xor-masked",
-      "genMs": 5.26,
+      "genMs": 6.11,
       "heapDelta": 0,
       "outBytes": 25347
     },
@@ -712,8 +712,8 @@
       },
       "cff": 31,
       "dispatch": "xor-masked",
-      "genMs": 5.72,
-      "heapDelta": 1625440,
+      "genMs": 11.29,
+      "heapDelta": 1611424,
       "outBytes": 27037
     }
   ]

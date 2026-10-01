@@ -264,6 +264,48 @@ Suite grew 93 → 105 (9 high-sensitivity logic tests + TESTSET unit test).
 - Memory: no new allocations introduced (one fewer instruction slot per
   comparison). RISK: low (lowering-only, no VM/handler changes).
 
+## Stage 9B–9H — Fusion trace, runoff, LOADKX collapse (ACCEPTED)
+
+### Trace/audit findings (measured, not assumed)
+
+- Pipeline order verified: fusion (7–10/12 patterns, 60–85% rate, jump-veto,
+  in-place) → CFF → usedOps → serialization; telemetry already separates
+  candidates (`countFusionMatches`) vs fused (`[RegVM] Fused N`) vs final.
+- Adjacency discovery: `GGET_CALL`/`SELF_CALL` fire ONLY on zero-arg calls —
+  arg `LOADK`s break the 2–3 slot adjacency (`math.floor(2.5)` → GGET only;
+  `o:m()` → SELF_CALL=1). 9F fixtures cover both fusing and non-fusing
+  shapes for all three zero-hit patterns (now GGET_CALL=1, SELF_CALL=1,
+  LOADK_RET=1 detected).
+- No width constraint anywhere: flat `number[]` code, `LOADK` already
+  carries full indices at literal sites; VM handler, runner, serialization
+  and dispatch all pass full values through.
+
+### Runoff
+
+- A (EQ/LT/LE RK-inline): **REJECTED** — +60…+190 B on every measured
+  fixture (inlined ternaries longer than the calls); no instruction-count
+  reduction; runtime benefit real-but-unmeasurable here. Reverted to zero
+  diff.
+- B (LOADKX collapse): **ACCEPTED** — `constRK` spill `LOADKX+EXTRAARG` →
+  single `LOADK` (`src/vm/RegCompiler.ts:169`, +4/−2 lines).
+
+### B measurements (seed 1234, BEFORE→AFTER)
+
+- spill-heavy: LOADKX/EXTRAARG 45/45 → 0/0; instrs 736→691 (−45, exactly one
+  per spill); maxRegs 4→4; out 37350→36083 B (−1267, −3.4%).
+- large.lua: spills 146/146 → 0/0; instrs 8334→8188 (−146); maxRegs
+  403→403; out 193888→192039 B (−1849, −1.0%); greedy 806→952 (collapsed
+  LOADKs form new LOADKK adjacencies), fused stable 662 (rate-limited).
+- Temp discipline identical (same allocTemp per site, same lifetimes);
+  fusion/CFF unaffected structurally (no pattern consumes LOADKX);
+  runner models both paths (spill suite green either way).
+- Runtime: −1 dispatch + −1 code[] fetch per spill execution (handler
+  shapes); spill-loop micro 0.33 ms; Luau wall-time UNMEASURED (no
+  executor), stated not claimed. Gen time neutral.
+- Gates: 119/119 (incl. 3 new spill tests: no-LOADKX emission lock,
+  260-constant boundary+reuse=359, closure capture), repro-check ALL green,
+  server smoke OK, stack/none outputs identical.
+
 ## Stage 9A — Fusion-aware metric layer (instrumentation only, no behavior change)
 
 - `countFusionMatches(chunk)` (`src/vm/reg-vm-gen.ts`, also exported from
