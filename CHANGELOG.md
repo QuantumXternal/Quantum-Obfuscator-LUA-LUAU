@@ -306,6 +306,34 @@ Suite grew 93 → 105 (9 high-sensitivity logic tests + TESTSET unit test).
   260-constant boundary+reuse=359, closure capture), repro-check ALL green,
   server smoke OK, stack/none outputs identical.
 
+## Stage 14J/14K — Cumulative super-op assessment (no new implementation)
+
+| Super-op | Opcode | Raw Windows | Fused | Runtime Signal | Fixed Cost | Result |
+|---|---|---|---|---|---|---|
+| ADD | 57 | 9 | ~7 (gate) | not measured (pre-existing) | sunk | kept |
+| SUB | 58 | 0 | 0 | — | sunk | kept |
+| MUL | 59 | 0 | 0 | — | sunk | kept |
+| CONCAT | 63 | 0 | 0 | — | sunk | kept (+deferred h15/h63 finding) |
+| DIV | 68 | 5 | 2–5 | loop median −17% | ~250–400B | ACCEPTED St.12 |
+| MOD | 69 | 6 | 3–4 | loop median −2% | ~250–400B | ACCEPTED St.13 |
+| IDIV | 70 | 7 | 3–6 | medians contradictory (noise) | ~0.7–1KB | ACCEPTED St.14 |
+| POW | — | 1 | 0–1 (seed-fragile) | none | ~250–400B | DEFERRED |
+
+Corpus: 23 fixtures incl. all *-shapes + loopheavy files; raw = exact
+window count, fused = full-stream replication × 5 seeds. Existing-op rows
+are density references only (their windows are scarce on this corpus by
+construction). POW verdict: a single fusable window whose fusion is a
+coin-flip per seed cannot amortize fixed cost — remains deferred unless
+new evidence (POW-dense corpus) appears. No new arithmetic super-op is
+currently justified.
+
+Next architecture review (14K, evidence-ordered): 1. CONCAT semantic
+normalization — the only known correctness defect in shipped output
+(h15-lenient vs h63-native by protection level). 2. Stack load/store
+traffic (60/61/62 family shows the highest window density in drift
+probes). 3. Dead/reserved cleanup (64–66 decoys, 67 alias, fake space).
+None authorized; listed for review only.
+
 ## Stage 14 — Fused IDIV super-op (opcode 70) ACCEPTED
 
 - `src/vm/vm-gen.ts` (+12/-6, same 6-site pattern): matcher maps
