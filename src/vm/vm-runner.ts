@@ -37,6 +37,18 @@ function luaToString(v: unknown): string {
   return String(v);
 }
 
+// NOTE (Stage 11C/11D-1): generated fused handlers (vm-gen.ts h[57-59], h[62])
+// use RAW Lua operators, which participate in standard metamethod dispatch
+// natively. The stack reference runner therefore models fused arithmetic with
+// the SAME arithMM helper as the unfused path — never a separate semantic
+// model. (A previous arithFused helper wrongly threw on metamethod operands;
+// it was a runner-fidelity bug, not generated behavior. It is removed.)
+//
+// Harness-only features: getMM honors env.__string_mt for strings. No
+// generated handler reads __string_mt; it exists only so the reference
+// runner can model string-metatable scenarios in tests. Never present runner
+// behavior as real Luau execution.
+
 export function runVM(
   K: Constant[],
   code: number[],
@@ -520,6 +532,53 @@ export function runVM(
         const target = code[ip++];
 
         ip = target;
+      }
+      // Stack super-ops 57-63 (synthetic fusion opcodes; no Op enum entries
+      // because Op is a const enum. Layouts mirror fuseOpcodes in vm-gen.ts:
+      // 57-59,63 are [op,a,b,c]; 60,61 are [op,x,y]; 62 is [op,a,k,c].
+      // Handler bodies mirror buildHandlerTemplates h[57-63]: raw operators,
+      // locals[] access, K[] for constant operands. Generated raw operators
+      // dispatch standard metamethods natively, so the runner models fused
+      // arithmetic via arithMM — identical to the unfused path.
+      else if (op === 57) {
+        const a = code[ip++]; const b = code[ip++]; const c = code[ip++];
+        setLocal(c, arithMM(getLocal(a), getLocal(b), (x, y) => x + y, "__add"));
+      }
+      else if (op === 58) {
+        const a = code[ip++]; const b = code[ip++]; const c = code[ip++];
+        setLocal(c, arithMM(getLocal(a), getLocal(b), (x, y) => x - y, "__sub"));
+      }
+      else if (op === 59) {
+        const a = code[ip++]; const b = code[ip++]; const c = code[ip++];
+        setLocal(c, arithMM(getLocal(a), getLocal(b), (x, y) => x * y, "__mul"));
+      }
+      else if (op === 60) {
+        const k = code[ip++]; const s = code[ip++];
+        setLocal(s, K[k]);
+      }
+      else if (op === 61) {
+        const a = code[ip++]; const b = code[ip++];
+        setLocal(b, getLocal(a));
+      }
+      else if (op === 62) {
+        const a = code[ip++]; const k = code[ip++]; const c = code[ip++];
+        setLocal(c, arithMM(getLocal(a), K[k], (x, y) => x + y, "__add"));
+      }
+      else if (op === 63) {
+        // Models CURRENT generated fused h[63] (vm-gen.ts: raw `..`):
+        // __concat metamethods dispatch, strings/numbers coerce, anything
+        // else is a runtime error. This deliberately does NOT replicate the
+        // unfused h[15] pcall+tostring fallback — that divergence is the
+        // 11D-2 audit subject. Tests assert error PRESENCE, never messages.
+        const a = code[ip++]; const b = code[ip++]; const c = code[ip++];
+        const av = getLocal(a); const bv = getLocal(b);
+        const cmm = getMM(av, "__concat") ?? getMM(bv, "__concat");
+        if (typeof cmm === "function") setLocal(c, cmm(av, bv));
+        else if (
+          (typeof av === "string" || typeof av === "number") &&
+          (typeof bv === "string" || typeof bv === "number")
+        ) setLocal(c, luaToString(av) + luaToString(bv));
+        else throw new Error("attempt to concatenate non-concatenable values");
       }
       else {
 

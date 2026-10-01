@@ -1,0 +1,182 @@
+{
+  "seed": 1234,
+  "rows": [
+    {
+      "file": "tiny.lua",
+      "variants": {
+        "normal": {
+          "ok": true,
+          "ms": 12.1,
+          "bytes": 19123,
+          "heapKB": 0
+        },
+        "max": {
+          "ok": true,
+          "ms": 212.68,
+          "bytes": 142103,
+          "heapKB": 12130
+        },
+        "max-nocomp": {
+          "ok": true,
+          "ms": 104.42,
+          "bytes": 97946,
+          "heapKB": 4622
+        },
+        "max-nowm": {
+          "ok": true,
+          "ms": 142.89,
+          "bytes": 141714,
+          "heapKB": 0
+        },
+        "max-nosuper": {
+          "ok": true,
+          "ms": 217.94,
+          "bytes": 146948,
+          "heapKB": 19859
+        },
+        "max-nolazy": {
+          "ok": true,
+          "ms": 123.8,
+          "bytes": 141947,
+          "heapKB": 0
+        },
+        "max-nocff": {
+          "ok": true,
+          "ms": 104.69,
+          "bytes": 142103,
+          "heapKB": 18963
+        },
+        "max-nonlinear": {
+          "ok": true,
+          "ms": 116.71,
+          "bytes": 147172,
+          "heapKB": 0
+        },
+        "max-nosuper-nolazy": {
+          "ok": true,
+          "ms": 110.89,
+          "bytes": 137819,
+          "heapKB": 37486
+        }
+      }
+    },
+    {
+      "file": "small.lua",
+      "variants": {
+        "normal": {
+          "ok": true,
+          "ms": 1.94,
+          "bytes": 19835,
+          "heapKB": 598
+        },
+        "max": {
+          "ok": true,
+          "ms": 196.09,
+          "bytes": 147012,
+          "heapKB": 0
+        },
+        "max-nocomp": {
+          "ok": true,
+          "ms": 61.73,
+          "bytes": 102973,
+          "heapKB": 23256
+        },
+        "max-nowm": {
+          "ok": true,
+          "ms": 148.63,
+          "bytes": 146625,
+          "heapKB": 0
+        },
+        "max-nosuper": {
+          "ok": true,
+          "ms": 98.24,
+          "bytes": 149700,
+          "heapKB": 0
+        },
+        "max-nolazy": {
+          "ok": true,
+          "ms": 74.76,
+          "bytes": 140282,
+          "heapKB": 0
+        },
+        "max-nocff": {
+          "ok": true,
+          "ms": 79.2,
+          "bytes": 147012,
+          "heapKB": 38755
+        },
+        "max-nonlinear": {
+          "ok": true,
+          "ms": 100.7,
+          "bytes": 143081,
+          "heapKB": 0
+        },
+        "max-nosuper-nolazy": {
+          "ok": true,
+          "ms": 90.51,
+          "bytes": 142983,
+          "heapKB": 0
+        }
+      }
+    },
+    {
+      "file": "medium.lua",
+      "variants": {
+        "normal": {
+          "ok": true,
+          "ms": 1.27,
+          "bytes": 29077,
+          "heapKB": 426
+        },
+        "max": {
+          "ok": true,
+          "ms": 108.78,
+          "bytes": 178853,
+          "heapKB": 0
+        },
+        "max-nocomp": {
+          "ok": true,
+          "ms": 63.66,
+          "bytes": 122296,
+          "heapKB": 33008
+        },
+        "max-nowm": {
+          "ok": true,
+          "ms": 221.73,
+          "bytes": 178462,
+          "heapKB": 0
+        },
+        "max-nosuper": {
+          "ok": true,
+          "ms": 103.01,
+          "bytes": 179170,
+          "heapKB": 0
+        },
+        "max-nolazy": {
+          "ok": true,
+          "ms": 79.92,
+          "bytes": 170073,
+          "heapKB": 0
+        },
+        "max-nocff": {
+          "ok": true,
+          "ms": 145.06,
+          "bytes": 178853,
+          "heapKB": 0
+        },
+        "max-nonlinear": {
+          "ok": true,
+          "ms": 224.09,
+          "bytes": 172115,
+          "heapKB": 50367
+        },
+        "max-nosuper-nolazy": {
+          "ok": true,
+          "ms": 189.81,
+          "bytes": 171595,
+          "heapKB": 0
+        }
+      }
+    }
+  ]
+}

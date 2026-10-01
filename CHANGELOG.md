@@ -306,6 +306,72 @@ Suite grew 93 → 105 (9 high-sensitivity logic tests + TESTSET unit test).
   260-constant boundary+reuse=359, closure capture), repro-check ALL green,
   server smoke OK, stack/none outputs identical.
 
+## Stage 11D-2 — CONCAT production audit (investigation only, no production changes)
+
+- Trace: `..`/interpolation/`..=` lower to Op.CONCAT (`Compiler.ts:300,423`;
+  `..=` via assignment path); fusion fires ONLY on local-local-STORE
+  windows (`vm-gen.ts:121`); h15 (`:2273`) is pcall+tostring-fallback,
+  h63 (`:2373`) is raw `..`; register VM CONCAT is raw native
+  (`reg-vm-gen.ts:529-531`). h15's fallback is unique among all handlers.
+- Intent verdict D (implementation artifact, no contractual guarantee):
+  single squashed commit (no history), zero comments/tests/docs requiring
+  the fallback, register path has none, no existing test exercises
+  bool/nil concat. Source semantics REQUIRE error on bool/nil/plain-table
+  concat — h63 conforms, h15 extends the language.
+- Mismatch scope: exactly bool/nil/plain-table-without-__concat operands;
+  str/num/numeric-strings and all __concat configurations MATCH.
+- Frequency (`benchmarks/concat-fusion-census.mjs`, exact matcher+PRNG
+  replication, 5 seeds): 5 CONCAT ops / 17 fixtures, 0 candidates —
+  h63 requires the narrow local-local-store shape (`local s = a..b`,
+  `s ..= localRhs`); chained/interp/args/returns never fuse. Uncommon in
+  fixtures, reachable via common idioms; not dismissed.
+- Options analyzed, none implemented: A (h63 gains fallback, ~size-neutral
+  handler, +pcall runtime, extends language further), B (never fuse CONCAT,
+  1-line matcher change, shifts rng stream), C (shared helper, redesign-adjacent), D (document limitation).
+  Recommendation: D per prior review decision (artifact contract → document).
+- `tests/concat-semantics.test.js`: 16 matrix tests (143 total green);
+  bare `.toThrow()` throughout, Luau column marked REASONED (no executor).
+
+## Stage 11D-1 — Reference-runner correction (runner + tests only, no production changes)
+
+- `src/vm/vm-runner.ts`: fused 57/58/59/62 now model via `arithMM`
+  (same helper as unfused; correct `__add/__sub/__mul` names); the
+  `arithFused` helper is deleted. Fused 63 now models CURRENT generated
+  h[63] (raw `..`): `__concat` dispatch, string/number coercion, else
+  runtime error (presence only). `__string_mt` tagged harness-only.
+- `tests/regression.test.js`: metamethod-divergence test rewritten to
+  assert fused≡unfused (127 tests green); new 63 test covers `__concat`,
+  coercion, and bool/plain-table error presence.
+- `benchmarks/semantic-matrix.mjs`: all arithmetic categories MATCH;
+  `bool..str` now faithfully MISMATCH (unfused h15 coerces, fused h63
+  errors) — the 11D-2 audit subject. No production code touched.
+
+## Stage 11C — Super-op semantic audit (analysis only, no production changes)
+
+- Reframed the 11A–11B finding: generated fused handlers use plain Lua
+  operators, which dispatch standard metamethods natively — so fused ≡
+  unfused in generated output for standard `__add/__sub/__mul`. The observed
+  mismatch lives in the TS runner mirror (`arithFused` throws instead of
+  consulting metamethods), confirmed by `benchmarks/semantic-matrix.mjs`
+  (12 categories × unfused-runner vs fused-runner; generated column by
+  language-spec reasoning, marked UNMEASURED — no Luau executor exists).
+- Matrix result: MATCH on numbers, numeric strings, all concat-string/number
+  cases; MISMATCH (runner-only) on metamethod operands, bad strings, bools,
+  nil, plain tables — every one of which the runner's unfused path also
+  models non-strictly (JS coercion, `__eq` single-side lookup, `__string_mt`
+  harness extension, pcall-first ordering in generated `arithMM` that the
+  runner lacks).
+- GENUINE generated-level discrepancy found (not runner-only): fused h[63]
+  is raw `..` and errors on boolean/nil/table operands, while unfused h[15]
+  coerces via pcall+tostring fallback. Narrow trigger (non-string/number
+  concat + fusion fires + max level); no fix applied this stage.
+- 60/61 moves classified A (no operation performed — cannot mismatch).
+- Recommended fix (runner only): route fused 57/58/59/62 through the existing
+  `arithMM` and add the `__concat` check to 63; delete `arithFused`; rewrite
+  the divergence test to assert fused≡unfused. No generator change justified
+  for arithmetic. Concat-fallback parity (h[63]) is a separate production
+  decision for review.
+
 ## Stage 9A — Fusion-aware metric layer (instrumentation only, no behavior change)
 
 - `countFusionMatches(chunk)` (`src/vm/reg-vm-gen.ts`, also exported from

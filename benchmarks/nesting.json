@@ -1,0 +1,92 @@
+{
+  "seed": 1234,
+  "rows": [
+    {
+      "file": "tiny.lua",
+      "levels": {
+        "nesting0": {
+          "ok": true,
+          "ms": 8.49,
+          "bytes": 19123,
+          "heapKB": 147,
+          "deterministic": true,
+          "lexClean": true
+        },
+        "nesting1": {
+          "ok": true,
+          "ms": 618.96,
+          "bytes": 330654,
+          "heapKB": 62406,
+          "deterministic": true,
+          "lexClean": true
+        },
+        "nesting2": {
+          "ok": true,
+          "ms": 559.22,
+          "bytes": 330654,
+          "heapKB": 98950,
+          "deterministic": true,
+          "lexClean": true
+        }
+      }
+    },
+    {
+      "file": "small.lua",
+      "levels": {
+        "nesting0": {
+          "ok": true,
+          "ms": 2.02,
+          "bytes": 19835,
+          "heapKB": 578,
+          "deterministic": true,
+          "lexClean": true
+        },
+        "nesting1": {
+          "ok": true,
+          "ms": 694.44,
+          "bytes": 436913,
+          "heapKB": 0,
+          "deterministic": true,
+          "lexClean": true
+        },
+        "nesting2": {
+          "ok": true,
+          "ms": 379.83,
+          "bytes": 436913,
+          "heapKB": 31908,
+          "deterministic": true,
+          "lexClean": true
+        }
+      }
+    },
+    {
+      "file": "medium.lua",
+      "levels": {
+        "nesting0": {
+          "ok": true,
+          "ms": 1.77,
+          "bytes": 29077,
+          "heapKB": 1084,
+          "deterministic": true,
+          "lexClean": true
+        },
+        "nesting1": {
+          "ok": true,
+          "ms": 607.54,
+          "bytes": 633580,
+          "heapKB": 88597,
+          "deterministic": true,
+          "lexClean": true
+        },
+        "nesting2": {
+          "ok": true,
+          "ms": 834.44,
+          "bytes": 633580,
+          "heapKB": 81030,
+          "deterministic": true,
+          "lexClean": true
+        }
+      }
+    }
+  ]
+}

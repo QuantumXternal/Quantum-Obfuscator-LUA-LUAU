@@ -754,6 +754,125 @@ describe("fusion census (metric layer)", () => {
   });
 });
 
+describe("stack super-ops 57-63 (reference runner mirror)", () => {
+  // Numeric literals: Op is a const enum (erased at compile). Fused layouts
+  // mirror fuseOpcodes in src/vm/vm-gen.ts (zero-padded, length-preserving).
+  // Base ops: PUSH_K=4, LOAD_L=5, STORE_L=6, RETURN=31.
+  function runChunk(K, code, env) {
+    return runVM(K, code, env || {}, 0, []);
+  }
+  // Prologue helper: locals[a]=x, locals[b]=y via PUSH_K/STORE_L.
+  function localsChunk(K, pairs, rest) {
+    const code = [];
+    for (const [slot, ki] of pairs) code.push(4, ki, 6, slot);
+    return { K, code: code.concat(rest) };
+  }
+  function tail(slot) {
+    return [5, slot, 31, 1]; // LOAD_L slot; RETURN 1
+  }
+
+  test("57 ADD: numbers, negatives, chained reuse", () => {
+    let c = localsChunk([6, 7], [[0, 0], [1, 1]], [57, 0, 1, 2, 0, 0, 0].concat(tail(2)));
+    expect(runChunk(c.K, c.code)).toBe(13);
+    c = localsChunk([-4, 10], [[0, 0], [1, 1]], [57, 0, 1, 2, 0, 0, 0].concat(tail(2)));
+    expect(runChunk(c.K, c.code)).toBe(6);
+    // chained: r2 = r0+r1; r3 = r2+r2
+    c = localsChunk([3, 4], [[0, 0], [1, 1]], [57, 0, 1, 2, 0, 0, 0, 57, 2, 2, 3, 0, 0, 0].concat(tail(3)));
+    expect(runChunk(c.K, c.code)).toBe(14);
+  });
+  test("58 SUB / 59 MUL incl. negative results and operand order", () => {
+    let c = localsChunk([10, 4], [[0, 0], [1, 1]], [58, 0, 1, 2, 0, 0, 0].concat(tail(2)));
+    expect(runChunk(c.K, c.code)).toBe(6); // a-b, not b-a
+    c = localsChunk([3, 8], [[0, 0], [1, 1]], [58, 0, 1, 2, 0, 0, 0].concat(tail(2)));
+    expect(runChunk(c.K, c.code)).toBe(-5);
+    c = localsChunk([-3, -2], [[0, 0], [1, 1]], [59, 0, 1, 2, 0, 0, 0].concat(tail(2)));
+    expect(runChunk(c.K, c.code)).toBe(6);
+  });
+  test("60 PUSH_K/STORE and 61 LOAD/STORE copies incl. strings", () => {
+    let c = { K: ["hi"], code: [60, 0, 3, 0].concat(tail(3)) };
+    expect(runChunk(c.K, c.code)).toBe("hi");
+    c = localsChunk([41], [[2, 0]], [61, 2, 5, 0].concat(tail(5)));
+    expect(runChunk(c.K, c.code)).toBe(41);
+    c = localsChunk([1, 2], [[0, 0], [1, 1]], [61, 0, 4, 0, 61, 1, 5, 0, 57, 4, 5, 6, 0, 0, 0].concat(tail(6)));
+    expect(runChunk(c.K, c.code)).toBe(3);
+  });
+  test("62 LOADK_ARITH local+const, mixed and in loop-carried shape", () => {
+    let c = localsChunk([10, 5], [[0, 0]], [62, 0, 1, 2, 0, 0, 0].concat(tail(2)));
+    // K=[10,5]: r2 = r0 + K[1]
+    expect(runChunk(c.K, c.code)).toBe(15);
+    // s = s + 1 shape with locals slot reuse
+    c = { K: [0, 1], code: [4, 0, 6, 0, 62, 0, 1, 0, 0, 0, 0].concat(tail(0)) };
+    expect(runChunk(c.K, c.code)).toBe(1);
+  });
+  test("63 CONCAT strings, numbers, mixed", () => {
+    let c = localsChunk(["a", "b"], [[0, 0], [1, 1]], [63, 0, 1, 2, 0, 0, 0].concat(tail(2)));
+    expect(runChunk(c.K, c.code)).toBe("ab");
+    c = localsChunk([12, 34], [[0, 0], [1, 1]], [63, 0, 1, 2, 0, 0, 0].concat(tail(2)));
+    expect(runChunk(c.K, c.code)).toBe("1234");
+    c = localsChunk(["n=", 7], [[0, 0], [1, 1]], [63, 0, 1, 2, 0, 0, 0].concat(tail(2)));
+    expect(runChunk(c.K, c.code)).toBe("n=7");
+  });
+  test("fused execution matches unfused on real compiler output", () => {
+    // Compile a local-form addition (which emits a contiguous 7-word
+    // [LOAD_L,LOAD_L,ADD,STORE_L] window), hand-fuse it exactly the way
+    // fuseOpcodes would, and compare execution. This is the closest the
+    // reference harness gets to max-level fused output (which is Lua text
+    // the runner cannot consume directly).
+    const src = "local a = 6 local b = 7 local s = a + b return s";
+    const { tokens } = lex(src);
+    const chunk = compile(obfuscate(parse(tokens), { renameLocals: false, preserveGlobals: true }));
+    const out = chunk.code.slice();
+    let fused = 0;
+    for (let i = 0; i + 6 < out.length; i++) {
+      if (out[i] === 5 && out[i + 2] === 5 && out[i + 4] === 9 && out[i + 5] === 6) {
+        const a = out[i + 1], b = out[i + 3], c = out[i + 6];
+        out[i] = 57; out[i + 1] = a; out[i + 2] = b; out[i + 3] = c;
+        out[i + 4] = 0; out[i + 5] = 0; out[i + 6] = 0;
+        fused++;
+        i += 6;
+      }
+    }
+    expect(fused).toBeGreaterThan(0);
+    expect(runVM(chunk.K, chunk.code, {}, 0, chunk.protos || [])).toBe(
+      runVM(chunk.K, out, {}, 0, chunk.protos || [])
+    );
+  });
+  test("fused arithmetic agrees with unfused incl. metamethods (11D-1)", () => {
+    // Stage 11C established: generated fused handlers use raw Lua operators,
+    // which dispatch standard metamethods natively. The reference runner
+    // therefore models fused 57/58/59/62 via arithMM — identical to unfused.
+    // The old "divergence" was a runner-fidelity bug (removed arithFused).
+    let mmCalls = 0;
+    const obj = { v: 3, __metatable: { __add: (a, b) => { mmCalls++; return 1000; } } };
+    // prologue: locals[3]=obj, locals[4]=1
+    const prologue = [4, 0, 6, 3, 4, 1, 6, 4];
+    // unfused: LOAD_L,LOAD_L,ADD,STORE,LOAD,RETURN
+    const unfused = runVM([obj, 1], prologue.concat([5, 3, 5, 4, 9, 6, 2, 5, 2, 31, 1]), {}, 0, []);
+    expect(unfused).toBe(1000);
+    expect(mmCalls).toBe(1);
+    mmCalls = 0;
+    // hand-fused [57,3,4,2]+pads: same result, metamethod consulted once
+    const fused = runVM([obj, 1], prologue.concat([57, 3, 4, 2, 0, 0, 0, 5, 2, 31, 1]), {}, 0, []);
+    expect(fused).toBe(1000);
+    expect(mmCalls).toBe(1);
+  });
+  test("fused 63 models generated raw concat: __concat honored, bool errors", () => {
+    // Models CURRENT generated h[63] (raw `..`): __concat dispatches,
+    // strings/numbers coerce, bool/nil/plain tables are runtime errors
+    // (error presence only — never message text). The unfused h[15]
+    // pcall+tostring fallback is the 11D-2 audit subject, not modeled here.
+    const cat = { __metatable: { __concat: () => "MM" } };
+    let c = localsChunk([cat, "!"], [[0, 0], [1, 1]], [63, 0, 1, 2, 0, 0, 0].concat(tail(2)));
+    expect(runChunk(c.K, c.code)).toBe("MM");
+    c = localsChunk(["a", "b"], [[0, 0], [1, 1]], [63, 0, 1, 2, 0, 0, 0].concat(tail(2)));
+    expect(runChunk(c.K, c.code)).toBe("ab");
+    c = localsChunk([true, "x"], [[0, 0], [1, 1]], [63, 0, 1, 2, 0, 0, 0].concat(tail(2)));
+    expect(() => runChunk(c.K, c.code)).toThrow();
+    c = localsChunk([{ v: 1 }, "x"], [[0, 0], [1, 1]], [63, 0, 1, 2, 0, 0, 0].concat(tail(2)));
+    expect(() => runChunk(c.K, c.code)).toThrow();
+  });
+});
+
 describe("error paths", () => {
   test("validate rejects bad syntax without throwing", () => {
     // NOTE: truncated `local x = ` is silently accepted (parser
