@@ -588,6 +588,13 @@ export function runVM(
         ) setLocal(c, luaToString(av) + luaToString(bv));
         else throw new Error("attempt to concatenate non-concatenable values");
       }
+      else if (op === 68) {
+        // Stage 12C: fused DIV mirror of generated h[68] (raw `/`). Routes
+        // through the SAME arithMM helper as unfused DIV — native dispatch
+        // covers __div; IEEE div-by-zero (inf/nan) falls out of x/y.
+        const a = code[ip++]; const b = code[ip++]; const c = code[ip++];
+        setLocal(c, arithMM(getLocal(a), getLocal(b), (x, y) => x / y, "__div"));
+      }
       else {
 
       }

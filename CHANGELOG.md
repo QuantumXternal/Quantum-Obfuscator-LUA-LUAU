@@ -306,6 +306,32 @@ Suite grew 93 → 105 (9 high-sensitivity logic tests + TESTSET unit test).
   260-constant boundary+reuse=359, closure capture), repro-check ALL green,
   server smoke OK, stack/none outputs identical.
 
+## Stage 12C — Fused DIV super-op (opcode 68) ACCEPTED
+
+- `src/vm/vm-gen.ts` (+11/-4): matcher maps `arith===12` to 68;
+  `OPCODES_3ARG` += 68; shuffle space 68→69; new raw-`/` h[68] mirroring
+  the h[57-59] family (native `__div` dispatch, IEEE div-zero); handler
+  emission loop `<69`; alias loop `0,68`. 64-67 decoys/alias, 0x3F refresh,
+  MOD/POW/IDIV, CONCAT paths all untouched (verified by diff).
+- `src/vm/vm-runner.ts`: op-68 branch via shared `arithMM` (`/`, `__div`).
+- 64+ boundary audit: all walkers arity-set-driven (68 covered);
+  `mapBytecode` length-generic; fake handlers skip usedOps; CFF inline
+  dispatch opcode-generic; max-level encryption makes handler/alias
+  internals textually unassertable — emission proven at debug level
+  (`[68]=function()`), alias bound single-sited and diff-verified.
+- Measurements (div-shapes × 5 seeds): 5 raw windows, all jump-safe,
+  fusedProj 2-5 (gate noise); before/after byte deltas (+2573/-4539/
+  -2732/+546/-4929) are seed-polymorphism noise — fixed cost bounded
+  statically at ~250-400B/output (~0.2% of max-level size). Dispatches:
+  4→1 per fused site (exact); loop-carried median -17% (means
+  inconclusive — runner wall-time mostly unresolvable, honestly reported).
+- Drift: 4/105 fixture-seeds shift existing op-60/62 fusion by ±1 via
+  rng-stream repositioning (intended polymorphism; same-seed repro green).
+- 174/174 tests (15 new `div-fusion`), repro ALL REPRODUCIBLE, server
+  smoke OK, CLI max/stack smoke OK (149069B div-shapes output).
+- Decision: ACCEPT — nil semantic risk, deterministic, dispatch benefit
+  demonstrated, fixed cost negligible and documented.
+
 ## Stage 11D-2 — CONCAT production audit (investigation only, no production changes)
 
 - Trace: `..`/interpolation/`..=` lower to Op.CONCAT (`Compiler.ts:300,423`;
