@@ -185,11 +185,23 @@ document.addEventListener("DOMContentLoaded", () => {
     logConsole("[SYSTEM] Initiating obfuscation pipeline...", "system");
 
     const profile = optProfile ? optProfile.value : "BALANCED";
+    // Fresh per-click polymorphicSeed (existing backend seed field/path).
+    // Identical code+options would otherwise hit the server's identical-
+    // request cache and return byte-identical output. crypto randomness
+    // avoids same-millisecond collisions; the Date.now fallback mirrors the
+    // server's own unseeded seed shape. Explicit API seeds still reproduce
+    // byte-identically (this value is per-click ephemeral, never persisted).
+    const seedBuf = new Uint32Array(1);
+    if (window.crypto && window.crypto.getRandomValues) {
+      window.crypto.getRandomValues(seedBuf);
+    } else {
+      seedBuf[0] = (Date.now() ^ (Math.random() * 0xFFFFFFFF)) >>> 0;
+    }
     const payload = {
       code,
       // Only manually overridden fields are sent; profile defaults apply
       // server-side for everything else.
-      options: { profile, ...dirty },
+      options: { profile, ...dirty, polymorphicSeed: seedBuf[0] },
     };
 
     try {
