@@ -303,23 +303,32 @@ textarea::placeholder {
 }
 
 
-.panel-scroll-container::-webkit-scrollbar,
-.console-body::-webkit-scrollbar {
+::-webkit-scrollbar {
   width: 10px;
+  height: 10px;
 }
-.panel-scroll-container::-webkit-scrollbar-track,
-.console-body::-webkit-scrollbar-track {
+::-webkit-scrollbar-track {
   background: transparent;
 }
-.panel-scroll-container::-webkit-scrollbar-thumb,
-.console-body::-webkit-scrollbar-thumb {
+::-webkit-scrollbar-thumb {
   background: linear-gradient(rgba(204, 102, 153, 0.5), rgba(142, 61, 102, 0.5));
   border: 1px solid rgba(204, 221, 238, 0.25);
   border-radius: 6px;
 }
-.panel-scroll-container::-webkit-scrollbar-thumb:hover,
-.console-body::-webkit-scrollbar-thumb:hover {
+::-webkit-scrollbar-thumb:hover {
   background: linear-gradient(rgba(224, 139, 180, 0.65), rgba(204, 102, 153, 0.65));
+}
+
+html {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(204, 102, 153, 0.55) rgba(20, 5, 11, 0.4);
+}
+.panel-scroll-container,
+.console-body,
+#input-editor,
+#output-editor {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(204, 102, 153, 0.55) rgba(20, 5, 11, 0.4);
 }
 
 .web-fieldset {
