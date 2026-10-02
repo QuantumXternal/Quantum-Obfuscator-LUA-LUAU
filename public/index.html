@@ -9,16 +9,17 @@
   
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Courier+Prime&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
   
-  <link rel="stylesheet" href="style.css?v=1.0.5">
-  <script src="app.js?v=1.0.5"></script>
+  <script src="glass-guard.js?v=1.1.0"></script>
+  <link rel="stylesheet" href="style.css?v=1.1.0">
+  <script src="app.js?v=1.1.0"></script>
 </head>
 <body>
 
   <div class="web-container">
     
-    <header class="web-header">
+    <header class="web-header glass-lg">
       <div class="brand">
         <h1 class="brand-title">Quantum Luau</h1>
         <p class="brand-subtitle">Premium Obfuscation & Bytecode Virtualization</p>
@@ -30,19 +31,19 @@
     </header>
 
     <section class="metrics-grid">
-      <div class="metric-card" id="card-tokens">
+      <div class="metric-card glass-md" id="card-tokens">
         <div class="metric-label">Tokens</div>
         <div class="metric-val" id="stat-tokens">0</div>
       </div>
-      <div class="metric-card" id="card-statements">
+      <div class="metric-card glass-md" id="card-statements">
         <div class="metric-label">Statements</div>
         <div class="metric-val" id="stat-statements">0</div>
       </div>
-      <div class="metric-card" id="card-functions">
+      <div class="metric-card glass-md" id="card-functions">
         <div class="metric-label">Functions</div>
         <div class="metric-val" id="stat-functions">0</div>
       </div>
-      <div class="metric-card" id="card-locals">
+      <div class="metric-card glass-md" id="card-locals">
         <div class="metric-label">Local Variables</div>
         <div class="metric-val" id="stat-locals">0</div>
       </div>
@@ -50,7 +51,7 @@
 
     <main class="workspace-grid">
       
-      <div class="web-panel">
+      <div class="web-panel glass-lg">
         <div class="panel-header">
           <span class="panel-title">[Input] Original Luau Code</span>
         </div>
@@ -69,14 +70,14 @@ print("Square of 5 is: " .. tostring(square(5)))</textarea>
         </div>
       </div>
 
-      <div class="web-panel controls-panel">
+      <div class="web-panel controls-panel glass-lg">
         <div class="panel-header">
           <span class="panel-title">[Options] Obfuscation Engine Config</span>
         </div>
         
         <div class="panel-scroll-container">
-          <fieldset class="web-fieldset">
-            <legend class="web-legend">Protection Levels</legend>
+          <fieldset class="web-fieldset glass-md">
+            <legend class="web-legend glass-sm">Protection Levels</legend>
             
             <div class="checkbox-wrapper">
               <input type="checkbox" id="opt-rename" checked>
@@ -119,8 +120,8 @@ print("Square of 5 is: " .. tostring(square(5)))</textarea>
             </div>
           </fieldset>
 
-          <fieldset class="web-fieldset">
-            <legend class="web-legend">Protection Profile</legend>
+          <fieldset class="web-fieldset glass-md">
+            <legend class="web-legend glass-sm">Protection Profile</legend>
 
             <div class="select-group">
               <label for="opt-profile" class="select-label">Profile:</label>
@@ -132,8 +133,8 @@ print("Square of 5 is: " .. tostring(square(5)))</textarea>
             </div>
           </fieldset>
 
-          <fieldset class="web-fieldset">
-            <legend class="web-legend">Bytecode Virtualization (advanced override)</legend>
+          <fieldset class="web-fieldset glass-md">
+            <legend class="web-legend glass-sm">Bytecode Virtualization (advanced override)</legend>
 
             <div class="select-group">
               <label for="opt-vm-type" class="select-label">VM Architecture:</label>
@@ -156,14 +157,14 @@ print("Square of 5 is: " .. tostring(square(5)))</textarea>
         </div>
         
         <div class="button-footer">
-          <button id="btn-obfuscate" class="glassy-button-blue">
+          <button id="btn-obfuscate" class="glassy-button-blue glass-heavy">
             <span class="btn-text">Obfuscate Script [Execute]</span>
             <div class="btn-loader hidden"></div>
           </button>
         </div>
       </div>
 
-      <div class="web-panel">
+      <div class="web-panel glass-lg">
         <div class="panel-header">
           <span class="panel-title">[Output] Protected Luau Code</span>
         </div>
@@ -171,7 +172,7 @@ print("Square of 5 is: " .. tostring(square(5)))</textarea>
           <textarea id="output-editor" readonly placeholder="-- The obfuscated script output will display here..."></textarea>
         </div>
         <div class="button-footer">
-          <button id="btn-copy" class="glassy-button-silver" disabled>
+          <button id="btn-copy" class="glassy-button-silver glass-sm" disabled>
             <span id="copy-text">Copy to Clipboard</span>
           </button>
         </div>
@@ -179,7 +180,7 @@ print("Square of 5 is: " .. tostring(square(5)))</textarea>
 
     </main>
 
-    <section class="web-console">
+    <section class="web-console glass-lg">
       <div class="console-header">
         <div class="console-title-wrap">
           <span class="console-indicator" id="indicator"></span>
