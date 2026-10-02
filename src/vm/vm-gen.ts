@@ -3751,14 +3751,8 @@ export function generateVM(chunk: BytecodeChunk, options: VMGenOptions = {}): st
     const fpHex = fingerprint.toString(16).padStart(8, '0').toUpperCase();
 
     const artLines = [
-      `   ___ _         _       ___         _          _   _           __   ___ `,
-      `  / __| |_  _ __| |___  | _ \\_ _ ___| |_ ___ __| |_(_)___ _ _   \\ \\ / / |`,
-      ` | (__| | || / _\` / -_) |  _/ '_/ _ \\  _/ -_) _|  _| / _ \\ ' \\   \\ V /| |`,
-      `  \\___|_|\\_, \\__,_\\___| |_| |_| \\___/\\__\\___\\__|\\__|_\\___/_||_|   \\_/ |_|`,
-      `         |__/`,
-      ``,
-      `  https://clydeprotectionde.cloud`,
-      `  build ${fpHex}`,
+      `Quantum Protection V2`,
+      `https://discord.gg/DvjFNyyjuH | Protected By Quantum Obfuscator`,
     ];
 
     for (let li = 0; li < 8 && li < artLines.length; li++) {

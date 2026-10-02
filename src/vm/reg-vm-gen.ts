@@ -3782,7 +3782,7 @@ export function generateRegVM(chunk: RegBytecodeChunk, options: RegVMGenOptions 
       xorKey,
       invSbox,
       checksum,
-      chunkName: "Clyde",
+      chunkName: "Quantum",
       rng,
       // Environment-specific anti-tamper is strictly opt-in.
       // Generic output stays generic; only target === "roblox" emits it.
@@ -3793,14 +3793,14 @@ export function generateRegVM(chunk: RegBytecodeChunk, options: RegVMGenOptions 
 
   if (!options._noWatermark) {
     const art = [
-      `_________ .__            .___       __________                __                 __  .__                ____   ____________  `,
-      `\\_   ___ \\|  | ___.__. __| _/____   \\______   \\_______  _____/  |_  ____   _____/  |_|__| ____   ____   \\   \\ /   /\\_____  \\ `,
-      `/    \\  \\/|  |<   |  |/ __ |/ __ \\   |     ___/\\_  __ \\/  _ \\   __\\/ __ \\_/ ___\\   __\\  |/  _ \\ /    \\   \\   Y   /  /  ____/ `,
-      `\\     \\___|  |_\\___  / /_/ \\  ___/   |    |     |  | \\(  <_> )  | \\  ___/\\  \\___|  | |  (  <_> )   |  \\   \\     /  /       \\ `,
-      ` \\______  /____/ ____\\____ |\\___  >  |____|     |__|   \\____/|__|  \\___  >\\___  >__| |__|\\____/|___|  /    \\___/   \\_______ \\`,
+      `__________                __                 __  .__                ____   ____________  `,
+      `\\______   \\_______  _____/  |_  ____   _____/  |_|__| ____   ____   \\   \\ /   /\\_____  \\ `,
+      ` |     ___/\\_  __ \\/  _ \\   __\\/ __ \\_/ ___\\   __\\  |/  _ \\ /    \\   \\   Y   /  /  ____/ `,
+      ` |    |     |  | \\(  <_> )  | \\  ___/\\  \\___|  | |  (  <_> )   |  \\   \\     /  /       \\ `,
+      ` |____|     |__|   \\____/|__|  \\___  >\\___  >__| |__|\\____/|___|  /    \\___/   \\_______ \\`,
       `        \\/     \\/         \\/    \\/                                     \\/     \\/                    \\/                     \\/`,
       ``,
-      `https://clydeprotectionde.cloud | ClydeProtection Just like VMProtect, but for Lua.`,
+      `https://discord.gg/DvjFNyyjuH | Protected By Quantum Obfuscator`,
     ];
     output = `--[[\n${art.join('\n')}\n]]\n` + output;
   }

@@ -87,7 +87,7 @@ function obfuscateNum(n: number, rng: () => number): string {
 }
 
 export function generateBootstrap(config: BootstrapConfig): string {
-  const { vmBlob, vmOrigLen, xorKey, invSbox, checksum, chunkName = "Clyde", rng } = config;
+  const { vmBlob, vmOrigLen, xorKey, invSbox, checksum, chunkName = "Quantum", rng } = config;
 
   const prefixes = ["_0", "_1", "_2", "_3", "_4", "_5"];
   const suffixes = "abcdefghjkmnpqrstuvwx".split('');
@@ -410,7 +410,7 @@ export function generateBootstrap(config: BootstrapConfig): string {
   ].join('\n') });
 
   cases.push({ id: stExec, code: [
-    `${nAssert}(${nOk} and ${nFn} and ${nType}(${nFn})=="function","Clyde Protection v2")`,
+    `${nAssert}(${nOk} and ${nFn} and ${nType}(${nFn})=="function","Quantum Protection V2")`,
     `${nResult}=${nFn}(...)`,
 
     `for _0i=1,256 do ${nSbox}[_0i]=0 end`,
