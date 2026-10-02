@@ -3188,7 +3188,7 @@ function buildVMFunction(
     lines.push(`${ipMask}=bit32.lrotate(bit32.bxor(${ipMask},${lastOp}),${ipRotAmt})`);
     lines.push(`${n.ip}=bit32.bxor(${n.ip},${ipMask})`);
 
-    lines.push(`if bit32.band(${stateAcc},0xFFFFFFFF)==${toHexInt(decoyVal)} then ${n.ip}=1;${stateAcc}=0 end`);
+    lines.push(`if ${stateAcc}==${toHexInt(decoyVal)} then ${n.ip}=1;${stateAcc}=0 end`);
 
     lines.push(`${cycleVar}=${cycleVar}+1`);
     lines.push(`if bit32.band(${cycleVar},${toHexInt(switchMask)})==${switchThresh} then ${dispMode}=1-${dispMode} end`);
@@ -3220,7 +3220,7 @@ function buildVMFunction(
     lines.push(`end`);
 
     const cfiExpect = (0xDEAD0000 | Math.floor(rng() * 0xFFFF)) >>> 0;
-    lines.push(`if bit32.band(${stateAcc},0xFFFFFFFF)==${toHexInt(cfiExpect)} then ${n.ip}=1;${detFlag}=${detFlag}+99 end`);
+    lines.push(`if ${stateAcc}==${toHexInt(cfiExpect)} then ${n.ip}=1;${detFlag}=${detFlag}+99 end`);
 
     lines.push(`${dv2}=bit32.bxor(${n.stackTop},bit32.band(${stateAcc},0xFF))`);
 
