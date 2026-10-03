@@ -3118,7 +3118,6 @@ function buildVMFunction(
 
     lines.push(`local ${stVar}=${S_RUN}`);
     lines.push(`local ${cycleVar}=0`);
-    lines.push(`local ${dv1},${dv2}=0,0`);
     lines.push(`local ${dispMode}=0`);
     lines.push(`local ${stateAcc}=${toHexInt(stateInit)}`);
     lines.push(`local ${lastOp}=0`);
@@ -3133,9 +3132,9 @@ function buildVMFunction(
 
     lines.push(`while ${stVar}~=${S_DEAD3} do`);
 
-    lines.push(`if ${stVar}==${S_DEAD1} then ${dv1}=${n.stackTop};${stVar}=${S_DEAD2}`);
+    lines.push(`if ${stVar}==${S_DEAD1} then ${stVar}=${S_DEAD2}`);
 
-    lines.push(`elseif ${stVar}==${S_DEAD2} then ${dv2}=${n.ip};${stVar}=${S_DEAD1}`);
+    lines.push(`elseif ${stVar}==${S_DEAD2} then ${stVar}=${S_DEAD1}`);
 
     lines.push(`else`);
 
@@ -3178,7 +3177,6 @@ function buildVMFunction(
     lines.push(`local ${opB}=${n.code}[${n.ip}]`);
     lines.push(`${n.ip}=${n.ip}+1`);
     lines.push(handlerXorKey ? `local ${hB}=${n.handlers}[bit32.bxor(${opB},${hxk})]` : `local ${hB}=${n.handlers}[${opB}]`);
-    lines.push(`${dv1}=bit32.bxor(${dv1},${opB})`);
     lines.push(`${lastOp}=${opB}`);
     lines.push(`if type(${hB})=="function" then ${hB}() end`);
     lines.push(`end`);
@@ -3221,8 +3219,6 @@ function buildVMFunction(
 
     const cfiExpect = (0xDEAD0000 | Math.floor(rng() * 0xFFFF)) >>> 0;
     lines.push(`if ${stateAcc}==${toHexInt(cfiExpect)} then ${n.ip}=1;${detFlag}=${detFlag}+99 end`);
-
-    lines.push(`${dv2}=bit32.bxor(${n.stackTop},bit32.band(${stateAcc},0xFF))`);
 
     lines.push(`end`);
 
