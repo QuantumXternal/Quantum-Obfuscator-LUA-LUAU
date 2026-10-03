@@ -39,4 +39,48 @@ if (stripped.json.output.length >= plain.json.output.length) {
   console.error("SMOKE FAIL: disableFeatures deadCodeInjection should shrink output");
   process.exit(1);
 }
+// JSON error envelope: malformed body -> 400 JSON (was HTML via default handler).
+const malRaw = await fetch(base + "/api/obfuscate", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{not-json" });
+const malJson = await malRaw.json();
+console.log("malformed:", malRaw.status, JSON.stringify(malJson));
+if (malRaw.status !== 400 || malJson.error !== "Malformed JSON request body") {
+  console.error("SMOKE FAIL: malformed JSON should be 400 JSON envelope");
+  process.exit(1);
+}
+// Oversized raw body (>1mb express.json limit) -> 413 JSON (was HTML).
+const bigRaw = await fetch(base + "/api/obfuscate", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ code: "x".repeat(2 * 1024 * 1024), options: {} }) });
+const bigJson = await bigRaw.json();
+console.log("oversized:", bigRaw.status, JSON.stringify(bigJson).slice(0, 80));
+if (bigRaw.status !== 413 || bigJson.error !== "Code payload too large (max 1MB)") {
+  console.error("SMOKE FAIL: oversized body should be 413 JSON envelope");
+  process.exit(1);
+}
+// Unknown /api/* route -> 404 JSON (was HTML "Cannot POST ...").
+const unkRaw = await fetch(base + "/api/nonexistent", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+const unkJson = await unkRaw.json();
+console.log("unknown-api:", unkRaw.status, JSON.stringify(unkJson));
+if (unkRaw.status !== 404 || unkJson.error !== "Unknown API endpoint") {
+  console.error("SMOKE FAIL: unknown API route should be 404 JSON envelope");
+  process.exit(1);
+}
+// Static-file 404 stays HTML (out of API envelope scope).
+const stRaw = await fetch(base + "/no-such-asset.xyz");
+const stType = stRaw.headers.get("content-type") || "";
+console.log("static-404:", stRaw.status, stType);
+if (stRaw.status !== 404 || !stType.includes("html")) {
+  console.error("SMOKE FAIL: static 404 should remain HTML");
+  process.exit(1);
+}
+// Existing bad-profile 400 remains byte-identical in status/body semantics.
+if (bad.status !== 400 || bad.json.error !== "Invalid 'profile' (expected FAST, BALANCED, or MAXIMUM)") {
+  console.error("SMOKE FAIL: bad-profile 400 envelope changed");
+  process.exit(1);
+}
+// Existing lexer error path unchanged.
+const lexErr = await post("/api/obfuscate", { code: "local x = $", options: {} });
+console.log("lexer-error:", lexErr.status, JSON.stringify(lexErr.json).slice(0, 120));
+if (lexErr.status !== 400 || lexErr.json.error !== "Lexer error" || !("details" in lexErr.json)) {
+  console.error("SMOKE FAIL: lexer error envelope changed");
+  process.exit(1);
+}
 console.log("SMOKE OK");

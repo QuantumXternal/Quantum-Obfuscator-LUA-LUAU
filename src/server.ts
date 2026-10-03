@@ -164,6 +164,27 @@ app.post("/api/obfuscate", (req: express.Request, res: express.Response) => {
   }
 });
 
+// JSON error envelope for API requests. In-route JSON responses above are
+// untouched; this normalizes only what previously escaped as HTML: body-parser
+// failures (malformed JSON, oversized raw bodies), unknown /api/* routes, and
+// any uncaught error carrying err.status. Static-file 404s keep default HTML.
+app.use("/api", (req: express.Request, res: express.Response) => {
+  res.status(404).json({ error: "Unknown API endpoint" }) as any;
+});
+
+app.use((err: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+  if (err?.type === "entity.parse.failed") {
+    return res.status(400).json({ error: "Malformed JSON request body" }) as any;
+  }
+  if (err?.type === "entity.too.large") {
+    return res.status(413).json({ error: "Code payload too large (max 1MB)" }) as any;
+  }
+  if (err?.status) {
+    return res.status(err.status).json({ error: err.message || "Request error" }) as any;
+  }
+  return res.status(500).json({ error: `Server error: ${err?.message || err}` }) as any;
+});
+
 app.listen(PORT, () => {
   const url = `http://localhost:${PORT}`;
   console.log(`\nClyde Obfuscator Server running at: ${url}`);
