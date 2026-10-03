@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { readFileSync, writeFileSync } from "fs";
-import { runObfuscatePipeline, PipelineLexError } from "../engine/obfuscatePipeline.js";
+import { runObfuscatePipeline, PipelineLexError, PipelineParseError } from "../engine/obfuscatePipeline.js";
 import type { PipelineVmLevel } from "../engine/obfuscatePipeline.js";
 
 const args = process.argv.slice(2);
@@ -53,6 +53,8 @@ try {
 } catch (err: any) {
   if (err instanceof PipelineLexError) {
     console.error("Lexer errors:", (err.details as any[]).map(e => e.message));
+  } else if (err instanceof PipelineParseError) {
+    console.error("Parse errors:", (err.details as any[]).map(e => e.message));
   } else {
     console.error("Obfuscation error:", err?.message ?? err);
   }

@@ -1,5 +1,6 @@
 import { lex } from "../lexer/Lexer.js";
-import { parse } from "../parser/Parser.js";
+import { parseWithErrors } from "../parser/Parser.js";
+import type { Token, SourceLocation } from "../tokens.js";
 import { obfuscate } from "../obfuscator/Obfuscator.js";
 import { encodeStrings } from "../obfuscator/StringEncoder.js";
 import { scrambleControlFlow } from "../obfuscator/ControlFlowScrambler.js";
@@ -56,11 +57,46 @@ export class PipelineLexError extends Error {
   }
 }
 
+export class PipelineParseError extends Error {
+  details: unknown[];
+  constructor(details: unknown[]) {
+    super("Parse error");
+    this.name = "PipelineParseError";
+    this.details = details;
+  }
+}
+
+/**
+ * Truncation guard (CLI exit-code hygiene; Parser.ts intentionally untouched).
+ * The parser silently drops failed trailing constructs (`local x =`, `1 + `)
+ * without recording an error. A complete chunk can never end with a
+ * continuation-demanding token, so such an ending is always invalid input.
+ * Returns a parser-shaped diagnostic, or null when the ending is clean.
+ * Zero false positives over the benchmark corpus (gated by cli-exit-codes).
+ */
+const DANGLING_END_TOKENS = new Set([
+  "=", "(", ",",
+  "+", "-", "*", "/", "%", "^", "..",
+  "<", ">", "<=", ">=", "==", "~=",
+  "&", "|", "~", ">>", "<<", "//",
+  "and", "or", "not",
+]);
+export function checkTruncatedInput(tokens: Token[]): { message: string; loc: SourceLocation } | null {
+  let end = tokens.length - 1;
+  while (end >= 0 && tokens[end]!.type === "EOF") end--;
+  if (end < 0) return null;
+  const t = tokens[end]!;
+  if ((t.type === "Punctuator" || t.type === "Keyword") && "value" in t && DANGLING_END_TOKENS.has((t as { value: string }).value)) {
+    return { message: "Unexpected end of input", loc: (t as { loc: SourceLocation }).loc };
+  }
+  return null;
+}
+
 /**
  * Single shared obfuscation engine used by the server and all CLIs.
  * Sequence: lex -> parse -> [encode] -> [scramble] -> rename ->
  *   stack: compile + generateVM | register: regCompile + generateRegVM | none: print.
- * Throws PipelineLexError on lex errors; lets parse errors propagate.
+ * Throws PipelineLexError on lex errors and PipelineParseError on parse errors.
  */
 export function runObfuscatePipeline(code: string, opts: PipelineOptions): string {
   const { tokens, errors: lexErrors } = lex(code);
@@ -68,7 +104,15 @@ export function runObfuscatePipeline(code: string, opts: PipelineOptions): strin
     throw new PipelineLexError(lexErrors);
   }
 
-  let ast = parse(tokens);
+  const parsed = parseWithErrors(tokens);
+  if (parsed.errors.length > 0) {
+    throw new PipelineParseError(parsed.errors);
+  }
+  const truncated = checkTruncatedInput(tokens);
+  if (truncated) {
+    throw new PipelineParseError([truncated]);
+  }
+  let ast = parsed.ast;
 
   if (opts.encodeStrings) {
     ast = encodeStrings(ast, opts.seed !== undefined ? { enabled: true, seed: opts.seed } : { enabled: true });

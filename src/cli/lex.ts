@@ -18,6 +18,7 @@ if (errors.length > 0) {
   for (const e of errors) {
     console.error(`  ${e.loc.start.line}:${e.loc.start.column}: ${e.message}`);
   }
+  process.exit(1);
 }
 
 console.log("Tokens:");

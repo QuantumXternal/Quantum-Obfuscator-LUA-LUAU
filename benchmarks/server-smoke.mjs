@@ -83,4 +83,19 @@ if (lexErr.status !== 400 || lexErr.json.error !== "Lexer error" || !("details" 
   console.error("SMOKE FAIL: lexer error envelope changed");
   process.exit(1);
 }
+// Parse-invalid input must not be a silent 200 success: the pipeline raises
+// PipelineParseError, which the server envelope reports deterministically.
+// Pinned behavior (no new 400 mapping invented here): non-200 JSON error,
+// identical across repeated runs.
+const parseBad1 = await post("/api/obfuscate", { code: "local x = ", options: { profile: "BALANCED", seed: 7 } });
+const parseBad2 = await post("/api/obfuscate", { code: "local x = ", options: { profile: "BALANCED", seed: 7 } });
+console.log("parse-invalid:", parseBad1.status, JSON.stringify(parseBad1.json).slice(0, 100));
+if (parseBad1.status === 200 || typeof parseBad1.json.error !== "string") {
+  console.error("SMOKE FAIL: parse-invalid input must not succeed");
+  process.exit(1);
+}
+if (parseBad1.status !== parseBad2.status || JSON.stringify(parseBad1.json) !== JSON.stringify(parseBad2.json)) {
+  console.error("SMOKE FAIL: parse-invalid error must be deterministic");
+  process.exit(1);
+}
 console.log("SMOKE OK");
