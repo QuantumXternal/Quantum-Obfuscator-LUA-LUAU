@@ -80,10 +80,10 @@ function quietGenerate(gen, chunk, options) {
   return { out, err, lines, ms: performance.now() - t0, heap: Math.max(0, Math.round(process.memoryUsage().heapUsed - heap0)) };
 }
 function cloneChunk(c) {
-  return { K: [...c.K], code: [...c.code], protos: (c.protos || []).map(cloneChunk) };
+  return { ...c, K: [...c.K], code: [...c.code], protos: (c.protos || []).map(cloneChunk) };
 }
 function cloneReg(c) {
-  return { K: [...c.K], code: [...c.code], protos: (c.protos || []).map(cloneReg) };
+  return { ...c, K: [...c.K], code: [...c.code], protos: (c.protos || []).map(cloneReg) };
 }
 
 // ---- Part 2: structural flatten census (pre-flatten estimate) ----

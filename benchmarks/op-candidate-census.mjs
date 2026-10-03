@@ -136,7 +136,7 @@ function countInstr(code) {
   return n;
 }
 function cloneChunk(c) {
-  return { K: [...c.K], code: [...c.code], protos: (c.protos || []).map(cloneChunk) };
+  return { ...c, K: [...c.K], code: [...c.code], protos: (c.protos || []).map(cloneChunk) };
 }
 function quietGenerate(chunk, seed) {
   const orig = console.log;
