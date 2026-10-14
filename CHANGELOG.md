@@ -1,4 +1,4 @@
-# Clyde Upgrade Changelog
+# Quantum Obfuscator Changelog
 
 Incremental, benchmarked stages. Every entry: FILE / CHANGE / REASON /
 MEASURED / RISK / TESTS. Baselines in `benchmarks/` (`baseline.json` pre-change,
@@ -7,6 +7,44 @@ MEASURED / RISK / TESTS. Baselines in `benchmarks/` (`baseline.json` pre-change,
 Conventions: times are single-run wall ms (run-to-run variance ± several ms —
 only consistent directional deltas across all 9 fixtures count). `none` path
 is the AST-only control: byte-identical before/after in every comparison.
+
+## 1.0.0 (2026-10-14)
+
+Five reviewed post-RC changes since `1.0.0-rc.1` (Stage 19 freeze, `884a3bd`).
+Gate: build clean, 243/243 tests, deterministic generation byte-identical
+across fixtures × seeds `1234, 1, 7, 42, 999`, CLI exit-code and server/API
+smoke suites green. Static byte/primitive deltas below are measured artifact
+facts, not runtime speedups (target-runtime wall time remains unmeasured —
+no Luau executor).
+
+- `77d85c5` — Simplify redundant identity-mask checks (`src/vm/vm-gen.ts`,
+  2-line). Removes `bit32.band(stateAcc,0xFFFFFFFF)` guards whose uint32
+  proof holds over the full reachable domain; tripwire comparison emits the
+  accumulator directly. Structural PASS; no detection/punishment change.
+- `7e322f2` — Normalize server/API errors into JSON responses
+  (`src/server.ts`, +21; `benchmarks/server-smoke.mjs`, +44). Unknown
+  endpoints 404 plus error middleware mapping 400/413/status/500 — all
+  JSON bodies; smoke pins the envelope.
+- `867c193` — CLI lexer/parser failures produce nonzero exit codes
+  (`src/cli/lex.ts`, `parse.ts`, `engine/obfuscatePipeline.ts`,
+  `obfuscate.ts`, `reg-vm-obfuscate.ts`; `benchmarks/cli-exit-codes.mjs`
+  new). All 15 error cells 0→1; valid-input stdout byte-identical.
+- `f365bf6` — Preserve benchmark clone metadata through spread-first
+  cloning (4 harness files, +5/−5). Harness-only fix: chunk clones now
+  carry `nParams`/`hasVarargs`/`upvalues`; no product behavior change.
+  Prior stage verdicts confirmed unaffected.
+- `ccddc55` — Remove `dv1`/`dv2` runtime chaff while preserving RNG/
+  name-counter draws (`src/vm/vm-gen.ts`, +2/−6). Deletes the dv
+  declaration, the per-dispatch accumulator/mix lines, and the dead-branch
+  dv writes (state-transition skeleton kept); the two `randomName(2)`
+  ballast calls execute unchanged, so all downstream gate constants and
+  names are identical across all 5 seeds. Measured −116 B generated body,
+  uniform across fixtures.
+
+Deferred, unchanged: POW super-op, N=16 C3 sampling (redesign verdict A,
+CLOSED under Guarantee-first criteria), DUP peephole, G1/G2 gate-test
+subsumption. Product renamed `luau-obfuscator` → `quantum-obfuscator`,
+version `1.0.0`.
 
 ## Stage 0 — Protected baseline (no code changes)
 

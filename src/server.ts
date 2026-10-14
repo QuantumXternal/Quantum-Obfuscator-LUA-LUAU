@@ -187,7 +187,7 @@ app.use((err: any, _req: express.Request, res: express.Response, _next: express.
 
 app.listen(PORT, () => {
   const url = `http://localhost:${PORT}`;
-  console.log(`\nClyde Obfuscator Server running at: ${url}`);
+  console.log(`\nQuantum Obfuscator Server running at: ${url}`);
   console.log("Press CTRL+C to terminate.\n");
 
   exec(`start ${url}`, (err) => {
