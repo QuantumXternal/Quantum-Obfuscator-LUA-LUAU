@@ -2944,10 +2944,20 @@ function buildVMFunction(
     lines.push(`${dcpName}(${n.protos})`);
   }
 
+  // R-4 split-table dispatch (Phase 1.1, max only): the handler table is
+  // divided into two tables post-assignment (even keys migrate), so no
+  // single `tab[N]=function()` table holds the opcode set. Dispatch probes
+  // both (`or` short-circuit). Non-max keeps the single table (tiering).
+  // Declared early: the codeHash tripwire below also wipes both tables.
+  const handlersB = level === "max" ? randomName(4) : "";
+  if (level === "max") lines.push(`local ${handlersB}={}`);
+  // Declared early: the R-4 snapshot below (pre-migration) needs the name.
+  const origVar = level === "max" ? randomName(4) : "";
+
   if (codeHash && level === "max") {
     const hv = randomName(3);
     lines.push(`if not ${n.initLocals} then do local ${hv}=0;for _i=1,#${n.code} do local _v=${n.code}[_i];if _v<0 then _v=_v+0x100000000 end;${hv}=bit32.bxor(${hv},_v);${hv}=bit32.lrotate(${hv},7) end`);
-    lines.push(`if ${hv}~=${codeHash} then for _k in pairs(${n.handlers}) do ${n.handlers}[_k]=nil end end end end`);
+    lines.push(`if ${hv}~=${codeHash} then for _k in pairs(${n.handlers}) do ${n.handlers}[_k]=nil end;for _k in pairs(${handlersB}) do ${handlersB}[_k]=nil end end end end`);
   }
 
   if (doPooling) {
@@ -3168,6 +3178,13 @@ function buildVMFunction(
       const key = handlerXorKey ? `bit32.bxor(${sOp},${hxk})` : `${sOp}`;
       lines.push(`local ${hotAlias.get(sOp)}=${n.handlers}[${key}]`);
     }
+    // R-4 migration: move even-keyed handlers to the split table. Aliases
+    // above already hold direct closure refs (immune to the move); fakes,
+    // shadows, and real entries all migrate uniformly via pairs-collect.
+    // Full origVar snapshot here (mutation rewrap below must see every op).
+    lines.push(`local ${origVar}={}`);
+    lines.push(`for _k,_v in pairs(${n.handlers}) do ${origVar}[_k]=_v end`);
+    lines.push(`do local _mg={};for _mk,_mv in pairs(${n.handlers}) do if bit32.band(_mk,1)==0 then _mg[#_mg+1]=_mk end end;for _,_mk in ipairs(_mg) do ${handlersB}[_mk]=${n.handlers}[_mk];${n.handlers}[_mk]=nil end end`);
 
     lines.push(`local ${detFlag}=0`);
     lines.push(`local ${punishDelay}=0`);
@@ -3211,6 +3228,8 @@ function buildVMFunction(
     lines.push(`if ${tV}>0 and _t2-${tV}>0.05 then ${detFlag}=${detFlag}+1 end end`);
 
     lines.push(`if ${detFlag}>1 then for _hk,_ in pairs(${n.handlers}) do ${n.handlers}[_hk]=function() end end end`);
+    // R-4 symmetric punishment: wipe the split table too (same guard).
+    lines.push(`if ${detFlag}>1 then for _hk,_ in pairs(${handlersB}) do ${handlersB}[_hk]=function() end end end`);
   } else {
 
     for (const assignment of handlerAssignments) {
@@ -3222,7 +3241,6 @@ function buildVMFunction(
 
     const stVar = randomName(3);
     const cycleVar = randomName(4);
-    const origVar = randomName(4);
     const dv1 = randomName(2);
     const dv2 = randomName(2);
     const dispMode = randomName(3);
@@ -3255,8 +3273,8 @@ function buildVMFunction(
     lines.push(`local ${stateAcc}=${toHexInt(stateInit)}`);
     lines.push(`local ${lastOp}=0`);
     lines.push(`local ${ipMask}=${toHexInt(ipMaskInit)}`);
-    lines.push(`local ${origVar}={}`);
-    lines.push(`for _k,_v in pairs(${n.handlers}) do ${origVar}[_k]=_v end`);
+    // R-4: origVar snapshot moved above the split-table migration (it must
+    // see the complete handler set regardless of table residence).
 
     if (handlerXorKey) {
       const ahFlag = randomName(2);
@@ -3291,25 +3309,30 @@ function buildVMFunction(
     // that CALLS the aliased handler closure; every other opcode falls
     // through to the pre-existing table lookup below, so all opcodes stay
     // reachable through exactly one path. No handler body is duplicated.
+    // R-4 (Phase 1.1, max only): masked hot-chain comparisons (plain
+    // `op==N` chains are statically matched) + branchless split-table probe.
     for (let bi = 0; bi < hotShuffled.length; bi++) {
       const sOp = hotShuffled[bi];
       const hh = hotAlias.get(sOp)!;
+      const cmp = handlerXorKey ? `bit32.bxor(${opA},${hxk})==${sOp ^ handlerXorKey}` : `${opA}==${sOp}`;
       if (bi === 0) {
-        lines.push(`if ${opA}==${sOp} then ${hh}()`);
+        lines.push(`if ${cmp} then ${hh}()`);
       } else {
-        lines.push(`elseif ${opA}==${sOp} then ${hh}()`);
+        lines.push(`elseif ${cmp} then ${hh}()`);
       }
     }
 
     lines.push(`else`);
-    lines.push(handlerXorKey ? `local ${hA}=${n.handlers}[bit32.bxor(${opA},${hxk})]` : `local ${hA}=${n.handlers}[${opA}]`);
+    lines.push(handlerXorKey ? `local ${hA}=${n.handlers}[bit32.bxor(${opA},${hxk})] or ${handlersB}[bit32.bxor(${opA},${hxk})]` : `local ${hA}=${n.handlers}[${opA}] or ${handlersB}[${opA}]`);
     lines.push(`if ${hA} then ${hA}() end`);
     lines.push(`end`);
 
     lines.push(`else`);
     lines.push(`local ${opB}=${n.code}[${n.ip}]`);
     lines.push(`${n.ip}=${n.ip}+1`);
-    lines.push(handlerXorKey ? `local ${hB}=${n.handlers}[bit32.bxor(${opB},${hxk})]` : `local ${hB}=${n.handlers}[${opB}]`);
+    // R-4: split-table probe here too (dispMode==1 path dispatches the same
+    // migrated tables; single-table lookup would miss split residents).
+    lines.push(handlerXorKey ? `local ${hB}=${n.handlers}[bit32.bxor(${opB},${hxk})] or ${handlersB}[bit32.bxor(${opB},${hxk})]` : `local ${hB}=${n.handlers}[${opB}] or ${handlersB}[${opB}]`);
     lines.push(`${lastOp}=${opB}`);
     lines.push(`if type(${hB})=="function" then ${hB}() end`);
     lines.push(`end`);
@@ -3327,6 +3350,11 @@ function buildVMFunction(
     lines.push(handlerXorKey
       ? `if bit32.band(${cycleVar},0xFFF)==0 then local _mi=bit32.band(${cycleVar},0x3F);local _xmi=bit32.bxor(_mi,${hxk});local _oh=${origVar}[_xmi];if _oh then ${n.handlers}[_xmi]=function() _oh() end;${n.handlers}[_xmi+128]=${n.handlers}[_xmi] end end`
       : `if bit32.band(${cycleVar},0xFFF)==0 then local _mi=bit32.band(${cycleVar},0x3F);local _oh=${origVar}[_mi];if _oh then ${n.handlers}[_mi]=function() _oh() end;${n.handlers}[_mi+128]=${n.handlers}[_mi] end end`);
+    // R-4 symmetric rewrap/punish for the split table (guarded; no-ops when
+    // the key lives in the other table).
+    lines.push(handlerXorKey
+      ? `if bit32.band(${cycleVar},0xFFF)==0 then local _mj=bit32.band(${cycleVar},0x3F);local _xj=bit32.bxor(_mj,${hxk});local _oj=${origVar}[_xj];if _oj then ${handlersB}[_xj]=function() _oj() end;${handlersB}[_xj+128]=${handlersB}[_xj] end end`
+      : `if bit32.band(${cycleVar},0xFFF)==0 then local _mj=bit32.band(${cycleVar},0x3F);local _oj=${origVar}[_mj];if _oj then ${handlersB}[_mj]=function() _oj() end;${handlersB}[_mj+128]=${handlersB}[_mj] end end`);
 
     const ahMask = [0x1FFF, 0x3FFF, 0x0FFF][Math.floor(rng() * 3)];
     lines.push(`if bit32.band(${cycleVar},${toHexInt(ahMask)})==0 and ${cycleVar}>0 then`);
@@ -3348,6 +3376,10 @@ function buildVMFunction(
     lines.push(handlerXorKey
       ? `local _xrk=bit32.bxor(_rk,${hxk});if ${n.handlers}[_xrk] then ${n.handlers}[_xrk]=function() end end`
       : `if ${n.handlers}[_rk] then ${n.handlers}[_rk]=function() end end`);
+    // R-4 symmetric punish for the split table.
+    lines.push(handlerXorKey
+      ? `local _yrk=bit32.bxor(_rk,${hxk});if ${handlersB}[_yrk] then ${handlersB}[_yrk]=function() end end`
+      : `if ${handlersB}[_rk] then ${handlersB}[_rk]=function() end end`);
     lines.push(`end`);
 
     const cfiExpect = (0xDEAD0000 | Math.floor(rng() * 0xFFFF)) >>> 0;

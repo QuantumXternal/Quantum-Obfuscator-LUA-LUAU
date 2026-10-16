@@ -788,17 +788,19 @@ registerHandler(RegOp.CALL, (n) => {
 });
 
 registerHandler(RegOp.TAILCALL, (n) =>
+  // v2 closure dispatch: run-level returns are packed (tPack) so the
+  // dispatcher can propagate them via unpack; bare form returns {n=0}.
   `do local f=${n.R}[A+1];` +
-  `if B==1 then return f() ` +
-  `elseif B==2 then return f(${n.R}[A+2]) ` +
-  `elseif B==3 then return f(${n.R}[A+2],${n.R}[A+3]) ` +
-  `elseif B==0 then return f(${n.tUnpack}(${n.R},A+2,${n.top})) ` +
-  `else return f(${n.tUnpack}(${n.R},A+2,A+B)) end end`);
+  `if B==1 then return ${n.tPack}(f()) ` +
+  `elseif B==2 then return ${n.tPack}(f(${n.R}[A+2])) ` +
+  `elseif B==3 then return ${n.tPack}(f(${n.R}[A+2],${n.R}[A+3])) ` +
+  `elseif B==0 then return ${n.tPack}(f(${n.tUnpack}(${n.R},A+2,${n.top}))) ` +
+  `else return ${n.tPack}(f(${n.tUnpack}(${n.R},A+2,A+B))) end end`);
 
 registerHandler(RegOp.RETURN, (n) =>
-  `do if B==0 then return ${n.tUnpack}(${n.R},A+1,${n.top}) ` +
-  `elseif B==1 then return ` +
-  `else return ${n.tUnpack}(${n.R},A+1,A+B-1) end end`);
+  `do if B==0 then return ${n.tPack}(${n.tUnpack}(${n.R},A+1,${n.top})) ` +
+  `elseif B==1 then return ${n.tPack}() ` +
+  `else return ${n.tPack}(${n.tUnpack}(${n.R},A+1,A+B-1)) end end`);
 
 registerHandler(RegOp.FORPREP, (n) =>
   `${n.R}[A+1]=${n.R}[A+1]-${n.R}[A+3];${n.kk}=${n.kk}+(B-${n.jbias});${n.ip}=${n.poff}[${n.kk}] or (#${n.code}+1)`);
@@ -977,20 +979,22 @@ registerHandler(RegOp.FUSED_GGET_CALL, (n) => {
   return `do ${readSlot2};${readSlot3};${gget};${callBody} end`;
 });
 
-registerHandler(RegOp.FUSED_LOADK_RET, (n) => {
+registerHandler(RegOp.FUSED_LOADK_RET, (n, ctx) => {
   const v = Math.floor(rng() * 2);
+  // v2 computed-index K (Phase 1.1 / R-2): B is a raw const index.
+  const kacc = `${n.K}[${n.bBxor}(B,${ctx.constSalt}%#${n.K})+1]`;
   if (v === 0)
-    return `do ${n.R}[A+1]=${n.K}[B+1];return ${n.R}[A+1] end`;
-  return `do local _v=${n.K}[B+1];return _v end`;
+    return `do ${n.R}[A+1]=${kacc};return ${n.tPack}(${n.R}[A+1]) end`;
+  return `do local _v=${kacc};return ${n.tPack}(_v) end`;
 });
 
 registerHandler(RegOp.FUSED_MOVE_RET, (n) => {
   const v = Math.floor(rng() * 3);
   if (v === 0)
-    return `do local _A2=${n.code}[${n.ip}-3];local _B2=${n.code}[${n.ip}-2];${n.R}[A+1]=${n.R}[B+1];if _B2==0 then return ${n.tUnpack}(${n.R},_A2+1,${n.top}) elseif _B2==1 then return else return ${n.tUnpack}(${n.R},_A2+1,_A2+_B2-1) end end`;
+    return `do local _A2=${n.code}[${n.ip}-3];local _B2=${n.code}[${n.ip}-2];${n.R}[A+1]=${n.R}[B+1];if _B2==0 then return ${n.tPack}(${n.tUnpack}(${n.R},_A2+1,${n.top})) elseif _B2==1 then return ${n.tPack}() else return ${n.tPack}(${n.tUnpack}(${n.R},_A2+1,_A2+_B2-1)) end end`;
   if (v === 1)
-    return `do ${n.R}[A+1]=${n.R}[B+1];local _A2=${n.code}[${n.ip}-3];local _B2=${n.code}[${n.ip}-2];if _B2==2 then return ${n.R}[_A2+1] elseif _B2==1 then return elseif _B2==0 then return ${n.tUnpack}(${n.R},_A2+1,${n.top}) else return ${n.tUnpack}(${n.R},_A2+1,_A2+_B2-1) end end`;
-  return `do ${n.R}[A+1]=${n.R}[B+1];local _B2=${n.code}[${n.ip}-2];if _B2==0 then return ${n.tUnpack}(${n.R},A+1,${n.top}) elseif _B2==1 then return else return ${n.tUnpack}(${n.R},A+1,A+_B2-1) end end`;
+    return `do ${n.R}[A+1]=${n.R}[B+1];local _A2=${n.code}[${n.ip}-3];local _B2=${n.code}[${n.ip}-2];if _B2==2 then return ${n.tPack}(${n.R}[_A2+1]) elseif _B2==1 then return ${n.tPack}() elseif _B2==0 then return ${n.tPack}(${n.tUnpack}(${n.R},_A2+1,${n.top})) else return ${n.tPack}(${n.tUnpack}(${n.R},_A2+1,_A2+_B2-1)) end end`;
+  return `do ${n.R}[A+1]=${n.R}[B+1];local _B2=${n.code}[${n.ip}-2];if _B2==0 then return ${n.tPack}(${n.tUnpack}(${n.R},A+1,${n.top})) elseif _B2==1 then return ${n.tPack}() else return ${n.tPack}(${n.tUnpack}(${n.R},A+1,A+_B2-1)) end end`;
 });
 
 function computeJumpTargets(code: number[]): Set<number> {
@@ -1899,182 +1903,52 @@ function buildVMRuntime(ctx: BuildCtx, assignStyle: boolean = false): string {
 
   const dv = ctx.dispatchVariant;
 
-  if (dv === 0) {
-
-    let isFirst = true;
-    for (const sOp of validOps) {
-      const body = bodies.get(sOp)!;
-      const prefix = isFirst ? 'if' : 'elseif';
-      L.push(`${prefix} ${opVar}==${sOp} then ${body}`);
-      isFirst = false;
-    }
-    if (!isFirst) L.push(`end`);
-
-  } else if (dv === 1) {
-
-    const mask = ctx.dispatchMask;
-    const mVar = randomName(3);
-    L.push(`local ${mVar}=${n.bBxor}(${opVar},${mask})`);
-
-    const shuffled = [...validOps];
-    for (let i = shuffled.length - 1; i > 0; i--) {
+  // v2 closure-table dispatch (Phase 1.1 / R-4): no if/elseif opcode chains
+  // anywhere. Handlers are closures in a table; each returns nil normally,
+  // or a packed result (TAILCALL/RETURN/FUSED_*_RET) that the dispatcher
+  // unpacks into run()'s return values. `_dh`/`_dr` avoid body locals.
+  const wrapBody = (body: string): string => `function() ${body} end`;
+  const shuffledEntries = (): Array<[number, string]> => {
+    const ordered = [...validOps];
+    for (let i = ordered.length - 1; i > 0; i--) {
       const j = Math.floor(rng() * (i + 1));
-      [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+      [ordered[i], ordered[j]] = [ordered[j], ordered[i]];
     }
-    let isFirst = true;
-    for (const sOp of shuffled) {
-      const body = bodies.get(sOp)!;
-      const maskedOp = sOp ^ mask;
-      const prefix = isFirst ? 'if' : 'elseif';
-      L.push(`${prefix} ${mVar}==${maskedOp} then ${body}`);
-      isFirst = false;
-    }
-    if (!isFirst) L.push(`end`);
+    return ordered.map(sOp => [sOp, bodies.get(sOp)!] as [number, string]);
+  };
+  const dispProto = `local _dr=_dh();if _dr~=nil then return ${n.tUnpack}(_dr,1,_dr.n) end`;
+
+  if (dv === 0 || dv === 1) {
+
+    // Shape A: direct table (dv 0 = debug with real op numbers).
+    const entries = shuffledEntries().map(([sOp, body]) => `[${sOp}]=${wrapBody(body)}`);
+    L.push(`local ${n.handlers}={${entries.join(",")}};`);
+    L.push(`local _dh=${n.handlers}[${opVar}];if _dh then ${dispProto} end`);
 
   } else if (dv === 2) {
 
-    const emitBinaryTree = (ops: number[], depth: number) => {
-      if (ops.length === 0) return;
-      if (ops.length <= 3 || depth >= 4) {
-
-        let isF = true;
-        for (const sOp of ops) {
-          const body = bodies.get(sOp)!;
-          const pre = isF ? 'if' : 'elseif';
-          L.push(`${pre} ${opVar}==${sOp} then ${body}`);
-          isF = false;
-        }
-        if (!isF) L.push(`end`);
-        return;
-      }
-
-      const splitIdx = Math.max(1, Math.min(ops.length - 1,
-        Math.floor(ops.length * (0.3 + rng() * 0.4))));
-      const left = ops.slice(0, splitIdx);
-      const right = ops.slice(splitIdx);
-      const pivot = right[0];
-      L.push(`if ${opVar}<${pivot} then`);
-      emitBinaryTree(left, depth + 1);
-      L.push(`else`);
-      emitBinaryTree(right, depth + 1);
-      L.push(`end`);
-    };
-    emitBinaryTree(validOps, 0);
+    // Shape B: masked keys (lookup key differs from stored key).
+    const mask = ctx.dispatchMask;
+    const entries = shuffledEntries().map(([sOp, body]) => `[${sOp ^ mask}]=${wrapBody(body)}`);
+    L.push(`local ${n.handlers}={${entries.join(",")}};`);
+    L.push(`local _dh=${n.handlers}[${n.bBxor}(${opVar},${mask})];if _dh then ${dispProto} end`);
 
   } else if (dv === 3) {
 
-    const nGroups = 3 + Math.floor(rng() * 3);
-    const mask = ctx.dispatchMask;
-
-    const groups: Map<number, number[]> = new Map();
-    for (const sOp of validOps) {
-      const g = (sOp ^ mask) % nGroups;
-      if (!groups.has(g)) groups.set(g, []);
-      groups.get(g)!.push(sOp);
+    // Shape C: split tables with branchless probe (parity of shuffled op
+    // decides the home table; `or` short-circuits to a single lookup).
+    const tB = randomName(3);
+    const inA: Array<[number, string]> = [];
+    const inB: Array<[number, string]> = [];
+    for (const [sOp, body] of shuffledEntries()) {
+      ((sOp & 1) === 0 ? inA : inB).push([sOp, body]);
     }
-    const gVar = randomName(3);
-    L.push(`local ${gVar}=${n.bBxor}(${opVar},${mask})%${nGroups}`);
+    const mkTbl = (es: Array<[number, string]>): string =>
+      `{${es.map(([sOp, body]) => `[${sOp}]=${wrapBody(body)}`).join(",")}}`;
+    L.push(`local ${n.handlers}=${mkTbl(inA)};`);
+    L.push(`local ${tB}=${mkTbl(inB)};`);
+    L.push(`local _dh=${n.handlers}[${opVar}] or ${tB}[${opVar}];if _dh then ${dispProto} end`);
 
-    const gKeys = [...groups.keys()];
-    for (let i = gKeys.length - 1; i > 0; i--) {
-      const j = Math.floor(rng() * (i + 1));
-      [gKeys[i], gKeys[j]] = [gKeys[j], gKeys[i]];
-    }
-    let isFirstG = true;
-    for (const gIdx of gKeys) {
-      const gOps = groups.get(gIdx)!;
-      const prefG = isFirstG ? 'if' : 'elseif';
-      L.push(`${prefG} ${gVar}==${gIdx} then`);
-
-      const innerOps = [...gOps];
-      for (let i = innerOps.length - 1; i > 0; i--) {
-        const j = Math.floor(rng() * (i + 1));
-        [innerOps[i], innerOps[j]] = [innerOps[j], innerOps[i]];
-      }
-      let isF = true;
-      for (const sOp of innerOps) {
-        const body = bodies.get(sOp)!;
-        const pre = isF ? 'if' : 'elseif';
-        L.push(`${pre} ${opVar}==${sOp} then ${body}`);
-        isF = false;
-      }
-      if (!isF) L.push(`end`);
-      isFirstG = false;
-    }
-    if (!isFirstG) L.push(`end`);
-
-  } else if (dv === 4 || dv === 5) {
-
-    const hTbl = n.handlers;
-    const retOp = ctx.opcodeEncode[RegOp.RETURN as number];
-    const tcOp = ctx.opcodeEncode[RegOp.TAILCALL as number];
-
-    const mandatoryFast = [
-      RegOp.JMP as number, RegOp.FORLOOP as number, RegOp.CALL as number,
-      RegOp.MOVE as number, RegOp.FORPREP as number,
-    ].map(op => ctx.opcodeEncode[op]);
-
-    const optCandidates = [
-      RegOp.LOADK as number, RegOp.GETGLOBAL as number,
-      RegOp.GETTABLE as number, RegOp.LOADBOOL as number,
-      RegOp.SETTABLE as number, RegOp.LOADNIL as number,
-    ];
-    const shuffledCands = [...optCandidates];
-    for (let i = shuffledCands.length - 1; i > 0; i--) {
-      const j = Math.floor(rng() * (i + 1));
-      [shuffledCands[i], shuffledCands[j]] = [shuffledCands[j], shuffledCands[i]];
-    }
-    const nFast = 2 + Math.floor(rng() * 2);
-    const fastSet = new Set([
-      ...mandatoryFast,
-      ...shuffledCands.slice(0, nFast).map(op => ctx.opcodeEncode[op]),
-    ]);
-
-    const inlineOps = new Set([retOp, tcOp, ...fastSet]);
-    const tableOps = validOps.filter(sOp => !inlineOps.has(sOp));
-
-    for (let i = tableOps.length - 1; i > 0; i--) {
-      const j = Math.floor(rng() * (i + 1));
-      [tableOps[i], tableOps[j]] = [tableOps[j], tableOps[i]];
-    }
-
-    const tblMask = dv === 5 ? ctx.dispatchMask : 0;
-
-    void tblMask;
-
-    const fastArr = [...fastSet];
-    for (let i = fastArr.length - 1; i > 0; i--) {
-      const j = Math.floor(rng() * (i + 1));
-      [fastArr[i], fastArr[j]] = [fastArr[j], fastArr[i]];
-    }
-
-    let isFirst = true;
-    for (const fOp of fastArr) {
-      const body = bodies.get(fOp);
-      if (!body || body.trim() === '') continue;
-      const prefix = isFirst ? 'if' : 'elseif';
-      L.push(`${prefix} ${opVar}==${fOp} then ${body}`);
-      isFirst = false;
-    }
-
-    const hVar = randomName(2);
-    void hVar;
-
-    for (const sOp of tableOps) {
-      const body = bodies.get(sOp)!;
-      if (body.trim() === '') continue;
-      const cmpVal = sOp ^ tblMask;
-      const cmpExpr = tblMask
-        ? `${n.bBxor}(${opVar},${tblMask})==${cmpVal}`
-        : `${opVar}==${sOp}`;
-      const prefix = isFirst ? 'if' : 'elseif';
-      L.push(`${prefix} ${cmpExpr} then ${body}`);
-      isFirst = false;
-    }
-
-    L.push(`elseif ${opVar}==${retOp} then ${bodies.get(retOp) || ''}`);
-    L.push(`elseif ${opVar}==${tcOp} then ${bodies.get(tcOp) || ''}`);
-    L.push(`end`);
   }
 
   L.push(`end`);
@@ -3720,7 +3594,10 @@ export function generateRegVM(chunk: RegBytecodeChunk, options: RegVMGenOptions 
   ];
 
   const isObf = level !== "debug";
-  const dispatchVariant = isObf ? (1 + Math.floor(rng() * 5)) : 0;
+  // v2 closure-table dispatch shapes: 1 = direct table, 2 = masked keys,
+  // 3 = split tables with branchless probe. (dv 0 = debug, direct table
+  // with real op numbers.) Replaces the legacy if/elseif-chain variants.
+  const dispatchVariant = isObf ? (1 + Math.floor(rng() * 3)) : 0;
   const dispatchMask = isObf ? (1 + Math.floor(rng() * 254)) : 0;
   const rotSeed = isObf ? (1 + Math.floor(rng() * 254)) : 0;
   const rotStep = isObf ? (1 + Math.floor(rng() * 254)) : 0;
@@ -3784,7 +3661,7 @@ export function generateRegVM(chunk: RegBytecodeChunk, options: RegVMGenOptions 
     if (_tel()) console.log(`[RegVM] Dead handler elimination: ${used.size}/${handlerRegistry.size} opcodes used`);
   }
 
-  const dvNames = ["flat","xor-masked","binary-tree","grouped","table-dispatch","table-xor"];
+  const dvNames = ["closure-direct(debug)","closure-direct","closure-masked","closure-split"];
   if (level !== "debug" && _tel()) console.log(`[RegVM] Dispatch: variant ${dispatchVariant} (${dvNames[dispatchVariant] || "unknown"})`);
 
   const packedMain = packRegStream(chunk.code, ctx);
