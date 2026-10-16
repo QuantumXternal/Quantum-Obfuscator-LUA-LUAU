@@ -57,10 +57,15 @@ function genReg(src, level, seed) {
 // `]=*]` closer present in the artifact — computed, not assumed). PUC uses
 // native loadfile (no shim needed: parsing resolves no globals).
 function luaQuote(s) {
+  // Overlap-safe level scan: a regex like /\](=*)\]/g misses overlapping
+  // closers (`]]=]` consumes `]]` and skips the `]=]` starting at the second
+  // bracket), under-counting the level and truncating the probe string.
+  // String.includes scans every position, so it cannot miss. (Same pattern
+  // as bootstrap-template.ts; the v2 packed wire raised the odds of such
+  // byte collisions, exposing the latent helper bug. The artifact itself was
+  // always valid — it executes cleanly when run as a file.)
   let level = 0;
-  const re = /\](=*)\]/g;
-  let m;
-  while ((m = re.exec(s)) !== null) level = Math.max(level, m[1].length + 1);
+  while (s.includes("]" + "=".repeat(level) + "]")) level++;
   const eq = "=".repeat(level);
   return `[${eq}[${s}]${eq}]`;
 }

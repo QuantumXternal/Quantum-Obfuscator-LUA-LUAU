@@ -1,4 +1,4 @@
-import { RegOp, REG_OPCODE_COUNT, RK_OFFSET } from "./bytecode.js";
+import { RegOp, REG_OPCODE_COUNT, RK_OFFSET, REG_OP_MASK, REG_FUSED_SLOTS, REG_SKIP_OPS, regOpArgc } from "./bytecode.js";
 import type { RegBytecodeChunk, Constant } from "./bytecode.js";
 import { randomBytes } from "crypto";
 import { writeFileSync as _dumpWrite } from "fs";
@@ -88,6 +88,8 @@ interface BuildCtx {
   rotStep2: number;
   usedOps?: Set<number>;
   argPerm: number[][];
+  /** Per-build jump-delta bias (v2 packed wire; applied at pack time). */
+  jumpBias: number;
 }
 
 interface Fragment {
@@ -138,6 +140,9 @@ interface NameMap {
   s1: string;
   s2: string;
   s3: string;
+  poff: string;
+  kk: string;
+  jbias: string;
 }
 
 let _rngState = 0;
@@ -200,6 +205,7 @@ function createNameMap(level: RegVMLevel): NameMap {
       bBxor: "_bxor", bBand: "_band",
       bGetmeta: "_getmeta", bNext: "_next",
       s1: "_s1", s2: "_s2", s3: "_s3",
+      poff: "P", kk: "_kk", jbias: "_jb",
     };
   }
   return {
@@ -218,6 +224,7 @@ function createNameMap(level: RegVMLevel): NameMap {
     bBxor: randomName(3), bBand: randomName(3),
     bGetmeta: randomName(3), bNext: randomName(3),
     s1: randomName(2), s2: randomName(2), s3: randomName(2),
+    poff: randomName(2), kk: randomName(2), jbias: randomName(3),
   };
 }
 
@@ -315,26 +322,200 @@ function generateArgPerms(doRemap: boolean): number[][] {
   return perms;
 }
 
-function mapRegBytecode(code: number[], encode: number[], argPerm: number[][]): number[] {
-  const out = [...code];
-  for (let i = 0; i < out.length; i += 4) {
-    const realOp = out[i];
-    if (realOp >= 0 && realOp < encode.length) {
-      const A = out[i + 1], B = out[i + 2], C = out[i + 3];
-      out[i] = encode[realOp];
-      const p = argPerm[realOp];
-
-      out[i + p[0]] = A;
-      out[i + p[1]] = B;
-      out[i + p[2]] = C;
-    }
-  }
-  return out;
+/**
+ * v2 packed-wire stream (Phase 1.1 / R-2).
+ *
+ * Replaces the fixed 4-word stride (`op,A,B,C` + `ip+=4`) that static
+ * analyzers slice directly. Each packed instruction is a header word
+ * H = shuffledOp * 16 + argc followed by its operand words, where argc is
+ * the trailing word count (0..3 normal, 7/11 fused units). Stride is therefore
+ * variable (1,2,3,4,8,12 words) and only recoverable via the emitted offset
+ * table P (word start of every unit) plus the instruction counter k.
+ *
+ * Fused multi-quad units keep fixed internal geometry (their bodies read raw
+ * stream words); only normal instructions compact (unused operand slots are
+ * dropped, never emitted). Jump deltas are rewritten from quad-space to
+ * unit-space plus a per-build bias at pack time; the runtime never sees raw
+ * quad deltas.
+ */
+interface PackedUnit {
+  quadStart: number;
+  quads: number;
+  realOp: number;
+  pad: boolean;
 }
 
-function mapRegChunk(chunk: RegBytecodeChunk, encode: number[], argPerm: number[][]): void {
-  chunk.code = mapRegBytecode(chunk.code, encode, argPerm);
-  if (chunk.protos) for (const p of chunk.protos) mapRegChunk(p, encode, argPerm);
+interface PackedStream {
+  stream: number[];
+  P: number[];
+}
+
+function packRegStream(
+  code: number[],
+  ctx: BuildCtx,
+): PackedStream {
+  const { opcodeEncode: encode, argPerm, jumpBias: jBias } = ctx;
+  const rot = { seed: ctx.rotSeed, step: ctx.rotStep, step2: ctx.rotStep2 };
+  const NOP_OP = RegOp.NOP as number;
+  const LOADKX_OP = RegOp.LOADKX as number;
+  const EXTRAARG_OP = RegOp.EXTRAARG as number;
+  const H_NOP = encode[NOP_OP] * 16;
+  const nQuads = code.length / 4;
+
+  // Unit assignment over pre-pack quads (fused leaders absorb followers).
+  const raw: PackedUnit[] = [];
+  let q = 0;
+  while (q < nQuads) {
+    const op = code[q * 4];
+    const fs = REG_FUSED_SLOTS.get(op);
+    if (fs !== undefined) { raw.push({ quadStart: q, quads: fs, realOp: op, pad: false }); q += fs; }
+    else { raw.push({ quadStart: q, quads: 1, realOp: op, pad: false }); q += 1; }
+  }
+
+  // Build-time invariants: loud errors, never silent miscompiles.
+  for (let qi = 0; qi < nQuads; qi++) {
+    if (code[qi * 4] === EXTRAARG_OP) {
+      if (qi === 0 || code[(qi - 1) * 4] !== LOADKX_OP) {
+        throw new Error(`[packRegStream] EXTRAARG at quad ${qi} not preceded by LOADKX`);
+      }
+    }
+  }
+
+  // Skip-landing padding. A skip-capable op at quad q lands on quad q+2;
+  // without NOP-slide (gone under variable stride) that landing must be a
+  // unit start. If a fused unit covers q+2 without starting there, insert a
+  // 1-word padding NOP unit right after the skip unit. Insertions happen only
+  // on unit boundaries, so they cannot disturb fused internals or pairs.
+  const padAfter = new Set<number>();
+  raw.forEach((u, ui) => {
+    if (u.pad || !REG_SKIP_OPS.has(u.realOp)) return;
+    const lq = u.quadStart + 2;
+    if (lq >= nQuads) return;
+    for (const v of raw) {
+      if (v.quadStart < lq && lq < v.quadStart + v.quads) { padAfter.add(ui); break; }
+    }
+  });
+  const units: PackedUnit[] = [];
+  raw.forEach((u, ui) => {
+    units.push(u);
+    if (padAfter.has(ui)) units.push({ quadStart: -1, quads: 0, realOp: NOP_OP, pad: true });
+  });
+
+  // Quad -> unit index (consumed NOP quads map to their fused unit).
+  const quadToUnit = new Array<number>(nQuads);
+  units.forEach((u, ui) => {
+    if (u.pad) return;
+    for (let s = 0; s < u.quads; s++) quadToUnit[u.quadStart + s] = ui;
+  });
+  // Every recorded jump target must start a unit (0-based unit index here).
+  const targets = computeJumpTargets(code);
+  for (const t of targets) {
+    if (t % 4 !== 0) throw new Error(`[packRegStream] jump target ${t} misaligned`);
+    const tq = t / 4;
+    const ui = quadToUnit[tq];
+    if (ui === undefined || units[ui].quadStart !== tq) {
+      throw new Error(`[packRegStream] jump target ${t} lands mid-unit`);
+    }
+  }
+
+  // Emission.
+  const stream: number[] = [];
+  const P: number[] = [];
+  const hPos: number[] = [];
+  // patch sites: {stream index of stored delta word, target quad, base unit index}
+  interface Patch { at: number; fusedQuad: number; baseUnit: number }
+  const FUSED_JMP = new Set<number>([
+    RegOp.FUSED_TEST_JMP as number, RegOp.FUSED_EQ_JMP as number,
+    RegOp.FUSED_LT_JMP as number, RegOp.FUSED_LE_JMP as number,
+    RegOp.FUSED_TESTSET_JMP as number,
+  ]);
+  const patches: Patch[] = [];
+  const JUMP_OPS = new Set<number>([
+    RegOp.JMP as number, RegOp.FORPREP as number, RegOp.FORLOOP as number,
+  ]);
+  units.forEach((u, ui) => {
+    P.push(stream.length + 1);
+    if (u.pad) {
+      hPos.push(stream.length);
+      stream.push(H_NOP);
+      return;
+    }
+    const p = argPerm[u.realOp];
+    if (u.quads > 1) {
+      // Fused verbatim unit: H + own 3 permuted words + trailing quads
+      // verbatim (op words in H_NOP camouflage; operands untouched so raw
+      // stream reads keep working after re-basing).
+      const argc = u.quads * 4 - 1;
+      hPos.push(stream.length);
+      stream.push(encode[u.realOp] * 16 + argc);
+      for (let k = 0; k < 3; k++) {
+        const s = p.indexOf(k + 1) + 1;
+        stream.push(code[u.quadStart * 4 + s]);
+      }
+      for (let s = 1; s < u.quads; s++) {
+        const bq = (u.quadStart + s) * 4;
+        stream.push(encode[code[bq]] * 16);
+        stream.push(code[bq + 1], code[bq + 2], code[bq + 3]);
+      }
+      // _j patch site for the conditional-jump fusions (stored taken-branch
+      // delta at unit offset 6 for 2-quad units; GGET_CALL carries none).
+      if (FUSED_JMP.has(u.realOp)) {
+        patches.push({ at: stream.length - 2, fusedQuad: u.quadStart, baseUnit: ui });
+      }
+    } else {
+      // Normal packed unit: H + present slots ordered by perm key.
+      const mask = REG_OP_MASK[u.realOp] ?? 0b111;
+      const slots: number[] = [];
+      for (let s = 1; s <= 3; s++) if (mask & (1 << (s - 1))) slots.push(s);
+      slots.sort((a, b) => p[a - 1] - p[b - 1]);
+      hPos.push(stream.length);
+      stream.push(encode[u.realOp] * 16 + slots.length);
+      for (const s of slots) stream.push(code[u.quadStart * 4 + s]);
+    }
+  });
+
+  // Control-flow rewrites (quad deltas -> unit deltas + bias).
+  const assertUnitStart = (quad: number, what: string): number => {
+    const ui = quadToUnit[quad];
+    if (ui === undefined || units[ui].quadStart !== quad) {
+      throw new Error(`[packRegStream] ${what} quad ${quad} lands mid-unit`);
+    }
+    return ui;
+  };
+  units.forEach((u, ui) => {
+    if (u.pad) return;
+    if (JUMP_OPS.has(u.realOp)) {
+      const q = u.quadStart;
+      const bold = code[q * 4 + 2];
+      const target = q + 1 + bold;
+      const tui = assertUnitStart(target, "jump");
+      // B word stream position: rank of slot 2 among present slots.
+      const mask = REG_OP_MASK[u.realOp] ?? 0b111;
+      const p = argPerm[u.realOp];
+      const slots: number[] = [];
+      for (let s = 1; s <= 3; s++) if (mask & (1 << (s - 1))) slots.push(s);
+      slots.sort((a, b) => p[a - 1] - p[b - 1]);
+      const rank = slots.indexOf(2);
+      if (rank < 0) throw new Error(`[packRegStream] B slot absent for jump op ${u.realOp}`);
+      stream[(P[ui] - 1) + 1 + rank] = tui - (ui + 1) + jBias;
+    }
+  });
+  for (const pt of patches) {
+    const jold = stream[pt.at];
+    const target = pt.fusedQuad + 2 + jold;
+    const tui = assertUnitStart(target, "fused jump");
+    stream[pt.at] = tui - (pt.baseUnit + 1) + jBias;
+  }
+
+  // Rot-XOR over unit-start H words (same key schedule as before).
+  if (rot.seed > 0) {
+    for (const hp of hPos) {
+      const luaIp = hp + 1;
+      const key = (rot.seed + luaIp * rot.step + Math.imul(luaIp, luaIp) * rot.step2) & 0xFF;
+      stream[hp] ^= key;
+    }
+  }
+  return { stream, P };
 }
 
 const SPIRAL_PRIMES = [
@@ -419,29 +600,19 @@ function serializeConstants(K: Constant[], ctx: BuildCtx): string {
   return `{${K.map((v, i) => serializeConstant(v, ctx, i)).join(",")}}`;
 }
 
-function serializeRegCode(code: number[], ctx?: BuildCtx): string {
-  if (ctx && ctx.rotSeed > 0) {
-    const out = [...code];
-    for (let i = 0; i < out.length; i += 4) {
-      const luaIp = i + 1;
-
-      const key = (ctx.rotSeed + luaIp * ctx.rotStep + Math.imul(luaIp, luaIp) * ctx.rotStep2) & 0xFF;
-      out[i] ^= key;
-    }
-    return `{${out.join(",")}}`;
-  }
-  return `{${code.join(",")}}`;
-}
-
 function serializeRegProtos(protos: RegBytecodeChunk[] | undefined, ctx: BuildCtx): string {
   if (!protos || protos.length === 0) return "{}";
   const pk = ctx.protoKeys;
   const usePositional = ctx.level !== "debug";
   const items: string[] = [];
   for (const p of protos) {
-    const mappedCode = ctx.doShuffle ? mapRegBytecode(p.code, ctx.opcodeEncode, ctx.argPerm) : p.code;
+    // v2 packed wire (replaces mapRegBytecode+serializeRegCode): variable
+    // stride + unit-offset table P emitted as the 8th proto field (pW).
+    // The 8-field record additionally breaks exact-arity proto parsers.
+    const packed = packRegStream(p.code, ctx);
     const sK = serializeConstants(p.K, ctx);
-    const sC = serializeRegCode(mappedCode, ctx);
+    const sC = `{${packed.stream.join(",")}}`;
+    const sW = `{${packed.P.join(",")}}`;
     const sP = serializeRegProtos(p.protos, ctx);
     let sU = "nil";
     if (p.upvalues && p.upvalues.length > 0) {
@@ -452,9 +623,9 @@ function serializeRegProtos(protos: RegBytecodeChunk[] | undefined, ctx: BuildCt
     const isVA = p.isVararg ? "true" : "false";
     if (usePositional) {
 
-      items.push(`{${sK},${sC},${sP},${sU},${nP},${mR},${isVA}}`);
+      items.push(`{${sK},${sC},${sP},${sU},${nP},${mR},${isVA},${sW}}`);
     } else {
-      items.push(`{${pk.pK}=${sK},${pk.pC}=${sC},${pk.pP}=${sP},${pk.pU}=${sU},${pk.pN}=${nP},mR=${mR},vA=${isVA}}`);
+      items.push(`{${pk.pK}=${sK},${pk.pC}=${sC},${pk.pP}=${sP},${pk.pU}=${sU},${pk.pN}=${nP},mR=${mR},vA=${isVA},pW=${sW}}`);
     }
   }
   return `{${items.join(",")}}`;
@@ -489,13 +660,13 @@ registerHandler(RegOp.LOADNIL, (n) =>
   `for _i=A,A+B do ${n.R}[_i+1]=nil end`);
 
 registerHandler(RegOp.LOADBOOL, (n) =>
-  `${n.R}[A+1]=(B~=0);if C~=0 then ${n.ip}=${n.ip}+4 end`);
+  `${n.R}[A+1]=(B~=0);if C~=0 then ${n.kk}=${n.kk}+1;${n.ip}=${n.poff}[${n.kk}] or (#${n.code}+1) end`);
 
 registerHandler(RegOp.MOVE, (n) =>
   `${n.R}[A+1]=${n.R}[B+1]`);
 
 registerHandler(RegOp.LOADKX, (n) =>
-  `local ex=${n.code}[${n.ip}+1];${n.R}[A+1]=${n.K}[ex+1];${n.ip}=${n.ip}+4`);
+  `local ex=${n.code}[${n.ip}+1];${n.R}[A+1]=${n.K}[ex+1];${n.kk}=${n.kk}+1;${n.ip}=${n.poff}[${n.kk}] or (#${n.code}+1)`);
 
 registerHandler(RegOp.EXTRAARG, () => ``);
 
@@ -543,22 +714,22 @@ registerHandler(RegOp.CONCAT, (n) =>
   `else local _t={};for _i=B,C do _t[#_t+1]=${n.R}[_i+1] end;${n.R}[A+1]=${n.bTconcat}(_t) end end`);
 
 registerHandler(RegOp.JMP, (n) =>
-  `${n.ip}=${n.ip}+B*4`);
+  `${n.kk}=${n.kk}+(B-${n.jbias});${n.ip}=${n.poff}[${n.kk}] or (#${n.code}+1)`);
 
 registerHandler(RegOp.EQ, (n) =>
-  `if (${n.RK}(B)==${n.RK}(C))~=(A~=0) then ${n.ip}=${n.ip}+4 end`);
+  `if (${n.RK}(B)==${n.RK}(C))~=(A~=0) then ${n.kk}=${n.kk}+1;${n.ip}=${n.poff}[${n.kk}] or (#${n.code}+1) end`);
 
 registerHandler(RegOp.LT, (n) =>
-  `if (${n.RK}(B)<${n.RK}(C))~=(A~=0) then ${n.ip}=${n.ip}+4 end`);
+  `if (${n.RK}(B)<${n.RK}(C))~=(A~=0) then ${n.kk}=${n.kk}+1;${n.ip}=${n.poff}[${n.kk}] or (#${n.code}+1) end`);
 
 registerHandler(RegOp.LE, (n) =>
-  `if (${n.RK}(B)<=${n.RK}(C))~=(A~=0) then ${n.ip}=${n.ip}+4 end`);
+  `if (${n.RK}(B)<=${n.RK}(C))~=(A~=0) then ${n.kk}=${n.kk}+1;${n.ip}=${n.poff}[${n.kk}] or (#${n.code}+1) end`);
 
 registerHandler(RegOp.TEST, (n) =>
-  `if (not ${n.R}[A+1])==(C~=0) then ${n.ip}=${n.ip}+4 end`);
+  `if (not ${n.R}[A+1])==(C~=0) then ${n.kk}=${n.kk}+1;${n.ip}=${n.poff}[${n.kk}] or (#${n.code}+1) end`);
 
 registerHandler(RegOp.TESTSET, (n) =>
-  `if (not ${n.R}[B+1])==(C~=0) then ${n.ip}=${n.ip}+4 else ${n.R}[A+1]=${n.R}[B+1] end`);
+  `if (not ${n.R}[B+1])==(C~=0) then ${n.kk}=${n.kk}+1;${n.ip}=${n.poff}[${n.kk}] or (#${n.code}+1) else ${n.R}[A+1]=${n.R}[B+1] end`);
 
 registerHandler(RegOp.CALL, (n) => {
 
@@ -588,17 +759,17 @@ registerHandler(RegOp.RETURN, (n) =>
   `else return ${n.tUnpack}(${n.R},A+1,A+B-1) end end`);
 
 registerHandler(RegOp.FORPREP, (n) =>
-  `${n.R}[A+1]=${n.R}[A+1]-${n.R}[A+3];${n.ip}=${n.ip}+B*4`);
+  `${n.R}[A+1]=${n.R}[A+1]-${n.R}[A+3];${n.kk}=${n.kk}+(B-${n.jbias});${n.ip}=${n.poff}[${n.kk}] or (#${n.code}+1)`);
 
 registerHandler(RegOp.FORLOOP, (n) =>
   `do local step=${n.R}[A+3];local idx=${n.R}[A+1]+step;${n.R}[A+1]=idx;` +
-  `local lim=${n.R}[A+2];if step>0 then if idx<=lim then ${n.ip}=${n.ip}+B*4;${n.R}[A+4]=idx end ` +
-  `else if idx>=lim then ${n.ip}=${n.ip}+B*4;${n.R}[A+4]=idx end end end`);
+  `local lim=${n.R}[A+2];if step>0 then if idx<=lim then ${n.kk}=${n.kk}+(B-${n.jbias});${n.ip}=${n.poff}[${n.kk}] or (#${n.code}+1);${n.R}[A+4]=idx end ` +
+  `else if idx>=lim then ${n.kk}=${n.kk}+(B-${n.jbias});${n.ip}=${n.poff}[${n.kk}] or (#${n.code}+1);${n.R}[A+4]=idx end end end`);
 
 registerHandler(RegOp.TFORLOOP, (n) =>
   `do local f=${n.R}[A+1];local s=${n.R}[A+2];local v=${n.R}[A+3];` +
   `local r={f(s,v)};for _i=1,C do ${n.R}[A+3+_i]=r[_i] end;` +
-  `if r[1]~=nil then ${n.R}[A+3]=r[1];${n.ip}=${n.ip}+4 end end`);
+  `if r[1]~=nil then ${n.R}[A+3]=r[1];${n.kk}=${n.kk}+1;${n.ip}=${n.poff}[${n.kk}] or (#${n.code}+1) end end`);
 
 registerHandler(RegOp.ITERPREP, (n) =>
   `do local it=${n.R}[A+1];if ${n.bType}(it)=="table" then ` +
@@ -631,12 +802,13 @@ registerHandler(RegOp.CLOSURE, (n, ctx) => {
   const gN = pos ? "[5]" : `.${pN}`;
   const gMR = pos ? "[6]" : ".mR";
   const gVA = pos ? "[7]" : ".vA";
+  const gW = pos ? "[8]" : ".pW";
   return `do local proto=${n.protos}[B+1];if proto then ` +
     `local nU={};if proto${gU} then for _ui,_ud in ${n.bIpairs}(proto${gU}) do ` +
     `if _ud[1]==1 then local _b;for _oi=1,#${n.openUVs} do if ${n.openUVs}[_oi][2]==_ud[2]+1 then _b=${n.openUVs}[_oi];break end end;` +
     `if not _b then _b={${n.R},_ud[2]+1};${n.openUVs}[#${n.openUVs}+1]=_b end;nU[_ui]=_b ` +
     `else nU[_ui]=${n.upvalues}[_ud[2]+1] end end end;` +
-    `${n.R}[A+1]=function(...) return ${n.run}(proto${gK},proto${gC},proto${gP},proto${gU} and nU or {},proto${gN},proto${gMR},proto${gVA},${n.env},...) end ` +
+    `${n.R}[A+1]=function(...) return ${n.run}(proto${gK},proto${gC},proto${gW},proto${gP},proto${gU} and nU or {},proto${gN},proto${gMR},proto${gVA},${n.env},...) end ` +
     `else ${n.R}[A+1]=nil end end`;
 });
 
@@ -660,44 +832,44 @@ registerHandler(RegOp.XPCALL, (n) =>
 registerHandler(RegOp.FUSED_TEST_JMP, (n) => {
   const v = Math.floor(rng() * 3);
   if (v === 0)
-    return `do local _j=${n.code}[${n.ip}+2];if (not ${n.R}[A+1])==(C~=0) then ${n.ip}=${n.ip}+4 else ${n.ip}=${n.ip}+4+_j*4 end end`;
+    return `do local _j=${n.code}[${n.ip}-2];if (not ${n.R}[A+1])==(C~=0) then do end else ${n.kk}=${n.kk}+(_j-${n.jbias});${n.ip}=${n.poff}[${n.kk}] or (#${n.code}+1) end end`;
   if (v === 1)
-    return `do local _j=${n.code}[${n.ip}+2];if (not ${n.R}[A+1])~=(C~=0) then ${n.ip}=${n.ip}+4+_j*4 else ${n.ip}=${n.ip}+4 end end`;
-  return `do local _o=${n.code}[${n.ip}+2]*4;${n.ip}=${n.ip}+4;if (not ${n.R}[A+1])~=(C~=0) then ${n.ip}=${n.ip}+_o end end`;
+    return `do local _j=${n.code}[${n.ip}-2];if (not ${n.R}[A+1])~=(C~=0) then ${n.kk}=${n.kk}+(_j-${n.jbias});${n.ip}=${n.poff}[${n.kk}] or (#${n.code}+1) end end`;
+  return `do local _o=${n.code}[${n.ip}-2];if (not ${n.R}[A+1])~=(C~=0) then ${n.kk}=${n.kk}+(_o-${n.jbias});${n.ip}=${n.poff}[${n.kk}] or (#${n.code}+1) end end`;
 });
 
 registerHandler(RegOp.FUSED_EQ_JMP, (n) => {
   const v = Math.floor(rng() * 3);
   if (v === 0)
-    return `do local _j=${n.code}[${n.ip}+2];if (${n.RK}(B)==${n.RK}(C))~=(A~=0) then ${n.ip}=${n.ip}+4 else ${n.ip}=${n.ip}+4+_j*4 end end`;
+    return `do local _j=${n.code}[${n.ip}-2];if (${n.RK}(B)==${n.RK}(C))~=(A~=0) then do end else ${n.kk}=${n.kk}+(_j-${n.jbias});${n.ip}=${n.poff}[${n.kk}] or (#${n.code}+1) end end`;
   if (v === 1)
-    return `do local _j=${n.code}[${n.ip}+2];if (${n.RK}(B)==${n.RK}(C))==(A~=0) then ${n.ip}=${n.ip}+4+_j*4 else ${n.ip}=${n.ip}+4 end end`;
-  return `do local _lv,_rv=${n.RK}(B),${n.RK}(C);local _j=${n.code}[${n.ip}+2];if (_lv==_rv)~=(A~=0) then ${n.ip}=${n.ip}+4 else ${n.ip}=${n.ip}+4+_j*4 end end`;
+    return `do local _j=${n.code}[${n.ip}-2];if (${n.RK}(B)==${n.RK}(C))==(A~=0) then ${n.kk}=${n.kk}+(_j-${n.jbias});${n.ip}=${n.poff}[${n.kk}] or (#${n.code}+1) end end`;
+  return `do local _lv,_rv=${n.RK}(B),${n.RK}(C);local _j=${n.code}[${n.ip}-2];if (_lv==_rv)~=(A~=0) then do end else ${n.kk}=${n.kk}+(_j-${n.jbias});${n.ip}=${n.poff}[${n.kk}] or (#${n.code}+1) end end`;
 });
 
 registerHandler(RegOp.FUSED_LT_JMP, (n) => {
   const v = Math.floor(rng() * 3);
   if (v === 0)
-    return `do local _j=${n.code}[${n.ip}+2];if (${n.RK}(B)<${n.RK}(C))~=(A~=0) then ${n.ip}=${n.ip}+4 else ${n.ip}=${n.ip}+4+_j*4 end end`;
+    return `do local _j=${n.code}[${n.ip}-2];if (${n.RK}(B)<${n.RK}(C))~=(A~=0) then do end else ${n.kk}=${n.kk}+(_j-${n.jbias});${n.ip}=${n.poff}[${n.kk}] or (#${n.code}+1) end end`;
   if (v === 1)
-    return `do local _j=${n.code}[${n.ip}+2];if (${n.RK}(B)<${n.RK}(C))==(A~=0) then ${n.ip}=${n.ip}+4+_j*4 else ${n.ip}=${n.ip}+4 end end`;
-  return `do local _lv,_rv=${n.RK}(B),${n.RK}(C);local _o=${n.code}[${n.ip}+2]*4;${n.ip}=${n.ip}+4;if (_lv<_rv)==(A~=0) then ${n.ip}=${n.ip}+_o end end`;
+    return `do local _j=${n.code}[${n.ip}-2];if (${n.RK}(B)<${n.RK}(C))==(A~=0) then ${n.kk}=${n.kk}+(_j-${n.jbias});${n.ip}=${n.poff}[${n.kk}] or (#${n.code}+1) end end`;
+  return `do local _lv,_rv=${n.RK}(B),${n.RK}(C);local _o=${n.code}[${n.ip}-2];if (_lv<_rv)==(A~=0) then ${n.kk}=${n.kk}+(_o-${n.jbias});${n.ip}=${n.poff}[${n.kk}] or (#${n.code}+1) end end`;
 });
 
 registerHandler(RegOp.FUSED_LE_JMP, (n) => {
   const v = Math.floor(rng() * 3);
   if (v === 0)
-    return `do local _j=${n.code}[${n.ip}+2];if (${n.RK}(B)<=${n.RK}(C))~=(A~=0) then ${n.ip}=${n.ip}+4 else ${n.ip}=${n.ip}+4+_j*4 end end`;
+    return `do local _j=${n.code}[${n.ip}-2];if (${n.RK}(B)<=${n.RK}(C))~=(A~=0) then do end else ${n.kk}=${n.kk}+(_j-${n.jbias});${n.ip}=${n.poff}[${n.kk}] or (#${n.code}+1) end end`;
   if (v === 1)
-    return `do local _j=${n.code}[${n.ip}+2];if (${n.RK}(B)<=${n.RK}(C))==(A~=0) then ${n.ip}=${n.ip}+4+_j*4 else ${n.ip}=${n.ip}+4 end end`;
-  return `do local _lv,_rv=${n.RK}(B),${n.RK}(C);local _o=${n.code}[${n.ip}+2]*4;${n.ip}=${n.ip}+4;if (_lv<=_rv)==(A~=0) then ${n.ip}=${n.ip}+_o end end`;
+    return `do local _j=${n.code}[${n.ip}-2];if (${n.RK}(B)<=${n.RK}(C))==(A~=0) then ${n.kk}=${n.kk}+(_j-${n.jbias});${n.ip}=${n.poff}[${n.kk}] or (#${n.code}+1) end end`;
+  return `do local _lv,_rv=${n.RK}(B),${n.RK}(C);local _o=${n.code}[${n.ip}-2];if (_lv<=_rv)==(A~=0) then ${n.kk}=${n.kk}+(_o-${n.jbias});${n.ip}=${n.poff}[${n.kk}] or (#${n.code}+1) end end`;
 });
 
 registerHandler(RegOp.FUSED_TESTSET_JMP, (n) => {
   const v = Math.floor(rng() * 2);
   if (v === 0)
-    return `do local _j=${n.code}[${n.ip}+2];if (not ${n.R}[B+1])==(C~=0) then ${n.ip}=${n.ip}+4 else ${n.R}[A+1]=${n.R}[B+1];${n.ip}=${n.ip}+4+_j*4 end end`;
-  return `do local _bv=${n.R}[B+1];local _j=${n.code}[${n.ip}+2];if (not _bv)==(C~=0) then ${n.ip}=${n.ip}+4 else ${n.R}[A+1]=_bv;${n.ip}=${n.ip}+4+_j*4 end end`;
+    return `do local _j=${n.code}[${n.ip}-2];if (not ${n.R}[B+1])==(C~=0) then do end else ${n.R}[A+1]=${n.R}[B+1];${n.kk}=${n.kk}+(_j-${n.jbias});${n.ip}=${n.poff}[${n.kk}] or (#${n.code}+1) end end`;
+  return `do local _bv=${n.R}[B+1];local _j=${n.code}[${n.ip}-2];if (not _bv)==(C~=0) then do end else ${n.R}[A+1]=_bv;${n.kk}=${n.kk}+(_j-${n.jbias});${n.ip}=${n.poff}[${n.kk}] or (#${n.code}+1) end end`;
 });
 
 registerHandler(RegOp.FUSED_GGET, (n) => {
@@ -705,30 +877,30 @@ registerHandler(RegOp.FUSED_GGET, (n) => {
   const dbg = process.env.DEBUG_VM === '1';
   const nilG = dbg ? `if _g==nil then warn("[FUSED_GGET] nil global: "..tostring(${n.K}[B+1])) end;` : '';
   if (v === 0)
-    return `do local _A2=${n.code}[${n.ip}+1];local _C2=${n.code}[${n.ip}+3];local _g=${n.env}[${n.K}[B+1]];${nilG}${n.R}[A+1]=_g;${n.R}[_A2+1]=_g[${n.RK}(_C2)];${n.ip}=${n.ip}+4 end`;
+    return `do local _A2=${n.code}[${n.ip}-3];local _C2=${n.code}[${n.ip}-1];local _g=${n.env}[${n.K}[B+1]];${nilG}${n.R}[A+1]=_g;${n.R}[_A2+1]=_g[${n.RK}(_C2)] end`;
   if (v === 1)
-    return `do local _A2=${n.code}[${n.ip}+1];local _C2=${n.code}[${n.ip}+3];local _g=${n.env}[${n.K}[B+1]];${nilG}${n.R}[A+1]=_g;${n.R}[_A2+1]=_g[${n.RK}(_C2)];${n.ip}=${n.ip}+4 end`;
-  return `do local _g=${n.env}[${n.K}[B+1]];${nilG}${n.R}[A+1]=_g;local _k=${n.RK}(${n.code}[${n.ip}+3]);${n.R}[${n.code}[${n.ip}+1]+1]=_g[_k];${n.ip}=${n.ip}+4 end`;
+    return `do local _A2=${n.code}[${n.ip}-3];local _C2=${n.code}[${n.ip}-1];local _g=${n.env}[${n.K}[B+1]];${nilG}${n.R}[A+1]=_g;${n.R}[_A2+1]=_g[${n.RK}(_C2)];local f=${n.R}[_A2+1] end`;
+  return `do local _g=${n.env}[${n.K}[B+1]];${nilG}${n.R}[A+1]=_g;local _k=${n.RK}(${n.code}[${n.ip}-1]);${n.R}[${n.code}[${n.ip}-3]+1]=_g[_k] end`;
 });
 
 registerHandler(RegOp.FUSED_LOADKK, (n) => {
   const v = Math.floor(rng() * 2);
   if (v === 0)
-    return `do local _A2=${n.code}[${n.ip}+1];local _B2=${n.code}[${n.ip}+2];${n.R}[A+1]=${n.K}[B+1];${n.R}[_A2+1]=${n.K}[_B2+1];${n.ip}=${n.ip}+4 end`;
-  return `do ${n.R}[A+1]=${n.K}[B+1];${n.R}[${n.code}[${n.ip}+1]+1]=${n.K}[${n.code}[${n.ip}+2]+1];${n.ip}=${n.ip}+4 end`;
+    return `do local _A2=${n.code}[${n.ip}-3];local _B2=${n.code}[${n.ip}-2];${n.R}[A+1]=${n.K}[B+1];${n.R}[_A2+1]=${n.K}[_B2+1] end`;
+  return `do ${n.R}[A+1]=${n.K}[B+1];${n.R}[${n.code}[${n.ip}-3]+1]=${n.K}[${n.code}[${n.ip}-2]+1] end`;
 });
 
 registerHandler(RegOp.FUSED_MOVE_MOVE, (n) => {
   const v = Math.floor(rng() * 2);
   if (v === 0)
-    return `do local _A2=${n.code}[${n.ip}+1];local _B2=${n.code}[${n.ip}+2];${n.R}[A+1]=${n.R}[B+1];${n.R}[_A2+1]=${n.R}[_B2+1];${n.ip}=${n.ip}+4 end`;
-  return `do ${n.R}[A+1]=${n.R}[B+1];${n.R}[${n.code}[${n.ip}+1]+1]=${n.R}[${n.code}[${n.ip}+2]+1];${n.ip}=${n.ip}+4 end`;
+    return `do local _A2=${n.code}[${n.ip}-3];local _B2=${n.code}[${n.ip}-2];${n.R}[A+1]=${n.R}[B+1];${n.R}[_A2+1]=${n.R}[_B2+1] end`;
+  return `do ${n.R}[A+1]=${n.R}[B+1];${n.R}[${n.code}[${n.ip}-3]+1]=${n.R}[${n.code}[${n.ip}-2]+1] end`;
 });
 
 registerHandler(RegOp.FUSED_SELF_CALL, (n) => {
   const v = Math.floor(rng() * 2);
   const callBody =
-    `local _B2=${n.code}[${n.ip}+2];local _C2=${n.code}[${n.ip}+3];${n.ip}=${n.ip}+4;` +
+    `local _B2=${n.code}[${n.ip}-2];local _C2=${n.code}[${n.ip}-1];` +
     `local r;` +
     `if _B2==2 then r=${n.tPack}(f(${n.R}[A+2])) ` +
     `elseif _B2==3 then r=${n.tPack}(f(${n.R}[A+2],${n.R}[A+3])) ` +
@@ -744,8 +916,8 @@ registerHandler(RegOp.FUSED_SELF_CALL, (n) => {
 registerHandler(RegOp.FUSED_GGET_CALL, (n) => {
 
   const v = Math.floor(rng() * 2);
-  const readSlot2 = `local _A2=${n.code}[${n.ip}+1];local _C2=${n.code}[${n.ip}+3]`;
-  const readSlot3 = `local _A3=${n.code}[${n.ip}+5];local _B3=${n.code}[${n.ip}+6];local _C3=${n.code}[${n.ip}+7]`;
+  const readSlot2 = `local _A2=${n.code}[${n.ip}-7];local _C2=${n.code}[${n.ip}-5]`;
+  const readSlot3 = `local _A3=${n.code}[${n.ip}-3];local _B3=${n.code}[${n.ip}-2];local _C3=${n.code}[${n.ip}-1]`;
   const gget = v === 0
     ? `local _g=${n.env}[${n.K}[B+1]];${n.R}[A+1]=_g;local f=_g[${n.RK}(_C2)];${n.R}[_A2+1]=f`
     : `local _g=${n.env}[${n.K}[B+1]];${n.R}[A+1]=_g;${n.R}[_A2+1]=_g[${n.RK}(_C2)];local f=${n.R}[_A2+1]`;
@@ -758,23 +930,23 @@ registerHandler(RegOp.FUSED_GGET_CALL, (n) => {
     `else r=${n.tPack}(f(${n.tUnpack}(${n.R},_A3+2,_A3+_B3))) end;` +
     `if _C3==0 then for _i=1,r.n do ${n.R}[_A3+_i]=r[_i] end;${n.top}=_A3+r.n ` +
     `else for _i=1,_C3-1 do ${n.R}[_A3+_i]=r[_i] end end`;
-  return `do ${readSlot2};${readSlot3};${gget};${n.ip}=${n.ip}+8;${callBody} end`;
+  return `do ${readSlot2};${readSlot3};${gget};${callBody} end`;
 });
 
 registerHandler(RegOp.FUSED_LOADK_RET, (n) => {
   const v = Math.floor(rng() * 2);
   if (v === 0)
-    return `do ${n.R}[A+1]=${n.K}[B+1];${n.ip}=${n.ip}+4;return ${n.R}[A+1] end`;
-  return `do local _v=${n.K}[B+1];${n.ip}=${n.ip}+4;return _v end`;
+    return `do ${n.R}[A+1]=${n.K}[B+1];return ${n.R}[A+1] end`;
+  return `do local _v=${n.K}[B+1];return _v end`;
 });
 
 registerHandler(RegOp.FUSED_MOVE_RET, (n) => {
   const v = Math.floor(rng() * 3);
   if (v === 0)
-    return `do local _A2=${n.code}[${n.ip}+1];local _B2=${n.code}[${n.ip}+2];${n.R}[A+1]=${n.R}[B+1];${n.ip}=${n.ip}+4;if _B2==0 then return ${n.tUnpack}(${n.R},_A2+1,${n.top}) elseif _B2==1 then return else return ${n.tUnpack}(${n.R},_A2+1,_A2+_B2-1) end end`;
+    return `do local _A2=${n.code}[${n.ip}-3];local _B2=${n.code}[${n.ip}-2];${n.R}[A+1]=${n.R}[B+1];if _B2==0 then return ${n.tUnpack}(${n.R},_A2+1,${n.top}) elseif _B2==1 then return else return ${n.tUnpack}(${n.R},_A2+1,_A2+_B2-1) end end`;
   if (v === 1)
-    return `do ${n.R}[A+1]=${n.R}[B+1];local _A2=${n.code}[${n.ip}+1];local _B2=${n.code}[${n.ip}+2];${n.ip}=${n.ip}+4;if _B2==2 then return ${n.R}[_A2+1] elseif _B2==1 then return elseif _B2==0 then return ${n.tUnpack}(${n.R},_A2+1,${n.top}) else return ${n.tUnpack}(${n.R},_A2+1,_A2+_B2-1) end end`;
-  return `do ${n.R}[A+1]=${n.R}[B+1];local _B2=${n.code}[${n.ip}+2];if _B2==0 then ${n.ip}=${n.ip}+4;return ${n.tUnpack}(${n.R},${n.code}[${n.ip}-3]+1,${n.top}) elseif _B2==1 then ${n.ip}=${n.ip}+4;return else ${n.ip}=${n.ip}+4;return ${n.tUnpack}(${n.R},${n.code}[${n.ip}-3]+1,${n.code}[${n.ip}-3]+_B2-1) end end`;
+    return `do ${n.R}[A+1]=${n.R}[B+1];local _A2=${n.code}[${n.ip}-3];local _B2=${n.code}[${n.ip}-2];if _B2==2 then return ${n.R}[_A2+1] elseif _B2==1 then return elseif _B2==0 then return ${n.tUnpack}(${n.R},_A2+1,${n.top}) else return ${n.tUnpack}(${n.R},_A2+1,_A2+_B2-1) end end`;
+  return `do ${n.R}[A+1]=${n.R}[B+1];local _B2=${n.code}[${n.ip}-2];if _B2==0 then return ${n.tUnpack}(${n.R},A+1,${n.top}) elseif _B2==1 then return else return ${n.tUnpack}(${n.R},A+1,A+_B2-1) end end`;
 });
 
 function computeJumpTargets(code: number[]): Set<number> {
@@ -1244,8 +1416,19 @@ function buildHandlerBodies(n: NameMap, ctx: BuildCtx, usedOps?: Set<number>): M
     const body = gen(n, ctx);
 
     const p = ctx.argPerm[op as number];
+    // v2 packed wire: only mask-present slots are emitted, ordered by perm
+    // key. Bake the compaction into the remap (absent slots -> nil; bodies
+    // only read their own operands). Full-mask ops keep the legacy form.
+    const mask = REG_OP_MASK[op as number] ?? 0b111;
+    const present: number[] = [];
+    for (let s = 1; s <= 3; s++) if (mask & (1 << (s - 1))) present.push(s);
+    present.sort((a, b) => p[a - 1] - p[b - 1]);
     const slots = [n.s1, n.s2, n.s3];
-    const remap = `local A,B,C=${slots[p[0]-1]},${slots[p[1]-1]},${slots[p[2]-1]};`;
+    const expr = (slot: number): string => {
+      const rank = present.indexOf(slot);
+      return rank < 0 ? "nil" : slots[rank];
+    };
+    const remap = `local A,B,C=${expr(1)},${expr(2)},${expr(3)};`;
 
     const noise = doNoise ? generateHandlerNoise(n, op as number) : '';
     bodies.set(shuffled, remap + noise + body);
@@ -1382,8 +1565,8 @@ function buildVMRuntime(ctx: BuildCtx, assignStyle: boolean = false): string {
   const L: string[] = [];
 
   L.push(assignStyle
-    ? `${n.run}=function(${n.K},${n.code},${n.protos},${n.upvalues},${n.nParams},${n.maxRegs},_isVararg,${n.env},...)`
-    : `local function ${n.run}(${n.K},${n.code},${n.protos},${n.upvalues},${n.nParams},${n.maxRegs},_isVararg,${n.env},...)`);
+    ? `${n.run}=function(${n.K},${n.code},${n.poff},${n.protos},${n.upvalues},${n.nParams},${n.maxRegs},_isVararg,${n.env},...)`
+    : `local function ${n.run}(${n.K},${n.code},${n.poff},${n.protos},${n.upvalues},${n.nParams},${n.maxRegs},_isVararg,${n.env},...)`);
   L.push(`${n.protos}=${n.protos} or {}`);
   L.push(`${n.upvalues}=${n.upvalues} or {}`);
 
@@ -1411,6 +1594,8 @@ function buildVMRuntime(ctx: BuildCtx, assignStyle: boolean = false): string {
   }
 
   L.push(`local ${n.ip}=1`);
+  L.push(`local ${n.kk}=1`);
+  L.push(`local ${n.jbias}=${ctx.jumpBias}`);
   if (needsOpenUVs) L.push(`local ${n.openUVs}={}`);
   if (needsIc) L.push(`local ${n.ic}={}`);
   L.push(`local ${n.top}=0`);
@@ -1580,13 +1765,18 @@ function buildVMRuntime(ctx: BuildCtx, assignStyle: boolean = false): string {
       L.push(`local ${opqVar}=${mbaV1}+${mbaV2}==0xFFFFFFFF`);
     }
 
-    L.push(`if not ${opqVar} then ${n.R}={};${n.code}={};${n.ip}=#${n.code}+1 end`);
+    L.push(`if not ${opqVar} then ${n.R}={};${n.code}={};${n.ip}=#${n.code}+1;${n.kk}=#${n.poff}+1 end`);
   }
   const preWhileIdx = L.length;
-  L.push(`while ${n.ip}<=#${n.code} do`);
+  L.push(`while ${n.kk}<=#${n.poff} and ${n.ip}<=#${n.code} do`);
 
+  // v2 packed wire: code[ip] is a header word H = shuffledOp*16+argc, not a
+  // bare opcode. Decode H, derive op=floor(H/16); s1..s3 always read (nil-
+  // safe spill); per-op remap (baked in bodies) selects valid slots. Advance
+  // is unit-based: kk+1 with ip from the offset table P (variable stride).
   const useRot = ctx.rotSeed > 0;
   const opVar = randomName(2);
+  const hVar = randomName(2);
 
   if (doMut) {
 
@@ -1596,10 +1786,11 @@ function buildVMRuntime(ctx: BuildCtx, assignStyle: boolean = false): string {
       const rkVar = randomName(3);
 
       L.push(`local ${rkVar}=${n.bBand}(${ctx.rotSeed}+${n.ip}*${ctx.rotStep}+${n.ip}*${n.ip}*${ctx.rotStep2},0xFF)`);
-      L.push(`local ${opVar}=${n.bBxor}(${n.code}[${n.ip}],${rkVar},${mkVar})`);
+      L.push(`local ${hVar}=${n.bBxor}(${n.code}[${n.ip}],${rkVar},${mkVar})`);
     } else {
-      L.push(`local ${opVar}=${n.bBxor}(${n.code}[${n.ip}],${mkVar})`);
+      L.push(`local ${hVar}=${n.bBxor}(${n.code}[${n.ip}],${mkVar})`);
     }
+    L.push(`local ${opVar}=${n.bMfloor}(${hVar}/16)`);
 
     L.push(`local ${n.s1}=${n.code}[${n.ip}+1]`);
     L.push(`local ${n.s2}=${n.code}[${n.ip}+2]`);
@@ -1607,25 +1798,26 @@ function buildVMRuntime(ctx: BuildCtx, assignStyle: boolean = false): string {
 
     const nkVar = randomName(2);
     const xkVar = randomName(2);
-    L.push(`local ${nkVar}=${n.bBand}(${mkVar}*${mutMul}+${opVar}+${mutStep},0xFF)`);
+    L.push(`local ${nkVar}=${n.bBand}(${mkVar}*${mutMul}+${hVar}+${mutStep},0xFF)`);
     L.push(`local ${xkVar}=${n.bBxor}(${mkVar},${nkVar})`);
     L.push(`${n.code}[${n.ip}]=${n.bBxor}(${n.code}[${n.ip}],${xkVar})`);
     L.push(`${mtVar}[${n.ip}]=${nkVar}`);
+    L.push(`${n.kk}=${n.kk}+1;${n.ip}=${n.poff}[${n.kk}] or (#${n.code}+1)`);
   } else {
 
     if (useRot) {
       const rkVar = randomName(3);
       L.push(`local ${rkVar}=${n.bBand}(${ctx.rotSeed}+${n.ip}*${ctx.rotStep}+${n.ip}*${n.ip}*${ctx.rotStep2},0xFF)`);
-      L.push(`local ${opVar}=${n.bBxor}(${n.code}[${n.ip}],${rkVar})`);
+      L.push(`local ${hVar}=${n.bBxor}(${n.code}[${n.ip}],${rkVar})`);
     } else {
-      L.push(`local ${opVar}=${n.code}[${n.ip}]`);
+      L.push(`local ${hVar}=${n.code}[${n.ip}]`);
     }
+    L.push(`local ${opVar}=${n.bMfloor}(${hVar}/16)`);
     L.push(`local ${n.s1}=${n.code}[${n.ip}+1]`);
     L.push(`local ${n.s2}=${n.code}[${n.ip}+2]`);
     L.push(`local ${n.s3}=${n.code}[${n.ip}+3]`);
+    L.push(`${n.kk}=${n.kk}+1;${n.ip}=${n.poff}[${n.kk}] or (#${n.code}+1)`);
   }
-
-  L.push(`${n.ip}=${n.ip}+4`);
 
   if (doMut) {
     L.push(`if ${n.ip}%${60000 + Math.floor(rng() * 40001)}<4 and ${nTwVm} then ${nTwVm}() end`);
@@ -1637,16 +1829,19 @@ function buildVMRuntime(ctx: BuildCtx, assignStyle: boolean = false): string {
     const secCheckVariant = Math.floor(rng() * 3);
 
     if (secCheckVariant === 0 || secCheckVariant === 1) {
-
-      L.push(`if ${n.ip}%${secInterval * 4}<4 then local ${secVar}=${n.bPcall}(function() return ${n.env}["game"] end);if ${secVar} and ${n.bType}(${n.env}["game"])~="userdata" then ${n.R}=${n.bTcreate}(0);${n.ip}=#${n.code}+1 end end`);
+      // Warmup gate (kk>128): h%interval<4 is true for the first few words
+      // (1%N==1), so without this the check fires on instruction ~1 and kills
+      // every non-Roblox host 2/3 of builds — a clean-host false positive.
+      // Periodic intent preserved: long-running programs still checked.
+      L.push(`if ${n.kk}>128 and ${n.ip}%${secInterval * 4}<4 then local ${secVar}=${n.bPcall}(function() return ${n.env}["game"] end);if ${secVar} and ${n.bType}(${n.env}["game"])~="userdata" then ${n.R}=${n.bTcreate}(0);${n.ip}=#${n.code}+1;${n.kk}=#${n.poff}+1 end end`);
     } else {
 
-      L.push(`if ${n.ip}%${secInterval * 4}<4 then local ${secVar},_sv=${n.bPcall}(function() return ${n.env}["game"]["Workspace"] end);if not ${secVar} then ${n.R}=${n.bTcreate}(0);${n.ip}=#${n.code}+1 end end`);
+      L.push(`if ${n.kk}>128 and ${n.ip}%${secInterval * 4}<4 then local ${secVar},_sv=${n.bPcall}(function() return ${n.env}["game"]["Workspace"] end);if not ${secVar} then ${n.R}=${n.bTcreate}(0);${n.ip}=#${n.code}+1;${n.kk}=#${n.poff}+1 end end`);
     }
   }
 
   if (ctx.debugTrace) {
-    L.push(`print("[VM] ip="..(${n.ip}-4).." "..((_opNames and _opNames[${opVar}]) or "OP"..${opVar}).." s1="..tostring(${n.s1}).." s2="..tostring(${n.s2}).." s3="..tostring(${n.s3}))`);
+    L.push(`print("[VM] k="..(${n.kk}-1).." "..((_opNames and _opNames[${opVar}]) or "OP"..${opVar}).." s1="..tostring(${n.s1}).." s2="..tostring(${n.s2}).." s3="..tostring(${n.s3}))`);
   }
 
   const sortedOps = Array.from(bodies.keys()).sort((a, b) => a - b);
@@ -3483,6 +3678,9 @@ export function generateRegVM(chunk: RegBytecodeChunk, options: RegVMGenOptions 
   const rotSeed = isObf ? (1 + Math.floor(rng() * 254)) : 0;
   const rotStep = isObf ? (1 + Math.floor(rng() * 254)) : 0;
   const rotStep2 = isObf ? (1 + Math.floor(rng() * 254)) : 0;
+  // v2 packed-wire jump bias: blinds instruction deltas on the wire.
+  // Uniform across levels (bodies always use k-form); seeded => deterministic.
+  const jumpBias = 128 + Math.floor(rng() * 896);
 
   const ctx: BuildCtx = {
     level, seed, names, opcodeEncode: encode, opcodeDecode: decode,
@@ -3492,7 +3690,7 @@ export function generateRegVM(chunk: RegBytecodeChunk, options: RegVMGenOptions 
     checkKeyA, checkKeyB, checkStepA, checkStepB,
     spiralPrime, spiralOffset, layerVariants,
     dispatchVariant, dispatchMask, rotSeed, rotStep, rotStep2,
-    argPerm: generateArgPerms(isObf),
+    argPerm: generateArgPerms(isObf), jumpBias,
   };
 
   const doFusion = featureEnabled(options, "opcodeFusion", level !== "debug");
@@ -3539,15 +3737,17 @@ export function generateRegVM(chunk: RegBytecodeChunk, options: RegVMGenOptions 
   const dvNames = ["flat","xor-masked","binary-tree","grouped","table-dispatch","table-xor"];
   if (level !== "debug" && _tel()) console.log(`[RegVM] Dispatch: variant ${dispatchVariant} (${dvNames[dispatchVariant] || "unknown"})`);
 
-  const mappedCode = doShuffle ? mapRegBytecode(chunk.code, encode, ctx.argPerm) : chunk.code;
+  const packedMain = packRegStream(chunk.code, ctx);
 
   const dataK = serializeConstants(chunk.K, ctx);
-  const dataC = serializeRegCode(mappedCode, ctx);
+  const dataC = `{${packedMain.stream.join(",")}}`;
+  const dataW = `{${packedMain.P.join(",")}}`;
   const dataP = serializeRegProtos(chunk.protos, ctx);
 
   const dK = level === "debug" ? "_dK" : randomName(3);
   const dC = level === "debug" ? "_dC" : randomName(3);
   const dP = level === "debug" ? "_dP" : randomName(3);
+  const dW = level === "debug" ? "_dW" : randomName(3);
 
   const nP = chunk.nParams ?? 0;
   const mR = chunk.maxRegs ?? 0;
@@ -3566,8 +3766,9 @@ export function generateRegVM(chunk: RegBytecodeChunk, options: RegVMGenOptions 
     parts.push(vmRuntime);
     parts.push(`local ${dK}=${dataK}`);
     parts.push(`local ${dC}=${dataC}`);
+    parts.push(`local ${dW}=${dataW}`);
     parts.push(`local ${dP}=${dataP}`);
-    parts.push(`return ${names.run}(${dK},${dC},${dP},{},${nP},${mR},${isVA},${names.env})`);
+    parts.push(`return ${names.run}(${dK},${dC},${dW},${dP},{},${nP},${mR},${isVA},${names.env})`);
     output = parts.join("\n");
   } else {
 
@@ -3594,9 +3795,10 @@ export function generateRegVM(chunk: RegBytecodeChunk, options: RegVMGenOptions 
     const vmCode = buildVMRuntime(ctx, true);
     allFragments.push({ code: vmCode, layer: Math.floor(rng() * 3) });
 
-    forwardDecls.push(dK, dC, dP);
+    forwardDecls.push(dK, dC, dW, dP);
     allFragments.push({ code: `${dK}=${dataK}`, layer: Math.floor(rng() * 3) });
     allFragments.push({ code: `${dC}=${dataC}`, layer: Math.floor(rng() * 3) });
+    allFragments.push({ code: `${dW}=${dataW}`, layer: Math.floor(rng() * 3) });
     allFragments.push({ code: `${dP}=${dataP}`, layer: Math.floor(rng() * 3) });
 
     let chainCalls = "";
@@ -3755,12 +3957,12 @@ export function generateRegVM(chunk: RegBytecodeChunk, options: RegVMGenOptions 
           ['bxor', names.bBxor], ['band', names.bBand], ['type', names.bType],
           ['select', names.bSelect], ['tpack', names.tPack], ['tunpack', names.tUnpack],
           ['mfloor', names.bMfloor], ['setmeta', names.bSetmeta], ['tostring', names.bTostring],
-          ['dK', dK], ['dC', dC], ['dP', dP],
+          ['dK', dK], ['dC', dC], ['dW', dW], ['dP', dP],
         ];
         const wParts = chkVars.map(([l,v]) => `"${l}="..tostring(${v})`);
         parts.push(`warn("[ENV_CHECK] "..${wParts.join('.." "..') })`);
       }
-      parts.push(`return ${names.run}(${dK},${dC},${dP},{},${nP},${mR},${isVA},${names.env})`);
+      parts.push(`return ${names.run}(${dK},${dC},${dW},${dP},{},${nP},${mR},${isVA},${names.env})`);
     } else {
 
       for (const frag of sorted) {
@@ -3773,12 +3975,12 @@ export function generateRegVM(chunk: RegBytecodeChunk, options: RegVMGenOptions 
           ['bxor', names.bBxor], ['band', names.bBand], ['type', names.bType],
           ['select', names.bSelect], ['tpack', names.tPack], ['tunpack', names.tUnpack],
           ['mfloor', names.bMfloor], ['setmeta', names.bSetmeta], ['tostring', names.bTostring],
-          ['dK', dK], ['dC', dC], ['dP', dP],
+          ['dK', dK], ['dC', dC], ['dW', dW], ['dP', dP],
         ];
         const wParts = chkVars.map(([l,v]) => `"${l}="..tostring(${v})`);
         parts.push(`warn("[ENV_CHECK] "..${wParts.join('.." "..') })`);
       }
-      parts.push(`return ${names.run}(${dK},${dC},${dP},{},${nP},${mR},${isVA},${names.env})`);
+      parts.push(`return ${names.run}(${dK},${dC},${dW},${dP},{},${nP},${mR},${isVA},${names.env})`);
     }
 
     output = parts.join("\n");

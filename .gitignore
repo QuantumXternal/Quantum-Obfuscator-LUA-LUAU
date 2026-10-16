@@ -7,6 +7,9 @@ dist/
 # Luau binaries
 bin/
 
+# Local-only runtime binaries for validation (never commit)
+vendor/
+
 # IDE / Editor
 .vscode/
 .idea/
