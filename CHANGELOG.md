@@ -8,6 +8,41 @@ Conventions: times are single-run wall ms (run-to-run variance ± several ms —
 only consistent directional deltas across all 9 fixtures count). `none` path
 is the AST-only control: byte-identical before/after in every comparison.
 
+## Hardening — Phase 1.2(b) (seed widening + 128-bit PRNG)
+
+- `polymorphicSeed: number | string` (pipeline, profiles, both VM options,
+  server validation). Contract: numbers keep the legacy 32-bit stream
+  bit-for-bit (0 honored, negatives wrap); strings (any UTF-16 incl. empty
+  — valid, deterministic, distinct from absent) expand through two cyrb128
+  passes (distinct domain separators) into 128-bit sfc32 state; absent =
+  legacy nondeterministic fallback. >= 16 chars recommended for full
+  entropy; short/human seeds proportionally less. CLI takes no seed flag
+  (Date.now numeric default) — unchanged.
+- Dual-path RNG in both VMs (each file's own idiom: flag-dispatch in
+  reg-vm-gen, closure-swap in vm-gen). Numeric draws never touch the wide
+  path. Nested string builds derive domain-separated string sub-seeds
+  (parent + " inner"/" outer": injective per parent, mutually exclusive),
+  so every layer takes the wide path.
+- SPACE CLAIM (stated numerically): string-seed space = 2^128, bounded by
+  the 128-bit expansion, below the factorial opcode-permutation bounds
+  (57! ~= 2^254 reg; 71! ~= 2^372 stack). The factorial counts
+  permutations; the expansion counts reachable mappings — the binding
+  constraint is 2^128.
+- Cache key (`src/cacheKey.ts`, extracted pure from server.ts for testability;
+  never import server.ts in tests — binds port 3000): JSON discriminates
+  seed types, so numeric 1234 vs string "1234" never share an entry.
+  Pinned by `tests/server-cache.test.js` (4 tests).
+- Evidence: 457/457 suite (40 new: 36 seed-widening incl. 200/200 uniqueness
+  per VM, 4 cache-key); numeric byte-identity 20/20 vs pre-(b) tree (10
+  seeds x reg+stack/max); string determinism 10/10 (5 seeds x both VMs);
+  benches: numeric path IDENTICAL to 1.1 (31,031,800 / 28,989,000, same
+  bytes, ±0%); string gen-setup no excess (~5ms steady both paths);
+  string-artifact runtime in-family (bimodal 31.0-31.2M/34.7-34.8M
+  per-build variation across BOTH seed types — dispatch-variant-driven,
+  seed-type-independent).
+- RISK: none to numeric history (dual-path, proven identical); new-string
+  path carries the 2^128 claim, proven by the 200-draw test, not by review.
+
 ## Hardening — Phase 1.2(a) (P1/P2/P3 gate; `hardening/phase1-2`)
 
 - Branch strategy (binding for all of 1.2): `hardening/phase1` is the frozen

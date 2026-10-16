@@ -21,6 +21,36 @@ function seedRandom(seed: number): void {
   };
 }
 
+// Phase 1.2(b): string-seed path. Two cyrb128-class passes (distinct domain
+// separators) expand any UTF-16 string to 128-bit sfc32 state (closure-held,
+// same call shape as the legacy stream). Claimed space 2^128, below the 71!
+// opcode-permutation bound. Numeric seeds never touch this path.
+function seedRandom128(str: string): void {
+  const half = (dom: number): [number, number] => {
+    let h1 = 0xdeadbeef ^ dom, h2 = 0x41c6ce57 ^ dom;
+    for (let i = 0; i < str.length; i++) {
+      const ch = str.charCodeAt(i);
+      h1 = Math.imul(h1 ^ ch, 2654435761);
+      h2 = Math.imul(h2 ^ ch, 1597334677);
+    }
+    h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+    h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+    return [h1 >>> 0, h2 >>> 0];
+  };
+  const [a0, b0] = half(0);
+  const [c0, d0] = half(0x9e3779b9);
+  let a = a0, b = b0, c = c0, d = d0;
+  _rng = () => {
+    const t = (a + b | 0) + d | 0;
+    d = d + 1 | 0;
+    a = b ^ b >>> 9;
+    b = c + (c << 3) | 0;
+    c = c << 21 | c >>> 11;
+    c = c + t | 0;
+    return (t >>> 0) / 4294967296;
+  };
+}
+
 function rng(): number { return _rng(); }
 
 function compileString(luaSource: string): BytecodeChunk {
@@ -3592,7 +3622,21 @@ export interface VMGenOptions {
 
   vmId?: string;
 
-  polymorphicSeed?: number;
+  /**
+   * Phase 1.2(b) string-seed contract: number | string.
+   * - number: legacy 32-bit stream, bit-for-bit history preserved;
+   *   0 honored, negatives wrap (unchanged).
+   * - string: any UTF-16 string (empty valid, deterministic, distinct from
+   *   absent), hashed by code unit through two cyrb128 passes (distinct
+   *   domain separators) into 128-bit sfc32 state. Claimed space 2^128
+   *   (below the 71! opcode-permutation bound); >= 16 chars recommended
+   *   for full entropy — short/human seeds proportionally less.
+   * - absent: legacy nondeterministic fallback (unchanged).
+   * Nested builds derive domain-separated string sub-seeds (parent plus
+   * " inner"/" outer" suffixes — injective and mutually exclusive, see
+   * generateVM), so each layer takes the wide path.
+   */
+  polymorphicSeed?: number | string;
 
   disableFeatures?: FeatureFlag[];
 
@@ -3617,13 +3661,20 @@ export function generateVM(chunk: BytecodeChunk, options: VMGenOptions = {}): st
   const nesting = options.nesting ?? 0;
 
   // `??` (not `||`) so an explicit seed of 0 is honored as deterministic.
-  const seed = options.polymorphicSeed ?? (Date.now() ^ (Math.random() * 0xFFFFFFFF));
+  // Phase 1.2(b): string seeds take the 128-bit path; the numeric
+  // expression below is byte-identical to before for numbers.
+  const seed: number | string = options.polymorphicSeed ?? (Date.now() ^ (Math.random() * 0xFFFFFFFF));
   const seeded = options.polymorphicSeed !== undefined && options.polymorphicSeed !== null;
-  seedRandom(seed);
+  if (typeof seed === "string") seedRandom128(seed); else seedRandom(seed);
 
   if (nesting > 0 && !options.forceSingleVM) {
-    const innerSeed = (seed * 2654435761) >>> 0;
-    const outerSeed = (seed * 2246822519) >>> 0;
+    // Numeric sub-seed derivation is unchanged; string seeds derive
+    // domain-separated string sub-seeds so each nested layer takes the
+    // wide path. Suffixes are collision-free by construction: s+" inner"
+    // is injective per parent, and no s1+" inner" can equal any
+    // s2+" outer" (the 5-char suffixes differ).
+    const innerSeed = typeof seed === "string" ? seed + " inner" : (seed * 2654435761) >>> 0;
+    const outerSeed = typeof seed === "string" ? seed + " outer" : (seed * 2246822519) >>> 0;
     const vmId = options.vmId ?? "nested";
 
     if (_tel()) console.log(`[telemetry:${vmId}] Generating inner VM (seed=${innerSeed})...`);
@@ -3686,7 +3737,7 @@ export function generateVM(chunk: BytecodeChunk, options: VMGenOptions = {}): st
 
       console.warn(`[telemetry:${vmId}] Falling back to single VM (max level)`);
       if (_tel()) console.log(`[telemetry:${vmId}] compile_errors: 1, fallback_used: true`);
-      seedRandom(outerSeed);
+      if (typeof outerSeed === "string") seedRandom128(outerSeed); else seedRandom(outerSeed);
       return generateVM(chunk, {
         level: "max",
         nesting: 0,

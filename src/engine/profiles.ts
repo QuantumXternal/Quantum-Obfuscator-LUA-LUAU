@@ -9,8 +9,12 @@ export interface ProfileRequest {
   target?: ObfuscationTarget;
   /** Deterministic seed. Omitted = legacy random. */
   seed?: number;
-  /** Exact polymorphic seed override. Omitted = derived from seed (or random). */
-  polymorphicSeed?: number;
+  /**
+   * Exact polymorphic seed override. Omitted = derived from seed (or random).
+   * Phase 1.2(b): number | string (string = 128-bit path; see the
+   * generator options for the full contract).
+   */
+  polymorphicSeed?: number | string;
   /** Explicit VM overrides. Omitted fields fall back to profile defaults. */
   vmType?: PipelineVmType;
   vmLevel?: PipelineVmLevel;

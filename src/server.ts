@@ -8,6 +8,7 @@ import { runObfuscatePipeline, PipelineLexError } from "./engine/obfuscatePipeli
 import type { PipelineVmType, PipelineVmLevel } from "./engine/obfuscatePipeline.js";
 import { resolveProfile } from "./engine/profiles.js";
 import type { ProtectionProfile, ObfuscationTarget } from "./engine/profiles.js";
+import { cacheKey } from "./cacheKey.js";
 
 const VALID_PROFILES: ProtectionProfile[] = ["FAST", "BALANCED", "MAXIMUM"];
 
@@ -24,10 +25,7 @@ const obfuscateCache = new Map<string, { output: string; expires: number }>();
 const OBFUSCATE_CACHE_MAX = 50;
 const OBFUSCATE_CACHE_TTL_MS = 5 * 60 * 1000;
 
-function cacheKey(code: string, opts: Record<string, unknown>): string {
-  return JSON.stringify([code.length, code, opts]);
-}
-
+// (cacheKey lives in ./cacheKey.js: pure, unit-tested, no express import.)
 function cacheGet(key: string): string | null {
   const entry = obfuscateCache.get(key);
   if (!entry) return null;
@@ -86,8 +84,11 @@ app.post("/api/obfuscate", (req: express.Request, res: express.Response) => {
     // Omitted = legacy random behavior (decoder names, polymorphic seeds).
     const seed = typeof opts.seed === "number" ? opts.seed : undefined;
     // Exact polymorphic seed override (additive, optional). Omitted = derived
-    // from seed, else wall-clock/random per generator.
-    const polymorphicSeed = typeof opts.polymorphicSeed === "number" ? opts.polymorphicSeed : undefined;
+    // from seed, else wall-clock/random per generator. Phase 1.2(b): accepts
+    // number (legacy 32-bit path) or string (128-bit path); the cache key
+    // discriminates the type (see ./cacheKey.js), so 1234 and "1234" never
+    // share an entry.
+    const polymorphicSeed = typeof opts.polymorphicSeed === "number" || typeof opts.polymorphicSeed === "string" ? opts.polymorphicSeed : undefined;
     // Explicit protection profile (FAST/BALANCED/MAXIMUM) and environment
     // target (generic/roblox). Absent profile = legacy behavior below.
     const profile: ProtectionProfile | undefined = VALID_PROFILES.includes(opts.profile)

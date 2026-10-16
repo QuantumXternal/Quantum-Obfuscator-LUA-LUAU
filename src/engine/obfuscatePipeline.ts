@@ -25,8 +25,15 @@ export interface PipelineOptions {
   vmLevel: PipelineVmLevel;
   /** Deterministic seed for encode/scramble/polymorphic generation. Omitted = legacy random. */
   seed?: number;
-  /** VM polymorphic seed override. Defaults to seed ?? Date.now(). */
-  polymorphicSeed?: number;
+  /**
+   * VM polymorphic seed override. Defaults to seed ?? Date.now().
+   * Phase 1.2(b): number | string. Numbers keep the legacy 32-bit stream
+   * bit-for-bit; strings (any UTF-16 incl. empty — valid, deterministic,
+   * distinct from absent) take the 128-bit sfc32 path (claimed space 2^128;
+   * >= 16 chars recommended for full entropy). Passed through to the VM
+   * generators, which document the full contract on their options.
+   */
+  polymorphicSeed?: number | string;
   /** Extra VM feature gates, appended to level-implied defaults. */
   disableFeatures?: string[];
   /** Stack VM only. Passed through to generateVM. */

@@ -40,7 +40,18 @@ export type RegFeatureFlag =
 export interface RegVMGenOptions {
   level?: RegVMLevel;
   executorGlobals?: boolean;
-  polymorphicSeed?: number;
+  /**
+   * Phase 1.2(b) string-seed contract: number | string.
+   * - number: legacy 32-bit stream (seed >>> 0), bit-for-bit history
+   *   preserved; 0 honored, negatives wrap (unchanged).
+   * - string: any UTF-16 string (empty valid, deterministic, distinct from
+   *   absent), hashed by code unit through two cyrb128 passes (distinct
+   *   domain separators) into 128-bit sfc32 state. Claimed space 2^128
+   *   (below the 57! opcode-permutation bound); >= 16 chars recommended
+   *   for full entropy — short/human seeds proportionally less.
+   * - absent: legacy nondeterministic fallback (unchanged).
+   */
+  polymorphicSeed?: number | string;
   disableFeatures?: RegFeatureFlag[];
   forceFeatures?: RegFeatureFlag[];
 
@@ -52,7 +63,7 @@ export interface RegVMGenOptions {
 
 interface BuildCtx {
   level: RegVMLevel;
-  seed: number;
+  seed: number | string;
   names: NameMap;
   opcodeEncode: number[];
   opcodeDecode: number[];
@@ -151,9 +162,45 @@ let _rngState = 0;
 
 function seedRandom(s: number): void {
   _rngState = s >>> 0;
+  _wide = false;
+}
+
+// Phase 1.2(b): dual-path RNG. Numeric seeds keep the legacy 32-bit stream
+// above bit-for-bit (byte-identity preserved). String seeds expand to
+// 128-bit state (two cyrb128-class passes, distinct domain separators)
+// driving sfc32 (128-bit state, public-domain construction). Claimed
+// string-seed space: 2^128, below the 57! opcode-permutation bound.
+let _wide = false;
+let _w0 = 0, _w1 = 0, _w2 = 0, _w3 = 0;
+function seedRandom128(str: string): void {
+  const half = (dom: number): [number, number] => {
+    let h1 = 0xdeadbeef ^ dom, h2 = 0x41c6ce57 ^ dom;
+    for (let i = 0; i < str.length; i++) {
+      const ch = str.charCodeAt(i);
+      h1 = Math.imul(h1 ^ ch, 2654435761);
+      h2 = Math.imul(h2 ^ ch, 1597334677);
+    }
+    h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+    h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+    return [h1 >>> 0, h2 >>> 0];
+  };
+  const [a, b] = half(0);
+  const [c, d] = half(0x9e3779b9);
+  _w0 = a; _w1 = b; _w2 = c; _w3 = d;
+  _wide = true;
+}
+function rngWide(): number {
+  let t = (_w0 + _w1 | 0) + _w3 | 0;
+  _w3 = _w3 + 1 | 0;
+  _w0 = _w1 ^ _w1 >>> 9;
+  _w1 = _w2 + (_w2 << 3) | 0;
+  _w2 = _w2 << 21 | _w2 >>> 11;
+  _w2 = _w2 + t | 0;
+  return (t >>> 0) / 4294967296;
 }
 
 function rng(): number {
+  if (_wide) return rngWide();
   _rngState = (_rngState + 0x6D2B79F5) >>> 0;
   let t = Math.imul(_rngState ^ (_rngState >>> 15), 1 | _rngState);
   t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
@@ -3539,8 +3586,10 @@ function serializeBytecodeAsBinary(chunk: RegBytecodeChunk, ctx: BuildCtx): Uint
 export function generateRegVM(chunk: RegBytecodeChunk, options: RegVMGenOptions = {}): string {
   const level = options.level ?? "normal";
   // `??` (not `||`) so an explicit seed of 0 is honored as deterministic.
-  const seed = options.polymorphicSeed ?? generateDynamicSeed(chunk);
-  seedRandom(seed);
+  // Phase 1.2(b): string seeds take the 128-bit path; numeric seeds keep
+  // the legacy stream bit-for-bit.
+  const seed: number | string = options.polymorphicSeed ?? generateDynamicSeed(chunk);
+  if (typeof seed === "string") seedRandom128(seed); else seedRandom(seed);
   resetNames();
 
   // Operational footgun guard: these generation-time flags silently weaken
