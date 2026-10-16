@@ -64,10 +64,11 @@ t("payload flips never yield the valid result (tamper-evident)", () => {
   // offsets start+996 and start+999..start+1004 sit inside the
   // prefix-length-gated decode branch that does not execute on this path,
   // so flips there are likewise unobservable (each still prints valid).
-  // Recalibrated after the Phase-1.1 envelope layout shift moved old
-  // start+1000 into that pocket; start+997 is live code adjacent to it
-  // and breaks loudly.
-  const positions = [0, 1, 40, 50, 60, 100, 200, 300, 997, 5000]
+  // Recalibrated after the Phase-1.1 K-table reorder moved old start+997
+  // onto a decoy slot (decoys are never read, so flips there are
+  // unobservable by design — same category as the exclusions above).
+  // start+1000 is live code adjacent to it and breaks loudly.
+  const positions = [0, 1, 40, 50, 60, 100, 200, 300, 1000, 5000]
     .map((k) => start + k).filter((p) => p < art.length);
   expect(positions.length).toBeGreaterThan(0);
   for (const p of positions) {

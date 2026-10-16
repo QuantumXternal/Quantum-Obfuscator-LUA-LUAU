@@ -782,8 +782,51 @@ function serializeConstant(v: Constant, encodeStrings: boolean, xorKey: number =
   return "nil";
 }
 
-function serializeConstants(K: Constant[], encodeStrings: boolean, xorKey: number = 0, doFragment: boolean = false, xorStep: number = 0, doConstantFold: boolean = false, lazyBaseKey: number = 0, lazyKeyPrime: number = 0, doMutation: boolean = false): string {
-  return `{${K.map((v, idx) => serializeConstant(v, encodeStrings, xorKey, doFragment, xorStep, idx, doConstantFold, lazyBaseKey, lazyKeyPrime, doMutation)).join(",")}}`;
+function serializeConstants(K: Constant[], encodeStrings: boolean, xorKey: number = 0, doFragment: boolean = false, xorStep: number = 0, doConstantFold: boolean = false, lazyBaseKey: number = 0, lazyKeyPrime: number = 0, doMutation: boolean = false, constSalt: number = 1): string {
+  if (K.length === 0) {
+    return `{${K.map((v, idx) => serializeConstant(v, encodeStrings, xorKey, doFragment, xorStep, idx, doConstantFold, lazyBaseKey, lazyKeyPrime, doMutation)).join(",")}}`;
+  }
+  // v2 computed-index layout (Phase 1.1 / R-2, stack side): pad to a power
+  // of two with never-referenced decoys, then place real entry j at
+  // bxor(j, eff)+1 with eff = S % n2 (S odd artifact salt). resolveK reads
+  // K[bxor(_idx-1, S%#K)+1], so no literal index addresses a real constant.
+  // Salt passed with final positions (matches runtime decode). Honeypot and
+  // recipe entries move opaquely; pools are a separate table (unaffected).
+  const n2 = nextPow2Const(K.length);
+  const eff = constSalt % n2;
+  const placed: (Constant | undefined)[] = new Array(n2).fill(undefined);
+  for (let j = 0; j < K.length; j++) placed[(j ^ eff)] = K[j];
+  const decoys = makeStackDecoys(n2 - K.length);
+  let di = 0;
+  const occupied = new Array<boolean>(n2).fill(false);
+  for (let j = 0; j < K.length; j++) occupied[(j ^ eff)] = true;
+  for (let s = 0; s < n2; s++) {
+    if (!occupied[s]) placed[s] = decoys[di++];
+  }
+  return `{${placed.map((v, idx) => serializeConstant(v as Constant, encodeStrings, xorKey, doFragment, xorStep, idx, doConstantFold, lazyBaseKey, lazyKeyPrime, doMutation)).join(",")}}`;
+}
+
+function nextPow2Const(n: number): number {
+  let p = 1;
+  while (p < n) p *= 2;
+  return p;
+}
+
+/** Cheap never-referenced filler for stack K padding. */
+function makeStackDecoys(count: number): Constant[] {
+  const out: Constant[] = [];
+  for (let i = 0; i < count; i++) {
+    const v = rng();
+    if (v < 0.8) out.push(Math.floor(rng() * 100000));
+    else if (v < 0.9) out.push(rng() < 0.5);
+    else {
+      const len = 3 + Math.floor(rng() * 8);
+      let s = "";
+      for (let k = 0; k < len; k++) s += String.fromCharCode(97 + Math.floor(rng() * 26));
+      out.push(s);
+    }
+  }
+  return out;
 }
 
 function lzssCompress(input: number[]): number[] {
@@ -1974,7 +2017,8 @@ function serializeProtos(
   addFakeProtos: boolean = false,
   protoKeys: { pK: string; pC: string; pP: string; pU: string; pN: string } = { pK: "K", pC: "C", pP: "P", pU: "U", pN: "nParams" },
   cipherSeeds?: [number, number, number],
-  doMutation: boolean = false
+  doMutation: boolean = false,
+  constSalt: number = 1
 ): string {
   if (!protos || protos.length === 0) {
     if (!addFakeProtos) return "{}";
@@ -1983,12 +2027,12 @@ function serializeProtos(
   if (protos) {
     for (const p of protos) {
       const mappedCode = doShuffle ? mapBytecode(p.code, opcodeEncode) : p.code;
-      const K = serializeConstants(p.K, encodeStrings, xorKey, doFragment, xorStep, doConstantFold, lazyBaseKey, lazyKeyPrime, doMutation);
+      const K = serializeConstants(p.K, encodeStrings, xorKey, doFragment, xorStep, doConstantFold, lazyBaseKey, lazyKeyPrime, doMutation, constSalt);
 
       const C = cipherSeeds
         ? packCodeToTable(mappedCode, cipherSeeds[0], cipherSeeds[1], cipherSeeds[2])
         : serializeCode(mappedCode, codeXorKey);
-      const P = serializeProtos(p.protos, opcodeEncode, encodeStrings, doShuffle, xorKey, doFragment, xorStep, codeXorKey, doConstantFold, lazyBaseKey, lazyKeyPrime, false, protoKeys, cipherSeeds, doMutation);
+      const P = serializeProtos(p.protos, opcodeEncode, encodeStrings, doShuffle, xorKey, doFragment, xorStep, codeXorKey, doConstantFold, lazyBaseKey, lazyKeyPrime, false, protoKeys, cipherSeeds, doMutation, constSalt);
       let U = "nil";
       if (p.upvalues && p.upvalues.length > 0) {
         U = `{${p.upvalues.map(uv => `{${uv[0]},${uv[1]}}`).join(",")}}`;
@@ -2740,6 +2784,7 @@ function buildVMFunction(
   doPooling: boolean = false,
   poolsVarName: string = "",
   hotRealOps: number[] = [],
+  constSalt: number = 1,
 ): string {
   const doLazyDecode = lazyBaseKey !== 0;
   const doStringPools = poolsVarName !== "";
@@ -2780,11 +2825,14 @@ function buildVMFunction(
       lines.push(`local ${decFn}=function(_e,_dk,_s) if _s==0 then return bit32.bxor(_e,_dk) elseif _s==1 then return (_e-_dk+256)%256 elseif _s==2 then return bit32.bxor(_e,bit32.band(bit32.bor(bit32.lshift(_dk,3),bit32.rshift(_dk,5)),0xFF)) else return (_e-bit32.bxor(_dk,0xAA)+256)%256 end end`);
 
       lines.push(`local function ${n.resolveK}(_idx)`);
-      lines.push(`local _v=${n.K}[_idx]`);
+      // v2 computed-index K access (Phase 1.1 / R-2, stack side): real entry
+      // j (0-based) lives at bxor(j, eff)+1 with eff = S % #K. No literal
+      // index addresses a real constant; decoy slots are never addressed.
+      lines.push(`local _v=${n.K}[bit32.bxor(_idx-1,${constSalt}%#${n.K})+1]`);
       lines.push(`if type(_v)~="table" then return _v end`);
       lines.push(`if #_v==0 then return "" end`);
 
-      lines.push(`if _v[1]==-999 then local _r=bit32.bxor(_v[2],_v[3]);${n.K}[_idx]=_r;return _r end`);
+      lines.push(`if _v[1]==-999 then local _r=bit32.bxor(_v[2],_v[3]);${n.K}[bit32.bxor(_idx-1,${constSalt}%#${n.K})+1]=_r;return _r end`);
 
       lines.push(`local _k=bit32.bxor(${bk},_idx*${kp})`);
       lines.push(`local _st=bit32.band(bit32.rshift(_k,16),3)`);
@@ -2809,11 +2857,14 @@ function buildVMFunction(
     } else {
 
       lines.push(`local function ${n.resolveK}(_idx)`);
-      lines.push(`local _v=${n.K}[_idx]`);
+      // v2 computed-index K access (Phase 1.1 / R-2, stack side): real entry
+      // j (0-based) lives at bxor(j, eff)+1 with eff = S % #K. No literal
+      // index addresses a real constant; decoy slots are never addressed.
+      lines.push(`local _v=${n.K}[bit32.bxor(_idx-1,${constSalt}%#${n.K})+1]`);
       lines.push(`if type(_v)~="table" then return _v end`);
       lines.push(`if #_v==0 then return "" end`);
 
-      lines.push(`if _v[1]==-999 then local _r=bit32.bxor(_v[2],_v[3]);${n.K}[_idx]=_r;return _r end`);
+      lines.push(`if _v[1]==-999 then local _r=bit32.bxor(_v[2],_v[3]);${n.K}[bit32.bxor(_idx-1,${constSalt}%#${n.K})+1]=_r;return _r end`);
       lines.push(`local _k=bit32.bxor(${bk},_idx*${kp})`);
 
       if (doStringPools) {
@@ -2837,7 +2888,7 @@ function buildVMFunction(
 
   } else {
 
-    lines.push(`local function ${n.resolveK}(_idx) return ${n.K}[_idx] end`);
+    lines.push(`local function ${n.resolveK}(_idx) return ${n.K}[bit32.bxor(_idx-1,${constSalt}%#${n.K})+1] end`);
 
     if (encodeStrings) {
 
@@ -3621,6 +3672,8 @@ export function generateVM(chunk: BytecodeChunk, options: VMGenOptions = {}): st
   const doMinify = featureEnabled(options, "minification", level === "max");
   const xorKey = encodeStrings ? (1 + Math.floor(rng() * 254)) : 0;
   const xorStep = encodeStrings ? (1 + Math.floor(rng() * 254)) : 0;
+  // v2 computed-index K salt (Phase 1.1 / R-2): odd artifact-wide seed.
+  const constSalt = 1 + 2 * Math.floor(rng() * 32768);
   const codeXorKey = (level !== "debug") ? (1 + Math.floor(rng() * 254)) : 0;
   const doFragment = featureEnabled(options, "stringFragment", level === "max");
   const doConstantFold = featureEnabled(options, "constantFolding", level === "max");
@@ -3699,7 +3752,9 @@ export function generateVM(chunk: BytecodeChunk, options: VMGenOptions = {}): st
   const doStringPools = level === "max" && doLazyDecode;
   const poolsVarName = doStringPools ? randomName(3) : "";
 
-  const vmFunction = buildVMFunction(n, opcodeEncode, level, encodeStrings, xorKey, xorStep, effectiveCodeXorKey, codeHash, lazyBaseKey, lazyKeyPrime, ctxInit, ctxPrime, jumpKey, protoKeys, cipherSeeds, doMutation, doPooling, poolsVarName, hotRealOps);
+  const vmFunction = buildVMFunction(n, opcodeEncode, level, encodeStrings, xorKey, xorStep,
+    effectiveCodeXorKey, codeHash, lazyBaseKey, lazyKeyPrime, ctxInit, ctxPrime, jumpKey, protoKeys, cipherSeeds,
+    doMutation, doPooling, poolsVarName, hotRealOps, constSalt);
 
   const honeypotPool = [
     "RemoteEvent","FireServer","InvokeServer","OnServerEvent","OnClientEvent",
@@ -3753,8 +3808,8 @@ export function generateVM(chunk: BytecodeChunk, options: VMGenOptions = {}): st
     if (_tel()) console.log(`[§69] String pools: ${pools.length} pools, ${pools.reduce((a, p) => a + p.length, 0)} total bytes`);
   }
 
-  const dataK = serializeConstants(finalK, encodeStrings, xorKey, doLazyDecode ? false : doFragment, xorStep, doConstantFold, lazyBaseKey, lazyKeyPrime, doMutation);
-  const dataP = serializeProtos(chunk.protos, opcodeEncode, encodeStrings, doShuffle, xorKey, doLazyDecode ? false : doFragment, xorStep, effectiveCodeXorKey, doConstantFold, lazyBaseKey, lazyKeyPrime, level === "max", protoKeys, cipherSeeds, doMutation);
+  const dataK = serializeConstants(finalK, encodeStrings, xorKey, doLazyDecode ? false : doFragment, xorStep, doConstantFold, lazyBaseKey, lazyKeyPrime, doMutation, constSalt);
+  const dataP = serializeProtos(chunk.protos, opcodeEncode, encodeStrings, doShuffle, xorKey, doLazyDecode ? false : doFragment, xorStep, effectiveCodeXorKey, doConstantFold, lazyBaseKey, lazyKeyPrime, level === "max", protoKeys, cipherSeeds, doMutation, constSalt);
 
   const dK = randomName(3);
   const dC = randomName(3);

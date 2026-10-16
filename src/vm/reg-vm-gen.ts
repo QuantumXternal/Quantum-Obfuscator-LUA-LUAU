@@ -88,6 +88,8 @@ interface BuildCtx {
   rotStep2: number;
   usedOps?: Set<number>;
   argPerm: number[][];
+  /** Per-build constant-table salt (v2 computed-index K layout). */
+  constSalt: number;
   /** Per-build jump-delta bias (v2 packed wire; applied at pack time). */
   jumpBias: number;
 }
@@ -597,7 +599,47 @@ function serializeConstant(v: Constant, ctx: BuildCtx, idx: number): string {
 }
 
 function serializeConstants(K: Constant[], ctx: BuildCtx): string {
-  return `{${K.map((v, i) => serializeConstant(v, ctx, i)).join(",")}}`;
+  if (ctx.level === "debug" || K.length === 0) {
+    return `{${K.map((v, i) => serializeConstant(v, ctx, i)).join(",")}}`;
+  }
+  // v2 computed-index layout (Phase 1.1 / R-2): pad to a power of two with
+  // never-referenced decoy constants, then place real entry j at
+  // bxor(j, eff)+1 where eff = S % n2. RK() reads K[bxor(j, S%#K)+1], so no
+  // literal index ever addresses a real constant and decoys pollute any
+  // table dump. Salt passed with final positions (matches runtime decode).
+  const n2 = nextPow2(K.length);
+  const eff = ctx.constSalt % n2;
+  const placed: (Constant | undefined)[] = new Array(n2).fill(undefined);
+  for (let j = 0; j < K.length; j++) placed[(j ^ eff)] = K[j];
+  const decoys = makeDecoyConstants(n2 - K.length);
+  let di = 0;
+  for (let s = 0; s < n2; s++) {
+    if (placed[s] === undefined) placed[s] = decoys[di++];
+  }
+  return `{${placed.map((v, i) => serializeConstant(v as Constant, ctx, i)).join(",")}}`;
+}
+
+function nextPow2(n: number): number {
+  let p = 1;
+  while (p < n) p *= 2;
+  return p;
+}
+
+/** Cheap never-referenced filler: ints dominate (small literals), some bools/strings. */
+function makeDecoyConstants(count: number): Constant[] {
+  const out: Constant[] = [];
+  for (let i = 0; i < count; i++) {
+    const v = rng();
+    if (v < 0.8) out.push(Math.floor(rng() * 100000));
+    else if (v < 0.9) out.push(rng() < 0.5);
+    else {
+      const len = 3 + Math.floor(rng() * 8);
+      let s = "";
+      for (let k = 0; k < len; k++) s += String.fromCharCode(97 + Math.floor(rng() * 26));
+      out.push(s);
+    }
+  }
+  return out;
 }
 
 function serializeRegProtos(protos: RegBytecodeChunk[] | undefined, ctx: BuildCtx): string {
@@ -653,8 +695,8 @@ function registerHandler(op: RegOp, gen: HandlerGen): void {
 
 registerHandler(RegOp.NOP, () => ``);
 
-registerHandler(RegOp.LOADK, (n) =>
-  `${n.R}[A+1]=${n.K}[B+1]`);
+registerHandler(RegOp.LOADK, (n, ctx) =>
+  `${n.R}[A+1]=${n.K}[${n.bBxor}(B,${ctx.constSalt}%#${n.K})+1]`);
 
 registerHandler(RegOp.LOADNIL, (n) =>
   `for _i=A,A+B do ${n.R}[_i+1]=nil end`);
@@ -665,19 +707,19 @@ registerHandler(RegOp.LOADBOOL, (n) =>
 registerHandler(RegOp.MOVE, (n) =>
   `${n.R}[A+1]=${n.R}[B+1]`);
 
-registerHandler(RegOp.LOADKX, (n) =>
-  `local ex=${n.code}[${n.ip}+1];${n.R}[A+1]=${n.K}[ex+1];${n.kk}=${n.kk}+1;${n.ip}=${n.poff}[${n.kk}] or (#${n.code}+1)`);
+registerHandler(RegOp.LOADKX, (n, ctx) =>
+  `local ex=${n.code}[${n.ip}+1];${n.R}[A+1]=${n.K}[${n.bBxor}(ex,${ctx.constSalt}%#${n.K})+1];${n.kk}=${n.kk}+1;${n.ip}=${n.poff}[${n.kk}] or (#${n.code}+1)`);
 
 registerHandler(RegOp.EXTRAARG, () => ``);
 
-registerHandler(RegOp.GETGLOBAL, (n) => {
+registerHandler(RegOp.GETGLOBAL, (n, ctx) => {
   const dbg = process.env.DEBUG_VM === '1';
   const nilChk = dbg ? `;if ${n.R}[A+1]==nil then warn("[GETGLOBAL] nil: "..tostring(_k)) end` : '';
-  return `do local _k=${n.K}[B+1];if ${n.ic}[1]==_k then ${n.R}[A+1]=${n.ic}[2] else local _v=${n.env}[_k];${n.R}[A+1]=_v;${n.ic}[1]=_k;${n.ic}[2]=_v end${nilChk} end`;
+  return `do local _k=${n.K}[${n.bBxor}(B,${ctx.constSalt}%#${n.K})+1];if ${n.ic}[1]==_k then ${n.R}[A+1]=${n.ic}[2] else local _v=${n.env}[_k];${n.R}[A+1]=_v;${n.ic}[1]=_k;${n.ic}[2]=_v end${nilChk} end`;
 });
 
-registerHandler(RegOp.SETGLOBAL, (n) =>
-  `do ${n.env}[${n.K}[B+1]]=${n.R}[A+1];${n.ic}[1]=nil end`);
+registerHandler(RegOp.SETGLOBAL, (n, ctx) =>
+  `do ${n.env}[${n.K}[${n.bBxor}(B,${ctx.constSalt}%#${n.K})+1]]=${n.R}[A+1];${n.ic}[1]=nil end`);
 
 registerHandler(RegOp.GETTABLE, (n) => {
   const dbg = process.env.DEBUG_VM === '1';
@@ -872,22 +914,24 @@ registerHandler(RegOp.FUSED_TESTSET_JMP, (n) => {
   return `do local _bv=${n.R}[B+1];local _j=${n.code}[${n.ip}-2];if (not _bv)==(C~=0) then do end else ${n.R}[A+1]=_bv;${n.kk}=${n.kk}+(_j-${n.jbias});${n.ip}=${n.poff}[${n.kk}] or (#${n.code}+1) end end`;
 });
 
-registerHandler(RegOp.FUSED_GGET, (n) => {
+registerHandler(RegOp.FUSED_GGET, (n, ctx) => {
   const v = Math.floor(rng() * 3);
   const dbg = process.env.DEBUG_VM === '1';
-  const nilG = dbg ? `if _g==nil then warn("[FUSED_GGET] nil global: "..tostring(${n.K}[B+1])) end;` : '';
+  const nilG = dbg ? `if _g==nil then warn("[FUSED_GGET] nil global: "..tostring(${n.K}[${n.bBxor}(B,${ctx.constSalt}%#${n.K})+1])) end;` : '';
+  const kacc = `${n.K}[${n.bBxor}(B,${ctx.constSalt}%#${n.K})+1]`;
   if (v === 0)
-    return `do local _A2=${n.code}[${n.ip}-3];local _C2=${n.code}[${n.ip}-1];local _g=${n.env}[${n.K}[B+1]];${nilG}${n.R}[A+1]=_g;${n.R}[_A2+1]=_g[${n.RK}(_C2)] end`;
+    return `do local _A2=${n.code}[${n.ip}-3];local _C2=${n.code}[${n.ip}-1];local _g=${n.env}[${kacc}];${nilG}${n.R}[A+1]=_g;${n.R}[_A2+1]=_g[${n.RK}(_C2)] end`;
   if (v === 1)
-    return `do local _A2=${n.code}[${n.ip}-3];local _C2=${n.code}[${n.ip}-1];local _g=${n.env}[${n.K}[B+1]];${nilG}${n.R}[A+1]=_g;${n.R}[_A2+1]=_g[${n.RK}(_C2)];local f=${n.R}[_A2+1] end`;
-  return `do local _g=${n.env}[${n.K}[B+1]];${nilG}${n.R}[A+1]=_g;local _k=${n.RK}(${n.code}[${n.ip}-1]);${n.R}[${n.code}[${n.ip}-3]+1]=_g[_k] end`;
+    return `do local _A2=${n.code}[${n.ip}-3];local _C2=${n.code}[${n.ip}-1];local _g=${n.env}[${kacc}];${nilG}${n.R}[A+1]=_g;${n.R}[_A2+1]=_g[${n.RK}(_C2)];local f=${n.R}[_A2+1] end`;
+  return `do local _g=${n.env}[${kacc}];${nilG}${n.R}[A+1]=_g;local _k=${n.RK}(${n.code}[${n.ip}-1]);${n.R}[${n.code}[${n.ip}-3]+1]=_g[_k] end`;
 });
 
-registerHandler(RegOp.FUSED_LOADKK, (n) => {
+registerHandler(RegOp.FUSED_LOADKK, (n, ctx) => {
   const v = Math.floor(rng() * 2);
+  const kacc = (e: string) => `${n.K}[${n.bBxor}(${e},${ctx.constSalt}%#${n.K})+1]`;
   if (v === 0)
-    return `do local _A2=${n.code}[${n.ip}-3];local _B2=${n.code}[${n.ip}-2];${n.R}[A+1]=${n.K}[B+1];${n.R}[_A2+1]=${n.K}[_B2+1] end`;
-  return `do ${n.R}[A+1]=${n.K}[B+1];${n.R}[${n.code}[${n.ip}-3]+1]=${n.K}[${n.code}[${n.ip}-2]+1] end`;
+    return `do local _A2=${n.code}[${n.ip}-3];local _B2=${n.code}[${n.ip}-2];${n.R}[A+1]=${kacc("B")};${n.R}[_A2+1]=${kacc("_B2")} end`;
+  return `do ${n.R}[A+1]=${kacc("B")};${n.R}[${n.code}[${n.ip}-3]+1]=${kacc(`${n.code}[${n.ip}-2]`)} end`;
 });
 
 registerHandler(RegOp.FUSED_MOVE_MOVE, (n) => {
@@ -1628,7 +1672,10 @@ function buildVMRuntime(ctx: BuildCtx, assignStyle: boolean = false): string {
       L.push(`local ${rkThreshVar}=${n.bBand}(${RK_OFFSET | (Math.floor(rng() * 256) << 16)},0xFFFF)`);
     }
     L.push(`local ${rkSubVar}=${rkThreshVar}-1`);
-    L.push(`local function ${n.RK}(x) if x>=${rkThreshVar} then return ${n.K}[x-${rkSubVar}] else return ${n.R}[x+1] end end`);
+    // v2 computed-index K access (Phase 1.1 / R-2): real entry j (0-based)
+    // lives at bxor(j, eff)+1 with eff = S % #K (S odd artifact salt, so
+    // eff != 0 for #K>=2). No literal index addresses a real constant.
+    L.push(`local function ${n.RK}(x) if x>=${rkThreshVar} then return ${n.K}[${n.bBxor}((x-${rkSubVar})-1,${ctx.constSalt}%#${n.K})+1] else return ${n.R}[x+1] end end`);
   } else {
     L.push(`local function ${n.RK}(x) if x>=${RK_OFFSET} then return ${n.K}[x-${RK_OFFSET - 1}] else return ${n.R}[x+1] end end`);
   }
@@ -1647,7 +1694,7 @@ function buildVMRuntime(ctx: BuildCtx, assignStyle: boolean = false): string {
     for (const [sOp, body] of bodies) {
       if (hotShuffled.has(sOp)) {
         const inlined = body.replace(rkRe, (_m, v) =>
-          `(${v}>=${rkThreshVar} and ${n.K}[${v}-${rkSubVar}] or ${n.R}[${v}+1])`);
+          `(${v}>=${rkThreshVar} and ${n.K}[${n.bBxor}((${v}-${rkSubVar})-1,${ctx.constSalt}%#${n.K})+1] or ${n.R}[${v}+1])`);
         if (inlined !== body) bodies.set(sOp, inlined);
       }
     }
@@ -3681,6 +3728,9 @@ export function generateRegVM(chunk: RegBytecodeChunk, options: RegVMGenOptions 
   // v2 packed-wire jump bias: blinds instruction deltas on the wire.
   // Uniform across levels (bodies always use k-form); seeded => deterministic.
   const jumpBias = 128 + Math.floor(rng() * 896);
+  // v2 computed-index K salt: artifact-wide odd seed; effective per-table
+  // salt is S % #K (nonzero for #K>=2 since S is odd). Seeded => deterministic.
+  const constSalt = 1 + 2 * Math.floor(rng() * 32768);
 
   const ctx: BuildCtx = {
     level, seed, names, opcodeEncode: encode, opcodeDecode: decode,
@@ -3690,7 +3740,7 @@ export function generateRegVM(chunk: RegBytecodeChunk, options: RegVMGenOptions 
     checkKeyA, checkKeyB, checkStepA, checkStepB,
     spiralPrime, spiralOffset, layerVariants,
     dispatchVariant, dispatchMask, rotSeed, rotStep, rotStep2,
-    argPerm: generateArgPerms(isObf), jumpBias,
+    argPerm: generateArgPerms(isObf), jumpBias, constSalt,
   };
 
   const doFusion = featureEnabled(options, "opcodeFusion", level !== "debug");
