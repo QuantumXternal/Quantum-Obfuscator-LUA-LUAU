@@ -8,6 +8,34 @@ Conventions: times are single-run wall ms (run-to-run variance ± several ms —
 only consistent directional deltas across all 9 fixtures count). `none` path
 is the AST-only control: byte-identical before/after in every comparison.
 
+## Hardening — Phase 1.2(a) (P1/P2/P3 gate; `hardening/phase1-2`)
+
+- Branch strategy (binding for all of 1.2): `hardening/phase1` is the frozen
+  1.1 line (tip `9889228`, untouched); `hardening/phase1-2` is the 1.2
+  working branch for (a)→(h), forked from `9889228`. Merge decisions at
+  1.2 review. Pushes fully-qualified `SHA:refs/heads/hardening/phase1-2`.
+- SCOPE REDUCTION (closes the 1.1 P1/P2/P3 TODO by finding, not by new
+  mitigation): emitted comparison handlers in BOTH VMs delegate every
+  comparison to host operators (reg `EQ/LT/LE` + all `FUSED_*_JMP` bodies;
+  stack `h[16-21]`). Shipped artifacts were already host-correct on both
+  targets — P1/P2/P3 were never an output defect, only a test-oracle blind
+  spot. A lifted artifact delegates to the host, so no divergence leaks to
+  a semantic layer. `comparisonMode` (`"puc"` default, `"luau"` opt-in)
+  lives in `runVM`/`runReg` oracles only; zero gen-file changes in (a).
+- 1.1-RECORD CORRECTIONS (load-bearing for any future CFF/opaque-predicate
+  work — truth, not footnote): (1) PUC `__eq` is FIRST-THEN-SECOND among
+  tables, not first-only (E4: second-only fires, `cB=1`); the old oracle
+  matched Luau there and diverged PUC. (2) Luau 0.742 honors NO ordering
+  metamethods on tables — every `<,<=,>,>=` involving a table raises
+  `attempt to compare {ta} {op} {tb}`, even with `__lt`/`__le` defined.
+  Both corrections pinned in `tests/comparison-modes.test.js` (21 tests:
+  P1/P2/P3 x both modes x both runners, M1/M5/G4 fallback, 4 raise
+  messages, mixed-skip, default-is-puc). PUC `<=`/`>=` fall back to
+  NOT-swapped-`__lt` absent `__le`; two stale mixed-`__eq` expectations
+  corrected to probe-measured values (E5/N4).
+- `65302bb` — Evidence: 417/417 suite; default-path byte-identity proven
+  (5/5 re-gen hashes == 1.1 tree).
+
 ## Hardening — Phase 1.1 (reg-VM v2 vs ClydeDeobfuscator@87102086; `hardening/phase1` tip `206d452`)
 
 - `ea3d800` — Packed v2 instruction wire `H=shuffledOp*16+argc`, variable
