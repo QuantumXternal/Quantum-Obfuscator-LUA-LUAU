@@ -1686,21 +1686,20 @@ function buildVMRuntime(ctx: BuildCtx, assignStyle: boolean = false): string {
 
   const bodies = buildHandlerBodies(n, ctx, ctx.usedOps);
 
+  // v2 (Phase 1.1 / R-4e): inline RK() at every call site (not just hot
+  // arithmetic). Each RK call costs a closure invocation per operand on the
+  // hottest path; inlining reduces it to a compare + branch. RK is pure
+  // (table reads only) and its argument is always a plain local, so
+  // duplicating evaluation is semantics-preserving. Measured, not assumed
+  // (see hot-loop benchmark in the 1.1 report).
   if (rkThreshVar) {
-    const hotRawOps: number[] = [
-      RegOp.ADD as number, RegOp.SUB as number, RegOp.MUL as number,
-      RegOp.DIV as number, RegOp.MOD as number, RegOp.POW as number,
-      RegOp.IDIV as number,
-    ];
-    const hotShuffled = new Set(hotRawOps.map(op => ctx.opcodeEncode[op]));
     const rkEsc = n.RK.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const rkRe = new RegExp(rkEsc + '\\(([A-Z])\\)', 'g');
     for (const [sOp, body] of bodies) {
-      if (hotShuffled.has(sOp)) {
-        const inlined = body.replace(rkRe, (_m, v) =>
-          `(${v}>=${rkThreshVar} and ${n.K}[${n.bBxor}((${v}-${rkSubVar})-1,${ctx.constSalt}%#${n.K})+1] or ${n.R}[${v}+1])`);
-        if (inlined !== body) bodies.set(sOp, inlined);
-      }
+      void sOp;
+      const inlined = body.replace(rkRe, (_m, v) =>
+        `(${v}>=${rkThreshVar} and ${n.K}[${n.bBxor}((${v}-${rkSubVar})-1,${ctx.constSalt}%#${n.K})+1] or ${n.R}[${v}+1])`);
+      if (inlined !== body) bodies.set(sOp, inlined);
     }
   }
 
