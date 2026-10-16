@@ -8,6 +8,36 @@ Conventions: times are single-run wall ms (run-to-run variance ± several ms —
 only consistent directional deltas across all 9 fixtures count). `none` path
 is the AST-only control: byte-identical before/after in every comparison.
 
+## Hardening — Phase 1.1 (reg-VM v2 vs ClydeDeobfuscator@87102086; `hardening/phase1` tip `206d452`)
+
+- `ea3d800` — Packed v2 instruction wire `H=shuffledOp*16+argc`, variable
+  strides 1/2/3/4/8/12, P table + `kk`, `jbias=128+rng*896`, fused verbatim,
+  skip-pad, `run(K,code,P,...)`, 8-field protos, `secCheck kk>128`.
+- `4077bad` — Stack envelope + code-stream hardening (R-1 `bootEscape`,
+  R-3 additive jumps mod 2^32, R-6 inline `table.concat` + `buildAlphabet`).
+- `69deb03` — Computed-index K `K[bxor(j,S%#K)+1]` + pow2 decoys, both VMs;
+  hot-arithmetic-only RK-inline.
+- `fa285ab` — (d) Closure-table dispatch, both VMs (reg dv0–3 via
+  `_dh`/`_dr` with packed returns through `tPack`/`tUnpack`; stack
+  split-table + masked hot-chain). MEASURED numeric hot loop 31,353,700 →
+  31,031,800 host instrs (−1.0%; dispatch cheaper than if-chain, no hybrid
+  fallback). TESTS 396/396 (reg subset 98/98).
+- `206d452` — (e) RK-inline extended to all handlers. MEASURED table-heavy
+  loop 29,181,500 → 28,989,000 (−0.7%); numeric loop unchanged 31,031,800
+  (RK-heavy handlers absent; zero downside). Decision KEEP. TESTS 396/396.
+- Adversarial (`JamiesNolandGiggleShi1er/ClydeDeobfuscator@87102086`,
+  mod-loopheavy reg/max × seeds 1234,7,42,99,2024): 5/5 REFUSE, exit 1,
+  "this does not look like Clyde output, so there is nothing here I know
+  how to undo." No `.clean.lua` written. No-refusal regression PASS:
+  plain-lua, stack-VM max, and reg-VM shapes all refuse identically.
+- Determinism 5/5 byte-identical on re-gen; Luau 0.742 / PUC 5.4.8 matrix
+  5/5 parity (PUC via `tests/helpers/lua54-compat.lua`; raw PUC lacks
+  `bit32` — harness fact, not product).
+- TODO (must resurface before 1.2): deferred comparison semantics P1
+  (rawequal) / P2 (same-mm) / P3 (second-only) become load-bearing the
+  moment any future seed passes recognition. Current adversarial standing
+  rests on recognition-layer refusal only.
+
 ## 1.0.0 (2026-10-14)
 
 Five reviewed post-RC changes since `1.0.0-rc.1` (Stage 19 freeze, `884a3bd`).
