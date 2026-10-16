@@ -60,8 +60,14 @@ t("payload flips never yield the valid result (tamper-evident)", () => {
   // Offsets verified live on Luau for seed 1234 (prologue resolutions,
   // checksum loop, encoded payload). Deliberately excluded: the pcall
   // status locals (e.g. start+7), which are dead stores — flipping them is
-  // unobservable by construction, not a protection gap.
-  const positions = [0, 1, 40, 50, 60, 100, 200, 300, 1000, 5000]
+  // unobservable by construction, not a protection gap. Same category:
+  // offsets start+996 and start+999..start+1004 sit inside the
+  // prefix-length-gated decode branch that does not execute on this path,
+  // so flips there are likewise unobservable (each still prints valid).
+  // Recalibrated after the Phase-1.1 envelope layout shift moved old
+  // start+1000 into that pocket; start+997 is live code adjacent to it
+  // and breaks loudly.
+  const positions = [0, 1, 40, 50, 60, 100, 200, 300, 997, 5000]
     .map((k) => start + k).filter((p) => p < art.length);
   expect(positions.length).toBeGreaterThan(0);
   for (const p of positions) {

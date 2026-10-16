@@ -448,6 +448,11 @@ function contextTransformChunk(chunk: BytecodeChunk, ctxInit: number, ctxPrime: 
 }
 
 function encodeJumpTargets(code: number[], jumpKey: number): number[] {
+  // R-3 (Phase 1.1): additive keying instead of XOR. Static matchers look
+  // for `XOR(value, literalKey)`; an additive `(value+key) mod 2^32` at rest
+  // defeats them. Operands here are absolute code positions (>= 0), so the
+  // modular sum stays in uint32 range with exact double precision.
+  const M = 4294967296;
   const result = [...code];
   let i = 0;
   while (i < result.length) {
@@ -455,12 +460,12 @@ function encodeJumpTargets(code: number[], jumpKey: number): number[] {
     i++;
     if (op === 32 || op === 33 || op === 42 || op === 43) {
 
-      result[i] = (result[i] ^ jumpKey) >>> 0;
+      result[i] = (result[i] + jumpKey) % M;
       i++;
     } else if (op === 53) {
 
       i++;
-      result[i] = (result[i] ^ jumpKey) >>> 0;
+      result[i] = (result[i] + jumpKey) % M;
       i++;
     } else {
       const ac = OPCODES_3ARG.has(op) ? 3 : OPCODES_2ARG.has(op) ? 2 : OPCODES_1ARG.has(op) ? 1 : 0;
@@ -876,6 +881,37 @@ function b64Encode(bytes: number[]): string {
   return out;
 }
 
+// R-1 detection hygiene (Phase 1.1): the boot idiom ("")[("\99...")]
+// is exact-matched by static signatures (escape digits + member names).
+// Emit parse-identical spellings, drawn per site: legacy decimals,
+// zero-padded decimals, or brace escapes (\u{63} — hex digits: decimal 99
+// renders as \u{63}). All forms evaluate to
+// the same string on Luau and PUC-Lua (ASCII-only names; \u{} needs 5.3+,
+// and our lexer supports it). Single-literal forms only, so call sites keep
+// their ("")[(...)] wrapper unchanged.
+function bootEscape(s: string): string {
+  const codes = Array.from(s).map(c => c.charCodeAt(0));
+  const v = Math.floor(rng() * 3);
+  if (v === 0) return codes.map(n => `\\${n}`).join("");
+  if (v === 1) return codes.map(n => `\\${String(n).padStart(3, "0")}`).join("");
+  return codes.map(n => `\\u{${n.toString(16)}}`).join("");
+}
+
+// R-6 envelope rotation (Phase 1.1): static peelers gate on the alphabet
+// sorting to standard base64. Half the builds use a custom 64-char set
+// instead: the encode/decode machinery is content-agnostic (explicit table),
+// so output stays correct while any sort==std check fails outright.
+// Safe pool excludes Lua string hazards (" and \) and the "=" pad char.
+function buildAlphabet(): string {
+  const std = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  if (rng() < 0.5) return std;
+  const pool = "-_~.!@#$%^*(){}[]|:;<>,?";
+  const picks = new Set<number>();
+  while (picks.size < 2) picks.add(Math.floor(rng() * pool.length));
+  const rep = [...picks].map(i => pool[i]);
+  return std.slice(0, 62) + rep.join("");
+}
+
 function wrapCustomCipher(source: string): string {
 
   const srcBytes: number[] = [];
@@ -906,7 +942,7 @@ function wrapCustomCipher(source: string): string {
     pk = (pk + posStep) & 0xFF;
   }
 
-  const stdAlpha = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  const stdAlpha = buildAlphabet();
   const alphaArr = stdAlpha.split('');
   for (let i = alphaArr.length - 1; i > 0; i--) {
     const j = Math.floor(rng() * (i + 1));
@@ -975,18 +1011,18 @@ function wrapCustomCipher(source: string): string {
   const bootVariant = Math.floor(rng() * 3);
   if (bootVariant === 0) {
 
-    lines.push(`local ${vSc}=("")[("\\99\\104\\97\\114")]`);
-    lines.push(`local ${vSb}=("")[("\\98\\121\\116\\101")]`);
+    lines.push(`local ${vSc}=("")[("${bootEscape("char")}")]`);
+    lines.push(`local ${vSb}=("")[("${bootEscape("byte")}")]`);
   } else if (bootVariant === 1) {
 
     const _mt = randomName(2);
-    lines.push(`local ${_mt}=("")[("\\114\\101\\112")]`);
-    lines.push(`local ${vSc}=("")[("\\99\\104\\97\\114")]`);
-    lines.push(`local ${vSb}=("")[("\\98\\121\\116\\101")]`);
+    lines.push(`local ${_mt}=("")[("${bootEscape("rep")}")]`);
+    lines.push(`local ${vSc}=("")[("${bootEscape("char")}")]`);
+    lines.push(`local ${vSb}=("")[("${bootEscape("byte")}")]`);
   } else {
 
-    lines.push(`local ${vSb}=("")[("\\98\\121\\116\\101")]`);
-    lines.push(`local ${vSc}=("")[("\\99\\104\\97\\114")]`);
+    lines.push(`local ${vSb}=("")[("${bootEscape("byte")}")]`);
+    lines.push(`local ${vSc}=("")[("${bootEscape("char")}")]`);
   }
   maybeJunk(lines);
 
@@ -1087,7 +1123,14 @@ function wrapCustomCipher(source: string): string {
         l.push(`local ${fv}="${frags[idx]}"`);
         if (rng() > 0.8) l.push(junkLine());
       }
-      l.push(`local ${vData}=${fragVars.join("..")}`);
+      // R-6 frag-idiom rotation: `..` chain vs inline table.concat (a third
+      // shape besides the table-var form above; static frag matchers that
+      // know exactly two shapes miss this one).
+      if (rng() < 0.5) {
+        l.push(`local ${vData}=${fragVars.join("..")}`);
+      } else {
+        l.push(`local ${vData}=${vTc}({${fragVars.join(",")}})`);
+      }
     }
     return l;
   };
@@ -1212,7 +1255,7 @@ function wrapNestedVM(source: string): string {
   const rotKey = (Math.floor(rng() * 200) + 10) & 0xFF;
   const encBytes: number[] = afterXor.map(b => (b + rotKey) & 0xFF);
 
-  const stdAlpha = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  const stdAlpha = buildAlphabet();
   const alphaArr = stdAlpha.split('');
   for (let i = alphaArr.length - 1; i > 0; i--) {
     const j = Math.floor(rng() * (i + 1));
@@ -1314,16 +1357,16 @@ function wrapNestedVM(source: string): string {
 
   const bootV = Math.floor(rng() * 3);
   if (bootV === 0) {
-    L.push(`local ${vSc}=("")[("\\99\\104\\97\\114")]`);
-    L.push(`local ${vSb}=("")[("\\98\\121\\116\\101")]`);
+    L.push(`local ${vSc}=("")[("${bootEscape("char")}")]`);
+    L.push(`local ${vSb}=("")[("${bootEscape("byte")}")]`);
   } else if (bootV === 1) {
-    L.push(`local ${vSb}=("")[("\\98\\121\\116\\101")]`);
-    L.push(`local ${vSc}=("")[("\\99\\104\\97\\114")]`);
+    L.push(`local ${vSb}=("")[("${bootEscape("byte")}")]`);
+    L.push(`local ${vSc}=("")[("${bootEscape("char")}")]`);
   } else {
     const mt = nn(2);
-    L.push(`local ${mt}=("")[("\\115\\117\\98")]`);
-    L.push(`local ${vSc}=("")[("\\99\\104\\97\\114")]`);
-    L.push(`local ${vSb}=("")[("\\98\\121\\116\\101")]`);
+    L.push(`local ${mt}=("")[("${bootEscape("sub")}")]`);
+    L.push(`local ${vSc}=("")[("${bootEscape("char")}")]`);
+    L.push(`local ${vSb}=("")[("${bootEscape("byte")}")]`);
   }
   // RNG ballast: this honeypot runs BEFORE the bit32 method aliases below
   // are declared, so its output is intentionally discarded — 7 of 14
@@ -1400,13 +1443,17 @@ function wrapNestedVM(source: string): string {
     if (rng() > 0.65) L.push(emitHoneypot());
   }
 
-  const concatV = Math.floor(rng() * 2);
+  const concatV = Math.floor(rng() * 3);
   if (concatV === 0) {
     L.push(`local ${vData}=${dataFragVars.join('..')}`);
-  } else {
+  } else if (concatV === 1) {
     const tbl = nn(3);
     L.push(`local ${tbl}={${dataFragVars.join(',')}}`);
     L.push(`local ${vData}=${vTc}(${tbl})`);
+  } else {
+    // R-6 third frag shape: inline table.concat (no separate table decl,
+    // no `..` chain — matches neither known static frag pattern).
+    L.push(`local ${vData}=${vTc}({${dataFragVars.join(',')}})`);
   }
   L.push(emitHoneypot());
 
@@ -1508,7 +1555,7 @@ function wrapStubVM(source: string): string {
   const compressed = lzssCompress(srcBytes);
   const ratio = ((1 - compressed.length / srcBytes.length) * 100).toFixed(1);
 
-  const stdAlpha = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  const stdAlpha = buildAlphabet();
   const aa = stdAlpha.split('');
   for (let i = aa.length - 1; i > 0; i--) {
     const j = Math.floor(rng() * (i + 1));
@@ -1639,7 +1686,12 @@ function wrapStubVM(source: string): string {
   L.push(`for _i=1,#${fragVars[0]} do ${fk4}=${a_bx}(${fk4},${a_sb}(${fragVars[0]},_i)) end`);
   L.push(`if ${fk4}==0x${fakeCheck2.toString(16)} then local _z={} for _i=1,#${fragVars[0]} do _z[_i]=${a_sc}(${a_ba}(${a_sb}(${fragVars[0]},_i),0x7F)) end ${a_ls}(${a_tc}(_z))() return end`);
 
-  L.push(`local ${a_s}=${fragVars.join('..')}`);
+  // R-6 third frag shape (see cipher/nested): inline table.concat.
+  if (rng() < 0.5) {
+    L.push(`local ${a_s}=${fragVars.join('..')}`);
+  } else {
+    L.push(`local ${a_s}=${a_tc}({${fragVars.join(',')}})`);
+  }
 
   const alphaXorKey = 1 + Math.floor(rng() * 254);
   const nAlphaPieces = 3 + Math.floor(rng() * 3);
@@ -2368,11 +2420,11 @@ function buildHandlerTemplates(n: NameMap, doNonLinearJumps: boolean = false, pr
   h[31] = `function() local n=${code}[${ip}];${ip}=${ip}+1;${doReturn}=true;if n==0 then ${retN}=0 elseif n>0 then if n>${stackTop} then n=${stackTop} end;${retN}=n;${retFromStack}=true;${retTop}=${stackTop};${retBase}=${stackTop}-n else ${retN}=${stackTop};${retFromStack}=true;${retTop}=${stackTop};${retBase}=0 end end`;
 
   h[32] = doNonLinearJumps
-    ? `function() ${ip}=bit32.bxor(${code}[${ip}],${n.jumpKey})+1 end`
+    ? `function() ${ip}=((${code}[${ip}]-${n.jumpKey})%4294967296+4294967296)%4294967296+1 end`
     : `function() ${ip}=${code}[${ip}]+1 end`;
 
   h[33] = doNonLinearJumps
-    ? `function() local target=bit32.bxor(${code}[${ip}],${n.jumpKey});${ip}=${ip}+1;if not ${pop}() then ${ip}=target+1 end end`
+    ? `function() local target=((${code}[${ip}]-${n.jumpKey})%4294967296+4294967296)%4294967296;${ip}=${ip}+1;if not ${pop}() then ${ip}=target+1 end end`
     : `function() local target=${code}[${ip}];${ip}=${ip}+1;if not ${pop}() then ${ip}=target+1 end end`;
 
   h[34] = `function() local n=${code}[${ip}];${ip}=${ip}+1;for _=1,n do ${pop}() end end`;
@@ -2392,11 +2444,11 @@ function buildHandlerTemplates(n: NameMap, doNonLinearJumps: boolean = false, pr
   h[41] = `function() local n=${code}[${ip}];${ip}=${ip}+1;local args={};for j=n,1,-1 do args[j]=${pop}() end;local f=${pop}();if type(f)~="function" then local mm=${getMM}(f,"__call");if mm then table.insert(args,1,f);n=n+1;f=mm end end;${doReturn}=true;${retPack}=table.pack(f(table.unpack(args,1,n))) end`;
 
   h[42] = doNonLinearJumps
-    ? `function() local off=bit32.bxor(${code}[${ip}],${n.jumpKey});${ip}=${ip}+1;local step=${pop}();local limit=${pop}();local init=${pop}();${push}(init);${push}(limit);${push}(step);if step>=0 then if init>limit then ${ip}=off+1 end else if init<limit then ${ip}=off+1 end end end`
+    ? `function() local off=((${code}[${ip}]-${n.jumpKey})%4294967296+4294967296)%4294967296;${ip}=${ip}+1;local step=${pop}();local limit=${pop}();local init=${pop}();${push}(init);${push}(limit);${push}(step);if step>=0 then if init>limit then ${ip}=off+1 end else if init<limit then ${ip}=off+1 end end end`
     : `function() local off=${code}[${ip}];${ip}=${ip}+1;local step=${pop}();local limit=${pop}();local init=${pop}();${push}(init);${push}(limit);${push}(step);if step>=0 then if init>limit then ${ip}=off+1 end else if init<limit then ${ip}=off+1 end end end`;
 
   h[43] = doNonLinearJumps
-    ? `function() local off=bit32.bxor(${code}[${ip}],${n.jumpKey});${ip}=${ip}+1;local step=${stack}[${stackTop}];local i=${stack}[${stackTop}-2]+step;${stack}[${stackTop}-2]=i;local limit=${stack}[${stackTop}-1];if step>=0 then if i<=limit then ${ip}=off+1 end else if i>=limit then ${ip}=off+1 end end end`
+    ? `function() local off=((${code}[${ip}]-${n.jumpKey})%4294967296+4294967296)%4294967296;${ip}=${ip}+1;local step=${stack}[${stackTop}];local i=${stack}[${stackTop}-2]+step;${stack}[${stackTop}-2]=i;local limit=${stack}[${stackTop}-1];if step>=0 then if i<=limit then ${ip}=off+1 end else if i>=limit then ${ip}=off+1 end end end`
     : `function() local off=${code}[${ip}];${ip}=${ip}+1;local step=${stack}[${stackTop}];local i=${stack}[${stackTop}-2]+step;${stack}[${stackTop}-2]=i;local limit=${stack}[${stackTop}-1];if step>=0 then if i<=limit then ${ip}=off+1 end else if i>=limit then ${ip}=off+1 end end end`;
 
   h[44] = `function() local n=${code}[${ip}];${ip}=${ip}+1;local parts={};for i=1,n do parts[n-i+1]=tostring(${pop}()) end;${push}(table.concat(parts)) end`;
@@ -2418,7 +2470,7 @@ function buildHandlerTemplates(n: NameMap, doNonLinearJumps: boolean = false, pr
   h[52] = `function() local nameIdx=${code}[${ip}];${ip}=${ip}+1;local methodName=${resolveK}(nameIdx+1);local obj=${pop}();local method=obj[methodName];${push}(obj);${push}(method);local b,a=${pop}(),${pop}();${push}(b);${push}(a) end`;
 
   h[53] = doNonLinearJumps
-    ? `function() local nVars=${code}[${ip}];${ip}=${ip}+1;local target=bit32.bxor(${code}[${ip}],${n.jumpKey});${ip}=${ip}+1;local iter=${stack}[${stackTop}-2];local state=${stack}[${stackTop}-1];local ctl=${stack}[${stackTop}];local r={iter(state,ctl)};for i=1,nVars do ${push}(r[i]) end;if r[1]~=nil then ${stack}[${stackTop}-nVars]= r[1] else ${ip}=target+1 end end`
+    ? `function() local nVars=${code}[${ip}];${ip}=${ip}+1;local target=((${code}[${ip}]-${n.jumpKey})%4294967296+4294967296)%4294967296;${ip}=${ip}+1;local iter=${stack}[${stackTop}-2];local state=${stack}[${stackTop}-1];local ctl=${stack}[${stackTop}];local r={iter(state,ctl)};for i=1,nVars do ${push}(r[i]) end;if r[1]~=nil then ${stack}[${stackTop}-nVars]= r[1] else ${ip}=target+1 end end`
     : `function() local nVars=${code}[${ip}];${ip}=${ip}+1;local target=${code}[${ip}];${ip}=${ip}+1;local iter=${stack}[${stackTop}-2];local state=${stack}[${stackTop}-1];local ctl=${stack}[${stackTop}];local r={iter(state,ctl)};for i=1,nVars do ${push}(r[i]) end;if r[1]~=nil then ${stack}[${stackTop}-nVars]= r[1] else ${ip}=target+1 end end`;
 
   h[54] = `function() local n=${code}[${ip}];${ip}=${ip}+1;local args={};for i=1,n do args[n-i+1]=${pop}() end;local f=${pop}();local results;if n==0 then results=table.pack(pcall(f)) else results=table.pack(pcall(f,table.unpack(args,1,n))) end;local ok=results[1];${push}(ok);if ok then for i=2,results.n do ${push}(results[i]) end else ${push}(results[2]) end end`;
