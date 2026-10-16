@@ -5,6 +5,12 @@ import { compile as compileAST } from "./Compiler.js";
 
 let _rng: () => number = Math.random;
 
+// Routine progress telemetry gate: console.log progress lines in generation
+// paths emit ONLY under QUANTUM_TELEMETRY=1 (library-quiet by default).
+// Warnings, errors, and fallback notices always stay loud — they are
+// operational, not progress.
+function _tel(): boolean { return process.env.QUANTUM_TELEMETRY === '1'; }
+
 function seedRandom(seed: number): void {
   let s = seed | 0;
   _rng = () => {
@@ -1157,7 +1163,10 @@ function wrapCustomCipher(source: string): string {
   maybeJunk(lines);
   const execVariant = Math.floor(rng() * 3);
   if (execVariant === 0) {
-    lines.push(`(${vLd}(${vTc}(${vReal})))()`);
+    // Same `do...end` rationale as wrapNestedVM execV0: never emit a
+    // `(`-leading line (ambiguous-syntax call continuation with the
+    // preceding line; `;` is not a Luau-legal separator after openers).
+    lines.push(`do (${vLd}(${vTc}(${vReal})))() end`);
   } else if (execVariant === 1) {
     const _fn = randomName(3);
     lines.push(`local ${_fn}=${vLd}(${vTc}(${vReal}))`);
@@ -1170,7 +1179,7 @@ function wrapCustomCipher(source: string): string {
     lines.push(`${_fn}()`);
   }
 
-  console.log(`[cipher] S-Box layer: ${srcBytes.length}+${prefixLen}pfx → ${encoded.length} chars (${nFrags} frags, boot:v${bootVariant} env:v${envVariant} b64:v${b64Variant} dec:v${decryptVariant} exec:v${execVariant})`);
+  if (_tel()) console.log(`[cipher] S-Box layer: ${srcBytes.length}+${prefixLen}pfx → ${encoded.length} chars (${nFrags} frags, boot:v${bootVariant} env:v${envVariant} b64:v${b64Variant} dec:v${decryptVariant} exec:v${execVariant})`);
   return lines.join("\n");
 }
 
@@ -1248,9 +1257,11 @@ function wrapNestedVM(source: string): string {
   const rInt = (): string => {
     const v = Math.floor(rng() * 0xFFFF);
     const fmt = Math.floor(rng() * 4);
-    if (fmt === 0) return `0x${v.toString(16).toUpperCase()}`;
-    if (fmt === 1) return `0b${v.toString(2)}`;
-    if (fmt === 2) return `${Math.floor(v/1000)}_${String(v%1000).padStart(3,'0')}`;
+    // Portable numeral formats only: fmt 1/2 historically emitted `0b...`
+    // binary and `1_000`-style underscore literals, which PUC-Lua cannot
+    // parse (verified) while Luau accepts them. Mapping both to hex/decimal
+    // keeps the value AND all RNG draws identical — only the text changes.
+    if (fmt === 0 || fmt === 1) return `0x${v.toString(16).toUpperCase()}`;
     return `${v}`;
   };
 
@@ -1314,7 +1325,12 @@ function wrapNestedVM(source: string): string {
     L.push(`local ${vSc}=("")[("\\99\\104\\97\\114")]`);
     L.push(`local ${vSb}=("")[("\\98\\121\\116\\101")]`);
   }
-  L.push(emitHoneypot());
+  // RNG ballast: this honeypot runs BEFORE the bit32 method aliases below
+  // are declared, so its output is intentionally discarded — 7 of 14
+  // variants reference those aliases and would otherwise emit
+  // use-before-declaration crashes. Calling (not pushing) preserves the
+  // exact RNG/name-counter stream for all downstream generation.
+  emitHoneypot();
 
   L.push(`local ${vEnv}=(type(getfenv)=="function" and getfenv(0) or _G)`);
   const builtins = [
@@ -1328,7 +1344,9 @@ function wrapNestedVM(source: string): string {
   }
   for (const bl of builtins) {
     L.push(bl);
-    if (rng() > 0.6) L.push(emitHoneypot());
+    // Same ballast rationale as above: bit32 method aliases are declared
+    // later, so discard (do not emit) any honeypot drawn here.
+    if (rng() > 0.6) emitHoneypot();
   }
   const b32methods: [string, string][] = [
     [vBxor, 'bxor'], [vBand, 'band'], [vBor, 'bor'], [vLsh, 'lshift'], [vRsh, 'rshift']
@@ -1458,7 +1476,13 @@ function wrapNestedVM(source: string): string {
 
   const execV = Math.floor(rng() * 3);
   if (execV === 0) {
-    L.push(`(${vLd}(${vTc}(${vOut})))()`);
+    // Wrapped in `do...end` (never `(`-leading): a bare `(${vLd}...)()` line
+    // merges with a preceding expression-ending line (e.g. a `...end)()`
+    // honeypot tail) into an "ambiguous syntax" call continuation — newlines
+    // do NOT separate statements before `(`. Demonstrated by seed 2024
+    // (nested layer failed to parse on every host). `;`-separation is NOT an
+    // alternative: Luau rejects `;` after `do`/`then`/`else`/`repeat`.
+    L.push(`do (${vLd}(${vTc}(${vOut})))() end`);
   } else if (execV === 1) {
     const fn = nn(3);
     L.push(`local ${fn}=${vLd}(${vTc}(${vOut}))`);
@@ -1470,7 +1494,10 @@ function wrapNestedVM(source: string): string {
     L.push(`${fn}()`);
   }
 
-  console.log(`[nested] Multi-key(${nKeys}) + rot(${rotKey}) layer: ${srcBytes.length}+${prefixLen}pfx → ${encoded.length} chars (${nAlphaFrags} alpha frags, ${nDataFrags} data frags)`);
+  if (_tel()) console.log(`[nested] Multi-key(${nKeys}) + rot(${rotKey}) layer: ${srcBytes.length}+${prefixLen}pfx → ${encoded.length} chars (${nAlphaFrags} alpha frags, ${nDataFrags} data frags)`);
+  // NOTE: `;`-joins were tried here and reverted — Luau rejects `;` after
+  // `do`/`then`/`else`/`repeat` openers, so separation is handled at the
+  // emitter (exec variant 0 is wrapped in `do...end`, never `(`-leading).
   return L.join("\n");
 }
 
@@ -1527,8 +1554,8 @@ function wrapStubVM(source: string): string {
 
   const expectedLen = srcBytes.length;
 
-  console.log(`[stub] LZSS: ${srcBytes.length} → ${compressed.length} (${ratio}%) | enc:v${encVariant} | frags:${nFrags}`);
-  console.log(`[stub] Encoded: ${encoded.length} chars | ~${((encoded.length + 2500) / 1024).toFixed(0)}KB`);
+  if (_tel()) console.log(`[stub] LZSS: ${srcBytes.length} → ${compressed.length} (${ratio}%) | enc:v${encVariant} | frags:${nFrags}`);
+  if (_tel()) console.log(`[stub] Encoded: ${encoded.length} chars | ~${((encoded.length + 2500) / 1024).toFixed(0)}KB`);
 
   const n = (len = 4) => randomName(len);
   const a_sc = n(), a_sb = n(), a_bx = n(), a_ba = n(), a_bo = n(), a_bl = n(), a_br = n();
@@ -1542,7 +1569,7 @@ function wrapStubVM(source: string): string {
   const bootVariant = [0, 2, 3][Math.floor(rng() * 3)];
   const combineVariant = Math.floor(rng() * 3);
   const shiftVariant = Math.floor(rng() * 2);
-  console.log(`[stub] polymorphism: boot:${bootVariant} combine:${combineVariant} shift:${shiftVariant} keyDeriv:${keyDerivVariant}`);
+  if (_tel()) console.log(`[stub] polymorphism: boot:${bootVariant} combine:${combineVariant} shift:${shiftVariant} keyDeriv:${keyDerivVariant}`);
 
   const encStr = (s: string): string =>
     Array.from(s).map(c => { const v = c.charCodeAt(0); return rng() > 0.5 ? `\\${v.toString().padStart(3,'0')}` : `\\${v}`; }).join('');
@@ -1779,7 +1806,7 @@ function wrapStubVM(source: string): string {
     L.push(`until ${_lb}>=8`);
     L.push(`end`);
   }
-  console.log(`[stub] lzss_decoder: loop:v${lzssVariant} enc:v${encVariant2} counter:${useCounter}`);
+  if (_tel()) console.log(`[stub] lzss_decoder: loop:v${lzssVariant} enc:v${encVariant2} counter:${useCounter}`);
 
   const fakeCheck3 = Math.floor(rng() * 0x7FFFFFFF);
   L.push(`if #${a_o}~=${expectedLen} then local ${fk5}={} for _i=1,#${a_o} do ${fk5}[_i]=${a_sc}(${a_ba}(${a_bx}(${a_o}[_i],_i),0x7F)+1) end ${a_ls}(${a_tc}(${fk5}))() return end`);
@@ -2165,17 +2192,19 @@ function buildEnvSetup(
 
     lines.push(`do local ${dbV}=${bRG}(${genv},${encLookup("debug")})`);
     lines.push(`if ${bTY}(${dbV})==${tblEsc} then`);
+    lines.push(`pcall(function()`);
     for (const fn of dangerousFns) {
       lines.push(`${dbV}[${encLookup(fn)}]=${fn === "getinfo" ? "function() return {} end" : "nil"}`);
     }
-    lines.push(`end`);
+    lines.push(`end) end`);
 
     lines.push(`local ${dbEnvV}=${bRG}(${env},${encLookup("debug")})`);
     lines.push(`if ${bTY}(${dbEnvV})==${tblEsc} then`);
+    lines.push(`pcall(function()`);
     for (const fn of dangerousFns) {
       lines.push(`${dbEnvV}[${encLookup(fn)}]=${fn === "getinfo" ? "function() return {} end" : "nil"}`);
     }
-    lines.push(`end end`);
+    lines.push(`end) end end`);
   }
 
   return lines.join("\n") + "\n";
@@ -2601,7 +2630,7 @@ function randomOpaqueTrue(vmNames?: { ip?: string; stackTop?: string; handlers?:
   return `(${base} and ${extra})`;
 }
 
-function generateAntiDebugChecks(): string[] {
+export function generateAntiDebugChecks(detFlag: string): string[] {
   const checks: string[] = [];
   const flag = randomName(3);
   checks.push(`local ${flag}=false`);
@@ -2612,7 +2641,7 @@ function generateAntiDebugChecks(): string[] {
   allChecks.push(`if type(pcall)~="function" then ${flag}=true end`);
   allChecks.push(`if type(select)~="function" then ${flag}=true end`);
   allChecks.push(`if type(type)~="function" then ${flag}=true end`);
-  allChecks.push(`if select("#",pcall(function() end))~=2 then ${flag}=true end`);
+  allChecks.push(`if select("#",pcall(function() return 1 end))~=2 then ${flag}=true end`);
   allChecks.push(`if type(tostring)~="function" then ${flag}=true end`);
   allChecks.push(`if type(rawget)~="function" then ${flag}=true end`);
   allChecks.push(`do local ${t1}=(type(tick)=="function" and tick()) or 0;local _=0;for _i=1,${r1} do _=_+1 end;if ${t1}>0 and ((type(tick)=="function" and tick()) or 0)-${t1}>0.1 then ${flag}=true end end`);
@@ -2625,6 +2654,7 @@ function generateAntiDebugChecks(): string[] {
   for (let ci = 0; ci < pickCount && ci < allChecks.length; ci++) {
     checks.push(allChecks[ci]);
   }
+  checks.push(`if ${flag} then ${detFlag}=${detFlag}+1 end`);
   return checks;
 }
 
@@ -2994,7 +3024,7 @@ function buildVMFunction(
 
   if (level === "max") {
 
-    lines.push(...generateAntiDebugChecks());
+    lines.push(...generateAntiDebugChecks(detFlag));
 
     const groupCount = 3 + Math.floor(rng() * 3);
     const shuffledAssignments = [...handlerAssignments].sort(() => rng() - 0.5);
@@ -3461,7 +3491,7 @@ export function generateVM(chunk: BytecodeChunk, options: VMGenOptions = {}): st
     const outerSeed = (seed * 2246822519) >>> 0;
     const vmId = options.vmId ?? "nested";
 
-    console.log(`[telemetry:${vmId}] Generating inner VM (seed=${innerSeed})...`);
+    if (_tel()) console.log(`[telemetry:${vmId}] Generating inner VM (seed=${innerSeed})...`);
     const t0 = Date.now();
 
     const safeInnerFeatures: FeatureFlag[] = [
@@ -3489,15 +3519,15 @@ export function generateVM(chunk: BytecodeChunk, options: VMGenOptions = {}): st
       forceFeatures: innerForced,
     });
     const t1 = Date.now();
-    console.log(`[telemetry:inner] inner_vm_size: ${innerVM.length} chars (${t1 - t0}ms)`);
+    if (_tel()) console.log(`[telemetry:inner] inner_vm_size: ${innerVM.length} chars (${t1 - t0}ms)`);
 
     try {
-      console.log(`[telemetry:${vmId}] Compiling inner VM to bytecode...`);
+      if (_tel()) console.log(`[telemetry:${vmId}] Compiling inner VM to bytecode...`);
       const innerChunk = compileString(innerVM);
       const t2 = Date.now();
-      console.log(`[telemetry:inner] inner_compile: ${t2 - t1}ms, ${innerChunk.code.length} instructions, ${innerChunk.K.length} constants, ${(innerChunk.protos || []).length} protos`);
+      if (_tel()) console.log(`[telemetry:inner] inner_compile: ${t2 - t1}ms, ${innerChunk.code.length} instructions, ${innerChunk.K.length} constants, ${(innerChunk.protos || []).length} protos`);
 
-      console.log(`[telemetry:${vmId}] Generating outer VM (seed=${outerSeed})...`);
+      if (_tel()) console.log(`[telemetry:${vmId}] Generating outer VM (seed=${outerSeed})...`);
       const outerVM = generateVM(innerChunk, {
         level: "max",
         nesting: 0,
@@ -3506,12 +3536,12 @@ export function generateVM(chunk: BytecodeChunk, options: VMGenOptions = {}): st
         executorGlobals: true,
       });
       const t3 = Date.now();
-      console.log(`[telemetry:outer] outer_vm_size: ${outerVM.length} chars (${t3 - t2}ms)`);
-      console.log(`[telemetry:${vmId}] Total nested VM: ${outerVM.length} chars (${t3 - t0}ms)`);
+      if (_tel()) console.log(`[telemetry:outer] outer_vm_size: ${outerVM.length} chars (${t3 - t2}ms)`);
+      if (_tel()) console.log(`[telemetry:${vmId}] Total nested VM: ${outerVM.length} chars (${t3 - t0}ms)`);
       if (outerVM.length > 800000) {
         console.warn(`[telemetry:${vmId}] WARNING: output > 800KB (${outerVM.length})`);
       }
-      console.log(`[telemetry:${vmId}] compile_errors: 0, fallback_used: false`);
+      if (_tel()) console.log(`[telemetry:${vmId}] compile_errors: 0, fallback_used: false`);
       return outerVM;
     } catch (e: any) {
       console.error(`[telemetry:${vmId}] compileString FAILED: ${e.message}`);
@@ -3520,7 +3550,7 @@ export function generateVM(chunk: BytecodeChunk, options: VMGenOptions = {}): st
       }
 
       console.warn(`[telemetry:${vmId}] Falling back to single VM (max level)`);
-      console.log(`[telemetry:${vmId}] compile_errors: 1, fallback_used: true`);
+      if (_tel()) console.log(`[telemetry:${vmId}] compile_errors: 1, fallback_used: true`);
       seedRandom(outerSeed);
       return generateVM(chunk, {
         level: "max",
@@ -3668,7 +3698,7 @@ export function generateVM(chunk: BytecodeChunk, options: VMGenOptions = {}): st
 
     const poolParts = pools.map(p => `{${p.join(",")}}`);
     poolsSerialized = `{${poolParts.join(",")}}`;
-    console.log(`[§69] String pools: ${pools.length} pools, ${pools.reduce((a, p) => a + p.length, 0)} total bytes`);
+    if (_tel()) console.log(`[§69] String pools: ${pools.length} pools, ${pools.reduce((a, p) => a + p.length, 0)} total bytes`);
   }
 
   const dataK = serializeConstants(finalK, encodeStrings, xorKey, doLazyDecode ? false : doFragment, xorStep, doConstantFold, lazyBaseKey, lazyKeyPrime, doMutation);

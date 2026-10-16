@@ -4,6 +4,19 @@
   "description": "Luau parser and obfuscator with full Luau support",
   "type": "module",
   "main": "dist/index.js",
+  "bin": {
+    "quantum-obfuscator": "dist/cli/obfuscate.js",
+    "quantum-obfuscate-reg": "dist/cli/reg-vm-obfuscate.js",
+    "quantum-lex": "dist/cli/lex.js",
+    "quantum-parse": "dist/cli/parse.js"
+  },
+  "files": [
+    "dist/",
+    "public/",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md"
+  ],
   "scripts": {
     "build": "tsc",
     "dev": "tsc --watch",

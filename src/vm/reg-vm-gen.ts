@@ -2,10 +2,22 @@ import { RegOp, REG_OPCODE_COUNT, RK_OFFSET } from "./bytecode.js";
 import type { RegBytecodeChunk, Constant } from "./bytecode.js";
 import { randomBytes } from "crypto";
 import { writeFileSync as _dumpWrite } from "fs";
+import { tmpdir as _dumpTmpdir } from "os";
+import { join as _dumpJoin } from "path";
 import { encryptAndEncode, compressToBase85, compressBytesToBase85 } from "./lzma.js";
 import { generateBootstrap } from "./bootstrap-template.js";
 
 export type RegVMLevel = "debug" | "normal" | "max";
+
+// DUMP_RAW unique-name counter (per-process; combined with pid+timestamp so
+// concurrent/rapid dumps never collide even at millisecond granularity).
+let _dumpCounter = 0;
+
+// Routine progress telemetry gate: console.log progress lines in generation
+// paths emit ONLY under QUANTUM_TELEMETRY=1 (library-quiet by default).
+// Warnings, errors, fallback notices, and the DUMP_RAW file-location line
+// always stay loud — they are operational, not progress.
+function _tel(): boolean { return process.env.QUANTUM_TELEMETRY === '1'; }
 
 export type RegFeatureFlag =
   | "opcodeShuffle"
@@ -2487,7 +2499,7 @@ function wrapCustomCipher(source: string, layerOpts?: CipherLayerOpts): string {
   const bytes = useCompression ? [1, ...compBytes] : [0, ...rawBytes];
   const compRatio = ((1 - bytes.length / rawBytes.length) * 100).toFixed(1);
   const expectedDecompLen = rawBytes.length;
-  console.log(`[cipher] LZSS+RLE: ${rawBytes.length} → ${bytes.length} (${compRatio}% ${useCompression ? 'compressed' : 'raw-passthrough'})`);
+  if (_tel()) console.log(`[cipher] LZSS+RLE: ${rawBytes.length} → ${bytes.length} (${compRatio}% ${useCompression ? 'compressed' : 'raw-passthrough'})`);
 
   const { sbox: cSbox, inverse: cInv } = generateSBox();
 
@@ -3416,6 +3428,13 @@ export function generateRegVM(chunk: RegBytecodeChunk, options: RegVMGenOptions 
   seedRandom(seed);
   resetNames();
 
+  // Operational footgun guard: these generation-time flags silently weaken
+  // output (skipped guards, plaintext envelope). They are never consulted
+  // at runtime by generated code; warn loudly when active.
+  if (process.env.NO_SEC === '1' || process.env.NO_CIPHER === '1') {
+    console.warn("[RegVM] WARNING: weakening flags set (NO_SEC/NO_CIPHER) — generated output has reduced protections; unset for production builds.");
+  }
+
   const doShuffle = level !== "debug" && featureEnabled(options, "opcodeShuffle", true);
   const encodeStrings = level !== "debug" && featureEnabled(options, "stringEncoding", true);
   // Handler noise locals (`local dv=...`, never read) are a deterministic
@@ -3496,7 +3515,7 @@ export function generateRegVM(chunk: RegBytecodeChunk, options: RegVMGenOptions 
     const fusionRate = 0.6 + rng() * 0.25;
     const fusionCount = applyFusionPass(chunk, enabledSet, fusionRate);
     if (fusionCount > 0) {
-      console.log(`[RegVM] Fused ${fusionCount} instruction sequences (${nEnabled}/12 patterns, ${Math.round(fusionRate*100)}% rate)`);
+      if (_tel()) console.log(`[RegVM] Fused ${fusionCount} instruction sequences (${nEnabled}/12 patterns, ${Math.round(fusionRate*100)}% rate)`);
     }
   }
 
@@ -3504,7 +3523,7 @@ export function generateRegVM(chunk: RegBytecodeChunk, options: RegVMGenOptions 
   if (doCFF) {
     const cffBlocks = flattenControlFlow(chunk);
     if (cffBlocks > 0) {
-      console.log(`[RegVM] CFF: ${cffBlocks} blocks shuffled (main + protos)`);
+      if (_tel()) console.log(`[RegVM] CFF: ${cffBlocks} blocks shuffled (main + protos)`);
     }
   }
 
@@ -3514,11 +3533,11 @@ export function generateRegVM(chunk: RegBytecodeChunk, options: RegVMGenOptions 
     used.add(RegOp.NOP as number);
     used.add(RegOp.EXTRAARG as number);
     ctx.usedOps = used;
-    console.log(`[RegVM] Dead handler elimination: ${used.size}/${handlerRegistry.size} opcodes used`);
+    if (_tel()) console.log(`[RegVM] Dead handler elimination: ${used.size}/${handlerRegistry.size} opcodes used`);
   }
 
   const dvNames = ["flat","xor-masked","binary-tree","grouped","table-dispatch","table-xor"];
-  if (level !== "debug") console.log(`[RegVM] Dispatch: variant ${dispatchVariant} (${dvNames[dispatchVariant] || "unknown"})`);
+  if (level !== "debug" && _tel()) console.log(`[RegVM] Dispatch: variant ${dispatchVariant} (${dvNames[dispatchVariant] || "unknown"})`);
 
   const mappedCode = doShuffle ? mapRegBytecode(chunk.code, encode, ctx.argPerm) : chunk.code;
 
@@ -3765,16 +3784,30 @@ export function generateRegVM(chunk: RegBytecodeChunk, options: RegVMGenOptions 
     output = parts.join("\n");
   }
 
+  // DUMP_RAW: debug-only escape hatch. Writes the PRE-CIPHER VM runtime
+  // (generated code with the user's program embedded as encoded bytecode —
+  // still obfuscated, but WITHOUT the blob-encryption envelope) to disk, so
+  // it must only be enabled in a secure debug environment, never in
+  // production or on shared machines. Hardening, all enforced and tested:
+  //  (1) location: OS temp dir, never CWD (no repo/worktree pollution);
+  //  (2) overwrite protection: unique per-process name + exclusive 'wx'
+  //      creation — never truncates an existing file;
+  //  (3) cleanup: files are caller-owned debug artifacts; the path is always
+  //      logged so the operator can inspect and delete it (tests assert this
+  //      contract and remove their own dumps).
   if (process.env.DUMP_RAW === '1' && level !== 'debug') {
-    _dumpWrite('debug-vm-raw.lua', output, 'utf-8');
-    console.log(`[RegVM] DUMP_RAW: saved ${output.length} chars to debug-vm-raw.lua`);
+    _dumpCounter += 1;
+    const dumpName = `quantum-vm-raw-p${process.pid}-${Date.now()}-${_dumpCounter}.lua`;
+    const dumpPath = _dumpJoin(_dumpTmpdir(), dumpName);
+    _dumpWrite(dumpPath, output, { encoding: 'utf-8', flag: 'wx' });
+    console.log(`[RegVM] DUMP_RAW: saved ${output.length} chars to ${dumpPath} (pre-cipher debug artifact — inspect and delete; see source comment)`);
   }
 
   if (level !== "debug" && process.env.NO_CIPHER !== '1') {
     const vmRawLen = Buffer.byteLength(output, 'utf-8');
-    console.log(`[RegVM] Blob: encrypting VM runtime (${vmRawLen} bytes)...`);
+    if (_tel()) console.log(`[RegVM] Blob: encrypting VM runtime (${vmRawLen} bytes)...`);
     const { blob: vmBlob, xorKey, invSbox, checksum, origLen: vmOrigLen } = encryptAndEncode(output, rng);
-    console.log(`[RegVM] Blob: VM blob = ${vmBlob.length} chars (SBox+CBC+Base85), key=${xorKey.length}B, checksum=${checksum}`);
+    if (_tel()) console.log(`[RegVM] Blob: VM blob = ${vmBlob.length} chars (SBox+CBC+Base85), key=${xorKey.length}B, checksum=${checksum}`);
 
     output = generateBootstrap({
       vmBlob,
@@ -3788,7 +3821,7 @@ export function generateRegVM(chunk: RegBytecodeChunk, options: RegVMGenOptions 
       // Generic output stays generic; only target === "roblox" emits it.
       robloxAntiTamper: options.target === "roblox",
     });
-    console.log(`[RegVM] Blob: final output = ${output.length} chars`);
+    if (_tel()) console.log(`[RegVM] Blob: final output = ${output.length} chars`);
   }
 
   if (!options._noWatermark) {

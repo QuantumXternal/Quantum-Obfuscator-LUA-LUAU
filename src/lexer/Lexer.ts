@@ -401,6 +401,15 @@ export class Lexer {
         }
         raw += this.advance();
         const code = parseInt(hex, 16);
+        // String.fromCodePoint throws above 0x10FFFF (e.g. \u{110000}).
+        // Report instead of throwing so callers (CLI exit codes, server 400
+        // mapping, validate()) see a normal LexError. The pre-existing
+        // isNaN path below is left exactly as-is; values above the domain
+        // stay unsupported, consistent with it.
+        if (code > 0x10FFFF) {
+          this.addError("Invalid \\u{...} escape");
+          return { value: "", raw };
+        }
         return {
           value: isNaN(code) ? "" : String.fromCodePoint(code),
           raw,

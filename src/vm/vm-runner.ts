@@ -183,11 +183,18 @@ export function runVM(
         push(concatNative(a, b));
       }
       else if (op === Op.EQ) {
+        // Comparison semantics: see the COMPARISON-SEMANTICS CONTRACT in
+        // reg-runner.ts (single normative statement for both runners; kept
+        // for stack parity). Deliberate, measured divergences: no
+        // same-metamethod requirement and no rawequal __eq call (both match
+        // PUC-Lua 5.4.8 exactly, diverge Luau 0.742 which requires the same
+        // mm and calls it even when rawequal) — do not "fix" without a
+        // dedicated spec-alignment stage.
         const b = pop(); const a = pop();
         if (a === b) { push(true); }
         else {
           const mm = getMM(a, "__eq");
-          if (typeof mm === "function") push(mm(a, b) === true);
+          if (typeof mm === "function") push(isTruthy(mm(a, b)));
           else push(a === b);
         }
       }
@@ -196,35 +203,35 @@ export function runVM(
         if (a === b) { push(false); }
         else {
           const mm = getMM(a, "__eq");
-          if (typeof mm === "function") push(mm(a, b) !== true);
+          if (typeof mm === "function") push(!isTruthy(mm(a, b)));
           else push(a !== b);
         }
       }
       else if (op === Op.LT) {
         const b = pop(); const a = pop();
         const mm = getMM(a, "__lt") ?? getMM(b, "__lt");
-        if (typeof mm === "function") push(mm(a, b) === true);
+        if (typeof mm === "function") push(isTruthy(mm(a, b)));
         else if (typeof a === "string" && typeof b === "string") push(a < b);
         else push((a as number) < (b as number));
       }
       else if (op === Op.LE) {
         const b = pop(); const a = pop();
         const mm = getMM(a, "__le") ?? getMM(b, "__le");
-        if (typeof mm === "function") push(mm(a, b) === true);
+        if (typeof mm === "function") push(isTruthy(mm(a, b)));
         else if (typeof a === "string" && typeof b === "string") push(a <= b);
         else push((a as number) <= (b as number));
       }
       else if (op === Op.GT) {
         const b = pop(); const a = pop();
         const mm = getMM(b, "__lt") ?? getMM(a, "__lt");
-        if (typeof mm === "function") push(mm(b, a) === true);
+        if (typeof mm === "function") push(isTruthy(mm(b, a)));
         else if (typeof a === "string" && typeof b === "string") push(a > b);
         else push((a as number) > (b as number));
       }
       else if (op === Op.GE) {
         const b = pop(); const a = pop();
         const mm = getMM(b, "__le") ?? getMM(a, "__le");
-        if (typeof mm === "function") push(mm(b, a) === true);
+        if (typeof mm === "function") push(isTruthy(mm(b, a)));
         else if (typeof a === "string" && typeof b === "string") push(a >= b);
         else push((a as number) >= (b as number));
       }

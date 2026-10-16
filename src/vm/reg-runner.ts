@@ -93,6 +93,72 @@ export function runReg(
     return toArray((f as (...a: unknown[]) => unknown)(...callArgs));
   };
 
+  // Metamethod dispatch mirror of vm-runner.ts getMM/arithMM/concatNative.
+  // Reference-runner only: generated reg handlers are native Lua and dispatch
+  // metamethods on the target by themselves; this mirror exists so reg-runner
+  // equivalence evidence matches the stack runner's. getMM's env.__string_mt
+  // is harness-only, exactly as in the stack runner. Numeric kernels are the
+  // reg-runner's own (luaMod formula intentionally untouched — see backlog).
+  //
+  // COMPARISON-SEMANTICS CONTRACT (mirrors vm-runner.ts Op.EQ/NE/LT/LE/GT/GE;
+  // single normative statement for both runners — see also the headers of
+  // tests/reg-comparisons.test.js, tests/reg-metamethods.test.js):
+  // Lookup: __eq consulted on the FIRST operand only; __lt/__le either side
+  // (first priority). Identity fast-path: identical values compare without
+  // consulting metamethods. Results use Lua truthiness (isTruthy), verified
+  // against Luau 0.742 + PUC-Lua 5.4.8 (both coerce truthy mm results).
+  // DELIBERATE divergences from the language references (Lua 5.4 manual
+  // section 2.4; Luau/Roblox metatable docs), kept for stack parity — do not
+  // "fix" without a dedicated spec-alignment stage. Measured on Luau 0.742 +
+  // PUC-Lua 5.4.8 (ph3-cmp probes): the two hosts DISAGREE with each other,
+  // so no single runner semantics can match both —
+  //  (a) no same-metamethod requirement (P2: different __eq fns -> Luau calls
+  //      NEITHER and yields false; PUC calls the FIRST operand's mm and
+  //      yields its result — our runners match PUC exactly here);
+  //  (b) EQ identity fast-path skips mm even when rawequal (P1: A==A ->
+  //      PUC calls mm 0x, Luau calls it 1x — our fast-path matches PUC,
+  //      diverges Luau which calls __eq anyway);
+  //  (c) __eq first-operand-only (P2/P3 measured: PUC consults the first
+  //      operand's mm and never the second alone; both hosts skip mm for
+  //      mixed number/table without shared metatables — our rule matches
+  //      both measured hosts on P2/P3; only (a)/(b) are true divergences).
+  // GT/GE lower to swapped LT/LE at compile time (RegCompiler), so they share
+  // these rules with (B,A) argument order.
+  function getMM(obj: unknown, name: string): unknown {
+    if (typeof obj === "string" && env.__string_mt) {
+      const smt = env.__string_mt as Record<string, unknown>;
+      if (smt[name] !== undefined) return smt[name];
+    }
+    if (obj && typeof obj === "object" && (obj as any).__metatable) {
+      const mt = (obj as any).__metatable;
+      if (mt && typeof mt === "object" && (mt as any)[name] !== undefined) {
+        return (mt as any)[name];
+      }
+    }
+    return undefined;
+  }
+
+  function arithMM(a: unknown, b: unknown, op: (x: number, y: number) => number, name: string): unknown {
+    if (typeof a === "number" && typeof b === "number") return op(a, b);
+    const mm = getMM(a, name) ?? getMM(b, name);
+    if (typeof mm === "function") return mm(a, b);
+
+    const na = typeof a === "string" ? Number(a) : a;
+    const nb = typeof b === "string" ? Number(b) : b;
+    if (typeof na === "number" && !isNaN(na) && typeof nb === "number" && !isNaN(nb)) return op(na, nb);
+    return op(a as number, b as number);
+  }
+
+  function concatNative(a: unknown, b: unknown): unknown {
+    const mm = getMM(a, "__concat") ?? getMM(b, "__concat");
+    if (typeof mm === "function") return (mm as Function)(a, b);
+    if (
+      (typeof a === "string" || typeof a === "number") &&
+      (typeof b === "string" || typeof b === "number")
+    ) return luaToString(a) + luaToString(b);
+    throw new Error("attempt to concatenate non-concatenable values");
+  }
+
   const closeBox = (boxes: Map<number, UpvalueBox>, reg: number): void => {
     for (const r of [...boxes.keys()]) {
       if (r >= reg) boxes.delete(r);
@@ -174,67 +240,109 @@ export function runReg(
         pc++;
         break;
       case RegOp.ADD:
-        setReg(A, (rk(B) as number) + (rk(C) as number));
+        setReg(A, arithMM(rk(B), rk(C), (x, y) => x + y, "__add"));
         pc++;
         break;
       case RegOp.SUB:
-        setReg(A, (rk(B) as number) - (rk(C) as number));
+        setReg(A, arithMM(rk(B), rk(C), (x, y) => x - y, "__sub"));
         pc++;
         break;
       case RegOp.MUL:
-        setReg(A, (rk(B) as number) * (rk(C) as number));
+        setReg(A, arithMM(rk(B), rk(C), (x, y) => x * y, "__mul"));
         pc++;
         break;
       case RegOp.DIV:
-        setReg(A, (rk(B) as number) / (rk(C) as number));
+        setReg(A, arithMM(rk(B), rk(C), (x, y) => x / y, "__div"));
         pc++;
         break;
       case RegOp.MOD:
-        setReg(A, luaMod(rk(B) as number, rk(C) as number));
+        setReg(A, arithMM(rk(B), rk(C), luaMod, "__mod"));
         pc++;
         break;
       case RegOp.POW:
-        setReg(A, Math.pow(rk(B) as number, rk(C) as number));
+        setReg(A, arithMM(rk(B), rk(C), (x, y) => Math.pow(x, y), "__pow"));
         pc++;
         break;
       case RegOp.IDIV:
-        setReg(A, Math.floor((rk(B) as number) / (rk(C) as number)));
+        setReg(A, arithMM(rk(B), rk(C), (x, y) => Math.floor(x / y), "__idiv"));
         pc++;
         break;
-      case RegOp.UNM:
-        setReg(A, -(getReg(B) as number));
+      case RegOp.UNM: {
+        // Mirror of stack Op.UNM: __unm with passthrough result, else unary minus.
+        const v = getReg(B);
+        const mm = getMM(v, "__unm");
+        setReg(A, typeof mm === "function" ? (mm as Function)(v) : -(v as number));
         pc++;
         break;
+      }
       case RegOp.NOT:
         setReg(A, !isTruthy(getReg(B)));
         pc++;
         break;
-      case RegOp.LEN:
-        setReg(A, luaLen(getReg(B)));
+      case RegOp.LEN: {
+        // Mirror of stack Op.LEN: __len with passthrough result, else luaLen.
+        const v = getReg(B);
+        const mm = getMM(v, "__len");
+        setReg(A, typeof mm === "function" ? (mm as Function)(v) : luaLen(v));
         pc++;
         break;
+      }
       case RegOp.CONCAT: {
-        let s = "";
-        for (let i = B; i <= C; i++) s += luaToString(getReg(i));
-        setReg(A, s);
+        // Right fold: Lua `..` is right-associative (a..b..c == a..(b..c)),
+        // which matters when __concat metamethods are present.
+        let acc: unknown = getReg(C);
+        for (let i = C - 1; i >= B; i--) acc = concatNative(getReg(i), acc);
+        setReg(A, acc);
         pc++;
         break;
       }
       case RegOp.JMP:
         pc = pc + 1 + B;
         break;
-      case RegOp.EQ:
-        if (((rk(B) === rk(C)) as boolean) !== (A !== 0)) pc++;
+      case RegOp.EQ: {
+        // Mirror of stack Op.EQ/NE (vm-runner.ts): identity fast-path, then
+        // __eq with Lua-truthiness (isTruthy) coercion; the existing invert-skip expression
+        // is unchanged, so ~= (invertA=1) and == behave as before otherwise.
+        const b = rk(C);
+        const a = rk(B);
+        let eq: boolean;
+        if (a === b) eq = true;
+        else {
+          const mm = getMM(a, "__eq");
+          eq = typeof mm === "function" ? isTruthy((mm as Function)(a, b)) : a === b;
+        }
+        if (eq !== (A !== 0)) pc++;
         pc++;
         break;
-      case RegOp.LT:
-        if ((((rk(B) as number) < (rk(C) as number)) as boolean) !== (A !== 0)) pc++;
+      }
+      case RegOp.LT: {
+        // Mirror of stack Op.LT (GT arrives pre-swapped by the compiler):
+        // either-side __lt with Lua-truthiness (isTruthy) coercion, else string-string,
+        // else numeric.
+        const b = rk(C);
+        const a = rk(B);
+        const mm = getMM(a, "__lt") ?? getMM(b, "__lt");
+        let lt: boolean;
+        if (typeof mm === "function") lt = isTruthy((mm as Function)(a, b));
+        else if (typeof a === "string" && typeof b === "string") lt = a < b;
+        else lt = (a as number) < (b as number);
+        if (lt !== (A !== 0)) pc++;
         pc++;
         break;
-      case RegOp.LE:
-        if ((((rk(B) as number) <= (rk(C) as number)) as boolean) !== (A !== 0)) pc++;
+      }
+      case RegOp.LE: {
+        // Mirror of stack Op.LE (GE arrives pre-swapped by the compiler).
+        const b = rk(C);
+        const a = rk(B);
+        const mm = getMM(a, "__le") ?? getMM(b, "__le");
+        let le: boolean;
+        if (typeof mm === "function") le = isTruthy((mm as Function)(a, b));
+        else if (typeof a === "string" && typeof b === "string") le = a <= b;
+        else le = (a as number) <= (b as number);
+        if (le !== (A !== 0)) pc++;
         pc++;
         break;
+      }
       case RegOp.TEST:
         if (isTruthy(getReg(A)) !== (C !== 0)) pc++;
         pc++;
