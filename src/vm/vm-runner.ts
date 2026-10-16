@@ -10,6 +10,15 @@ export interface VMRunnerOptions {
   onTick?: () => void;
 
   tickInterval?: number;
+
+  // Phase 1.2(a): comparison-semantics mode. "puc" reproduces PUC-Lua 5.4.8
+  // (default; historical behavior plus the E4/M1/M5 corrections below).
+  // "luau" reproduces Luau 0.742 (same-mm __eq, rawequal __eq calls,
+  // ordering comparisons on tables raise). Probe table + pinned tests:
+  // tests/comparison-modes.test.js. Emitted stack handlers delegate to host
+  // operators (h[16-21]) so artifacts match their host natively; the mode
+  // lives in the reference runners only.
+  comparisonMode?: "puc" | "luau";
 }
 
 function isTruthy(v: unknown): boolean {
@@ -107,6 +116,87 @@ export function runVM(
     return undefined;
   }
 
+  // Phase 1.2(a) comparison-semantics mode. "puc" = PUC-Lua 5.4.8 rules,
+  // "luau" = Luau 0.742 rules; every branch below is a measured probe cell
+  // (see tests/comparison-modes.test.js for the full table).
+  const cmpLuau = options.comparisonMode === "luau";
+  function luaTypeName(v: unknown): string {
+    if (v === null || v === undefined) return "nil";
+    const t = typeof v;
+    return t === "object" ? "table" : t;
+  }
+  function isObj(v: unknown): boolean {
+    return typeof v === "object" && v !== null;
+  }
+  // Luau 0.742 raises on ordering comparisons involving tables even with
+  // __lt/__le defined (measured L1-L5/M1-M6/G1-G4 probes). Message mirrors
+  // the host verbatim: "attempt to compare {ta} {op} {tb}".
+  function orderRaise(a: unknown, b: unknown, op: "<" | "<="): never {
+    throw new Error(`attempt to compare ${luaTypeName(a)} ${op} ${luaTypeName(b)}`);
+  }
+  // PUC-Lua 5.4.8 __eq (measured E1-E11/N1-N5): rawequal short-circuits;
+  // both-tables consult first-then-second (E4: second-only FIRES — the old
+  // first-only rule was wrong there); mixed operands skip metamethods.
+  function eqPUC(a: unknown, b: unknown): boolean {
+    if (a === b) return true;
+    if (isObj(a) && isObj(b)) {
+      const mm = getMM(a, "__eq") ?? getMM(b, "__eq");
+      if (typeof mm === "function") return isTruthy((mm as Function)(a, b));
+    }
+    return false;
+  }
+  // Luau 0.742 __eq (measured): rawequal still calls a present mm
+  // (E1/E8/E11); otherwise fire only when both sides resolve to the SAME mm
+  // function (E2 fires once; E3/E4/E7 skip).
+  function eqLuau(a: unknown, b: unknown): boolean {
+    const mmA = getMM(a, "__eq");
+    if (a === b) {
+      const mm = (typeof mmA === "function") ? mmA : getMM(b, "__eq");
+      if (typeof mm === "function") return isTruthy((mm as Function)(a, b));
+      return true;
+    }
+    const mmB = getMM(b, "__eq");
+    if (typeof mmA === "function" && mmA === mmB) return isTruthy((mmA as Function)(a, b));
+    return false;
+  }
+  // PUC-Lua 5.4.8 <= (measured M1-M6): __le first-then-second; absent __le
+  // falls back to NOT-swapped-__lt (M1 fires B's (B,A) -> true; M5 fires
+  // A's (B,A) -> false).
+  function lePUC(a: unknown, b: unknown): boolean {
+    const mmLe = getMM(a, "__le") ?? getMM(b, "__le");
+    if (typeof mmLe === "function") return isTruthy((mmLe as Function)(a, b));
+    const mmLt = getMM(b, "__lt") ?? getMM(a, "__lt");
+    if (typeof mmLt === "function") return !isTruthy((mmLt as Function)(b, a));
+    if (typeof a === "string" && typeof b === "string") return a <= b;
+    return (a as number) <= (b as number);
+  }
+  // PUC-Lua 5.4.8 >= (measured G3/G4): __le swapped first-then-second,
+  // else NOT-swapped-__lt (G4 fires A's (A,B) -> false).
+  function gePUC(a: unknown, b: unknown): boolean {
+    const mmLe = getMM(b, "__le") ?? getMM(a, "__le");
+    if (typeof mmLe === "function") return isTruthy((mmLe as Function)(b, a));
+    const mmLt = getMM(a, "__lt") ?? getMM(b, "__lt");
+    if (typeof mmLt === "function") return !isTruthy((mmLt as Function)(a, b));
+    if (typeof a === "string" && typeof b === "string") return a >= b;
+    return (a as number) >= (b as number);
+  }
+  function primLT(a: unknown, b: unknown): boolean {
+    if (typeof a === "string" && typeof b === "string") return a < b;
+    return (a as number) < (b as number);
+  }
+  function primLE(a: unknown, b: unknown): boolean {
+    if (typeof a === "string" && typeof b === "string") return a <= b;
+    return (a as number) <= (b as number);
+  }
+  function primGT(a: unknown, b: unknown): boolean {
+    if (typeof a === "string" && typeof b === "string") return a > b;
+    return (a as number) > (b as number);
+  }
+  function primGE(a: unknown, b: unknown): boolean {
+    if (typeof a === "string" && typeof b === "string") return a >= b;
+    return (a as number) >= (b as number);
+  }
+
   // Luau-faithful floor modulo (Stage 12A): Lua % takes the divisor's sign
   // (-7 % 3 == 2) while JS % truncates toward zero (-7 % 3 == -1). Generated
   // h[13] executes native Lua %, so the runner must model floor semantics.
@@ -183,57 +273,47 @@ export function runVM(
         push(concatNative(a, b));
       }
       else if (op === Op.EQ) {
-        // Comparison semantics: see the COMPARISON-SEMANTICS CONTRACT in
-        // reg-runner.ts (single normative statement for both runners; kept
-        // for stack parity). Deliberate, measured divergences: no
-        // same-metamethod requirement and no rawequal __eq call (both match
-        // PUC-Lua 5.4.8 exactly, diverge Luau 0.742 which requires the same
-        // mm and calls it even when rawequal) — do not "fix" without a
-        // dedicated spec-alignment stage.
+        // Phase 1.2(a): mode-selected __eq. Emitted stack handlers delegate
+        // to the host `==` (h[16]), so shipped artifacts match their host
+        // natively; this branch is the reference-runner oracle only.
         const b = pop(); const a = pop();
-        if (a === b) { push(true); }
-        else {
-          const mm = getMM(a, "__eq");
-          if (typeof mm === "function") push(isTruthy(mm(a, b)));
-          else push(a === b);
-        }
+        push(cmpLuau ? eqLuau(a, b) : eqPUC(a, b));
       }
       else if (op === Op.NE) {
         const b = pop(); const a = pop();
-        if (a === b) { push(false); }
-        else {
-          const mm = getMM(a, "__eq");
-          if (typeof mm === "function") push(!isTruthy(mm(a, b)));
-          else push(a !== b);
-        }
+        push(cmpLuau ? !eqLuau(a, b) : !eqPUC(a, b));
       }
       else if (op === Op.LT) {
         const b = pop(); const a = pop();
-        const mm = getMM(a, "__lt") ?? getMM(b, "__lt");
-        if (typeof mm === "function") push(isTruthy(mm(a, b)));
-        else if (typeof a === "string" && typeof b === "string") push(a < b);
-        else push((a as number) < (b as number));
+        if (cmpLuau && (isObj(a) || isObj(b))) orderRaise(a, b, "<");
+        else if (cmpLuau) push(primLT(a, b));
+        else {
+          const mm = getMM(a, "__lt") ?? getMM(b, "__lt");
+          if (typeof mm === "function") push(isTruthy((mm as Function)(a, b)));
+          else push(primLT(a, b));
+        }
       }
       else if (op === Op.LE) {
         const b = pop(); const a = pop();
-        const mm = getMM(a, "__le") ?? getMM(b, "__le");
-        if (typeof mm === "function") push(isTruthy(mm(a, b)));
-        else if (typeof a === "string" && typeof b === "string") push(a <= b);
-        else push((a as number) <= (b as number));
+        if (cmpLuau && (isObj(a) || isObj(b))) orderRaise(a, b, "<=");
+        else if (cmpLuau) push(primLE(a, b));
+        else push(lePUC(a, b));
       }
       else if (op === Op.GT) {
         const b = pop(); const a = pop();
-        const mm = getMM(b, "__lt") ?? getMM(a, "__lt");
-        if (typeof mm === "function") push(isTruthy(mm(b, a)));
-        else if (typeof a === "string" && typeof b === "string") push(a > b);
-        else push((a as number) > (b as number));
+        if (cmpLuau && (isObj(a) || isObj(b))) orderRaise(b, a, "<");
+        else if (cmpLuau) push(primGT(a, b));
+        else {
+          const mm = getMM(b, "__lt") ?? getMM(a, "__lt");
+          if (typeof mm === "function") push(isTruthy((mm as Function)(b, a)));
+          else push(primGT(a, b));
+        }
       }
       else if (op === Op.GE) {
         const b = pop(); const a = pop();
-        const mm = getMM(b, "__le") ?? getMM(a, "__le");
-        if (typeof mm === "function") push(isTruthy(mm(b, a)));
-        else if (typeof a === "string" && typeof b === "string") push(a >= b);
-        else push((a as number) >= (b as number));
+        if (cmpLuau && (isObj(a) || isObj(b))) orderRaise(b, a, "<=");
+        else if (cmpLuau) push(primGE(a, b));
+        else push(gePUC(a, b));
       }
       else if (op === Op.AND) {
         const b = pop(); const a = pop();

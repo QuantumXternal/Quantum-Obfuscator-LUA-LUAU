@@ -1,37 +1,32 @@
-// Reg-runner comparison-metamethod mirror tests.
+// Reg-runner comparison-metamethod mirror tests (default "puc" mode).
 // SCOPE: differential parity between the stack and register reference
 // runners, plus the mirror-defined literals below. This file does NOT prove
-// Lua/Luau language-level comparison semantics.
+// Lua/Luau language-level comparison semantics — that is
+// tests/comparison-modes.test.js, which pins each mode against the measured
+// host probe table (PUC-Lua 5.4.8 vs Luau 0.742).
 //
-// Reference-backed semantic deltas, verified against the Lua 5.4 manual
-// (§2.4) and the Luau/Roblox metatable docs before implementation, that this
-// mirror deliberately inherits from the stack runner (parity first):
-//   (a) either-side firing with NO same-metamethod / both-tables requirement
-//       (Lua 5.4 requires both-tables/userdata for __eq; Luau requires the
-//       SAME metamethod function — our mirrors fire left-priority instead);
-//       MEASURED on both runtimes (ph3-cmp P2: different __eq fns -> Luau
-//       calls neither and yields false; PUC calls the FIRST operand's mm
-//       and yields its result — our runners match PUC exactly, so aligning
-//       to Luau would break PUC parity: mutually unsatisfiable, hence
-//       deferred, not merely undocumented);
+// Reference-backed semantic rules, verified against the Lua 5.4 manual
+// (§2.4), the Luau/Roblox metatable docs, and host probes before
+// implementation, that this mirror inherits from the stack runner:
+//   (a) PUC mode has no same-metamethod requirement (P2: different __eq fns
+//       -> PUC calls the FIRST operand's mm; Luau mode calls NEITHER and
+//       yields false — see comparison-modes P2);
 //   (b) RESOLVED via runtime evidence (Luau 0.742 + PUC 5.4.8 both coerce
 //       truthy mm results to boolean): both runners now apply Lua truthiness
-//       (isTruthy) instead of `=== true`. Same-metamethod/rawequal rules below
-//       remain approximations by design.
-//   (c) EQ identity fast-path matches Lua 5.4 ("not primitively equal") but
-//       NOT Luau ("__eq called even when rawequal"); MEASURED (ph3-cmp P1:
-//       A==A with counting __eq -> PUC calls mm 0x, Luau calls it 1x; both
-//       yield true). Same mutual-unsatisfiability as (a): deferred.
-//   (d) __eq consulted on the FIRST operand only; MEASURED (ph3-cmp P2/P3):
-//       PUC calls the first operand's mm and never the second alone, and
-//       both hosts skip mm for mixed number/table — i.e. our rule matches
-//       both measured hosts on the probed cases; only (a)/(c) above are true
-//       divergences. LT/LE consult either side, matching the manual's order rule.
+//       (isTruthy) instead of `=== true`. Same-metamethod/rawequal rules are
+//       mode-selected (comparisonMode), not approximations.
+//   (c) EQ rawequal short-circuits in PUC mode (P1: A==A with counting __eq
+//       -> PUC calls mm 0x; Luau mode calls it 1x — see comparison-modes P1).
+//   (d) __eq consults first-then-second among tables in PUC mode (P2/P3
+//       measured: PUC fires the first present mm in (a,b) order — including
+//       second-only (E4); both hosts skip mm for mixed number/table).
+//       LT/LE consult either side, matching the manual's order rule; LE/GE
+//       fall back to NOT-swapped-__lt when __le is absent (M1/M5/G4).
 // Confirmed matches: GT/GE-via-swapped-LT/LE (relational identities in both
-// manuals), string-string lexicographic order, numeric compare, NE inversion.
-// Realigning (a)/(c): runtime truth is now IN (ph3-cmp P1/P2 above) and it
-// proves mutual unsatisfiability — one runner cannot match both hosts — so
-// these stay deferred by evidence, pending a per-host-modes design decision.
+// manuals), string-string lexicographic order, numeric compare, NE inversion
+// (negation of the == rule in both modes).
+// Emitted handlers (both VMs) delegate to host operators, so shipped
+// artifacts match their host natively; the runners are oracles only.
 import { lex } from "../dist/lexer/Lexer.js";
 import { parse } from "../dist/parser/Parser.js";
 import { obfuscate } from "../dist/obfuscator/index.js";
@@ -91,13 +86,16 @@ function recorder(box, objs) {
 }
 
 describe("reg comparison dispatch matches stack (__eq)", () => {
-  test("left metamethod wins", () => {
+  test("mixed table/number skips __eq even when the table carries it (measured E5)", () => {
+    // PUC-Lua 5.4.8 and Luau 0.742 BOTH skip the mm for mixed operands
+    // (E5 probe: 0 calls, false). The old "left wins" expectation fired the
+    // mm unconditionally and contradicted the measurement; corrected here.
     const A = withMM(mmObj("L"), "__eq", () => true);
-    expectBoth("return A == 1", mkEnv({ A: A }), true);
+    expectBoth("return A == 1", mkEnv({ A: A }), false);
   });
-  test("right-only metamethod does NOT fire (a-side-only rule, documented parity)", () => {
-    // Stack consults getMM(a) only for __eq (unlike LT/LE and unlike the Lua
-    // manual's first-then-second rule) — the mirror inherits this exactly.
+  test("right-only metamethod does NOT fire for mixed operands (skip rule)", () => {
+    // Mixed number/table: BOTH measured hosts skip the mm (E6/N3/N4 probes).
+    // (Both-tables second-only DOES fire in PUC mode — see comparison-modes P3.)
     const B = withMM(mmObj("R"), "__eq", () => true);
     expectBoth("return 1 == B", mkEnv({ B: B }), false);
   });
@@ -123,9 +121,10 @@ describe("reg comparison dispatch matches stack (__eq)", () => {
     const B = mmObj("R");
     expectBoth("return A == B", mkEnv({ A: A, B: B }), true);
   });
-  test("~=: metamethod true inverts to false", () => {
+  test("~=: mixed operands skip __eq, negation of false is true (measured N4)", () => {
+    // Same mixed-skip as == (N4 probe: 0 calls); ~= negates the false.
     const A = withMM(mmObj("L"), "__eq", () => true);
-    expectBoth("return A ~= 1", mkEnv({ A: A }), false);
+    expectBoth("return A ~= 1", mkEnv({ A: A }), true);
   });
   test("~=: identity stays false without calling mm", () => {
     const A = withMM(mmObj("L"), "__eq", () => { throw new Error("mm called"); });

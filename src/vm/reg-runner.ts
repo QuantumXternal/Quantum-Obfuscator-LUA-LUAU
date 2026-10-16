@@ -9,6 +9,14 @@ export interface RegRunnerOptions {
   onTick?: () => void;
   tickInterval?: number;
   maxInstructions?: number;
+  // Phase 1.2(a): comparison-semantics mode. "puc" reproduces PUC-Lua 5.4.8
+  // (default; historical behavior plus the E4/M1/M5 corrections below).
+  // "luau" reproduces Luau 0.742 (same-mm __eq, rawequal __eq calls,
+  // ordering comparisons on tables raise). Probe table + pinned tests:
+  // tests/comparison-modes.test.js. Emitted reg handlers delegate to host
+  // operators, so artifacts match their host natively; the mode lives in
+  // the reference runners only.
+  comparisonMode?: "puc" | "luau";
 }
 
 type UpvalueBox = { 0: unknown };
@@ -102,28 +110,73 @@ export function runReg(
   //
   // COMPARISON-SEMANTICS CONTRACT (mirrors vm-runner.ts Op.EQ/NE/LT/LE/GT/GE;
   // single normative statement for both runners — see also the headers of
-  // tests/reg-comparisons.test.js, tests/reg-metamethods.test.js):
-  // Lookup: __eq consulted on the FIRST operand only; __lt/__le either side
-  // (first priority). Identity fast-path: identical values compare without
-  // consulting metamethods. Results use Lua truthiness (isTruthy), verified
+  // tests/reg-comparisons.test.js, tests/reg-metamethods.test.js and the
+  // measured probe table in tests/comparison-modes.test.js).
+  //
+  // Phase 1.2(a): semantics are mode-selected via
+  // RegRunnerOptions.comparisonMode ("puc" default, "luau" opt-in).
+  // PUC mode reproduces PUC-Lua 5.4.8: rawequal short-circuits __eq; both-
+  // tables consult first-then-second (E4: second-only FIRES — the old
+  // first-only rule was wrong there, corrected here); mixed operands skip
+  // metamethods; <=/>= fall back to NOT-swapped-__lt when __le is absent
+  // (M1/M5/G4 measured); results use Lua truthiness (isTruthy), verified
   // against Luau 0.742 + PUC-Lua 5.4.8 (both coerce truthy mm results).
-  // DELIBERATE divergences from the language references (Lua 5.4 manual
-  // section 2.4; Luau/Roblox metatable docs), kept for stack parity — do not
-  // "fix" without a dedicated spec-alignment stage. Measured on Luau 0.742 +
-  // PUC-Lua 5.4.8 (ph3-cmp probes): the two hosts DISAGREE with each other,
-  // so no single runner semantics can match both —
-  //  (a) no same-metamethod requirement (P2: different __eq fns -> Luau calls
-  //      NEITHER and yields false; PUC calls the FIRST operand's mm and
-  //      yields its result — our runners match PUC exactly here);
-  //  (b) EQ identity fast-path skips mm even when rawequal (P1: A==A ->
-  //      PUC calls mm 0x, Luau calls it 1x — our fast-path matches PUC,
-  //      diverges Luau which calls __eq anyway);
-  //  (c) __eq first-operand-only (P2/P3 measured: PUC consults the first
-  //      operand's mm and never the second alone; both hosts skip mm for
-  //      mixed number/table without shared metatables — our rule matches
-  //      both measured hosts on P2/P3; only (a)/(b) are true divergences).
-  // GT/GE lower to swapped LT/LE at compile time (RegCompiler), so they share
-  // these rules with (B,A) argument order.
+  // Luau mode reproduces Luau 0.742: __eq fires on rawequal (E1/E8/E11)
+  // and otherwise only for the SAME mm function (E2 fires once; E3/E4/E7
+  // skip); ordering comparisons involving tables raise "attempt to compare
+  // {ta} {op} {tb}" (measured L1-L5/M1-M6/G1-G4 — Luau honors no ordering
+  // metamethods on tables in 0.742). GT/GE lower to swapped LT/LE at
+  // compile time (RegCompiler), so they share these rules with (B,A)
+  // argument order.
+  // Emitted reg handlers delegate to host operators, so shipped artifacts
+  // match their host natively; this contract governs the oracles only.
+  const cmpLuau = options.comparisonMode === "luau";
+  function luaTypeName(v: unknown): string {
+    if (v === null || v === undefined) return "nil";
+    const t = typeof v;
+    return t === "object" ? "table" : t;
+  }
+  function isObj(v: unknown): boolean {
+    return typeof v === "object" && v !== null;
+  }
+  function orderRaise(a: unknown, b: unknown, op: "<" | "<="): never {
+    throw new Error(`attempt to compare ${luaTypeName(a)} ${op} ${luaTypeName(b)}`);
+  }
+  function eqPUC(a: unknown, b: unknown): boolean {
+    if (a === b) return true;
+    if (isObj(a) && isObj(b)) {
+      const mm = getMM(a, "__eq") ?? getMM(b, "__eq");
+      if (typeof mm === "function") return isTruthy((mm as Function)(a, b));
+    }
+    return false;
+  }
+  function eqLuau(a: unknown, b: unknown): boolean {
+    const mmA = getMM(a, "__eq");
+    if (a === b) {
+      const mm = (typeof mmA === "function") ? mmA : getMM(b, "__eq");
+      if (typeof mm === "function") return isTruthy((mm as Function)(a, b));
+      return true;
+    }
+    const mmB = getMM(b, "__eq");
+    if (typeof mmA === "function" && mmA === mmB) return isTruthy((mmA as Function)(a, b));
+    return false;
+  }
+  function lePUC(a: unknown, b: unknown): boolean {
+    const mmLe = getMM(a, "__le") ?? getMM(b, "__le");
+    if (typeof mmLe === "function") return isTruthy((mmLe as Function)(a, b));
+    const mmLt = getMM(b, "__lt") ?? getMM(a, "__lt");
+    if (typeof mmLt === "function") return !isTruthy((mmLt as Function)(b, a));
+    if (typeof a === "string" && typeof b === "string") return a <= b;
+    return (a as number) <= (b as number);
+  }
+  function primLT(a: unknown, b: unknown): boolean {
+    if (typeof a === "string" && typeof b === "string") return a < b;
+    return (a as number) < (b as number);
+  }
+  function primLE(a: unknown, b: unknown): boolean {
+    if (typeof a === "string" && typeof b === "string") return a <= b;
+    return (a as number) <= (b as number);
+  }
   function getMM(obj: unknown, name: string): unknown {
     if (typeof obj === "string" && env.__string_mt) {
       const smt = env.__string_mt as Record<string, unknown>;
@@ -300,32 +353,27 @@ export function runReg(
         pc = pc + 1 + B;
         break;
       case RegOp.EQ: {
-        // Mirror of stack Op.EQ/NE (vm-runner.ts): identity fast-path, then
-        // __eq with Lua-truthiness (isTruthy) coercion; the existing invert-skip expression
-        // is unchanged, so ~= (invertA=1) and == behave as before otherwise.
+        // Phase 1.2(a): mode-selected __eq (see contract above). The A
+        // operand selects == vs ~= (invert-skip): eq result is compared
+        // against (A~=0), so NE is negation in both modes.
         const b = rk(C);
         const a = rk(B);
-        let eq: boolean;
-        if (a === b) eq = true;
-        else {
-          const mm = getMM(a, "__eq");
-          eq = typeof mm === "function" ? isTruthy((mm as Function)(a, b)) : a === b;
-        }
+        const eq = cmpLuau ? eqLuau(a, b) : eqPUC(a, b);
         if (eq !== (A !== 0)) pc++;
         pc++;
         break;
       }
       case RegOp.LT: {
-        // Mirror of stack Op.LT (GT arrives pre-swapped by the compiler):
-        // either-side __lt with Lua-truthiness (isTruthy) coercion, else string-string,
-        // else numeric.
+        // Mirror of stack Op.LT (GT arrives pre-swapped by the compiler).
         const b = rk(C);
         const a = rk(B);
-        const mm = getMM(a, "__lt") ?? getMM(b, "__lt");
+        if (cmpLuau && (isObj(a) || isObj(b))) orderRaise(a, b, "<");
         let lt: boolean;
-        if (typeof mm === "function") lt = isTruthy((mm as Function)(a, b));
-        else if (typeof a === "string" && typeof b === "string") lt = a < b;
-        else lt = (a as number) < (b as number);
+        if (!cmpLuau) {
+          const mm = getMM(a, "__lt") ?? getMM(b, "__lt");
+          if (typeof mm === "function") lt = isTruthy((mm as Function)(a, b));
+          else lt = primLT(a, b);
+        } else lt = primLT(a, b);
         if (lt !== (A !== 0)) pc++;
         pc++;
         break;
@@ -334,11 +382,8 @@ export function runReg(
         // Mirror of stack Op.LE (GE arrives pre-swapped by the compiler).
         const b = rk(C);
         const a = rk(B);
-        const mm = getMM(a, "__le") ?? getMM(b, "__le");
-        let le: boolean;
-        if (typeof mm === "function") le = isTruthy((mm as Function)(a, b));
-        else if (typeof a === "string" && typeof b === "string") le = a <= b;
-        else le = (a as number) <= (b as number);
+        if (cmpLuau && (isObj(a) || isObj(b))) orderRaise(a, b, "<=");
+        const le = cmpLuau ? primLE(a, b) : lePUC(a, b);
         if (le !== (A !== 0)) pc++;
         pc++;
         break;
