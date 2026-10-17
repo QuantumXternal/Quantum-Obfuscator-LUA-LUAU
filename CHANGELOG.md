@@ -8,6 +8,46 @@ Conventions: times are single-run wall ms (run-to-run variance ± several ms —
 only consistent directional deltas across all 9 fixtures count). `none` path
 is the AST-only control: byte-identical before/after in every comparison.
 
+## Hardening — Phase 1.2(c) (sparse per-build opcode space, both VMs)
+
+- Wire opcode maps are now uniform sparse injections into 0..127
+  (`SPARSE_OPCODE_RANGE=128`): reg 57 ops => 71 gaps, stack 71 ops => 57
+  gaps. Full Fisher-Yates over the range, first `count` taken — never a
+  contiguous 0..count-1 image (kills the dense-image recognition prior).
+  Both generators throw at generation time if count exceeds the range.
+- Ceilings (stated): reg packed wire H = sparseOp*16 + argc <= 127*16 + 11
+  = 2043 (11 bits, < 2^53; argc < 16 so floor(H/16) stays exact; 8-bit rot
+  key remains a bijection). Stack: every wire opcode < 128 => single-byte
+  VLE, uniform length class (0..255 would add two-byte opcode signatures).
+  Reg shape-B dispatch mask (1..254, 8-bit) and stack hxk (<= 16-bit)
+  cover the 7-bit space; stack max-level +128 mirror keys verified
+  collision-free against real keys exhaustively for all hxk 1..0xFFFE.
+- `_opNames` (debugTrace) keys follow the sparse map (test-pinned by
+  parsing a debugTrace artifact against the recorded map); debug LEVEL
+  stays the documented plaintext bypass (identity map), consistent with
+  all other features being off at debug.
+- Test seam: `takeRecordedOpcodeMaps()` exported from both generators
+  (records the exact map of each shuffled generation — inner then outer
+  for nested builds; never emitted into artifacts).
+- BREAKS numeric-path byte-identity vs (b) by construction (new wire
+  format). Stated, not silent: re-baselined to
+  `benchmarks/baseline-1.2c.json` (10 seeds x reg + stack sha256 + pre/post
+  16-seed bench sweeps) for all later phases.
+- Evidence: 487/487 suite (30 new). NESTED INDEPENDENCE: NMI(inner, outer)
+  = 0.000369 (4x4 bins, N=100 Maximum nested builds x 71 ops) < 0.01,
+  inside permutation null (mean 0.000446, sd 0.000216); same-seed
+  extraction control identical (tau=1.0); inner != outer per build.
+  Cross-VM uniqueness: 5 builds, all reg maps distinct, all stack maps
+  distinct, reg(s) != stack(s). String-seed determinism 5/5 both VMs on
+  the sparse encoding. Benches (16 seeds x both reg fixtures, per-mode
+  clusters — bimodal dispatch behavior from (b) confirmed, no new mode):
+  numeric 31.07M -> 31.12M low (+0.16%), 34.78M -> 34.85M high (+0.20%);
+  table 28.97M -> 28.99M low (+0.08%), 32.22M -> 32.21M high (-0.04%) —
+  all inside the 1.1 +-2% gate. Artifact bytes +1.3% numeric / +0.7%
+  table (H decimal width, expected). Adversarial (ClydeDeobfuscator
+  @87102086, mod-loopheavy reg/max seeds 1234,7,42,99,2024): 5/5 REFUSE
+  verbatim, exit 1, no `.clean.lua`, pre-commit.
+
 ## Hardening — Phase 1.2(b) (seed widening + 128-bit PRNG)
 
 - `polymorphicSeed: number | string` (pipeline, profiles, both VM options,

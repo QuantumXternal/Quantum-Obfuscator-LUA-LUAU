@@ -183,6 +183,25 @@ export const enum RegOp {
 export const REG_OPCODE_COUNT = 57;
 
 /**
+ * Phase 1.2(c): sparse per-build opcode wire space (both VMs).
+ *
+ * Wire opcode values are drawn uniformly from 0..SPARSE_OPCODE_RANGE-1 so the
+ * per-build map is a random injection with `range - count` gaps — never a
+ * contiguous 0..count-1 image. Ceiling rationale (7 bits, 128):
+ *  - reg packed wire: H = op*16 + argc, worst case 127*16 + 11 = 2043
+ *    (11 bits << 2^53); floor(H/16) decode stays exact.
+ *  - stack VLE: every wire opcode stays v < 128 => single byte (uniform
+ *    length class; 0..255 would introduce two-byte opcode signatures).
+ *  - stack max-level 0..127 key scan / split-table probe stay complete.
+ *  - reg shape-B dispatch mask (1..254, 8-bit) covers the 7-bit space.
+ * Headroom: 57 reg / 71 stack real ops today. (e) fused additions must keep
+ * the total <= SPARSE_OPCODE_RANGE or must widen it first (both generators
+ * throw at generation time if count > range — never a silent overflow).
+ */
+export const SPARSE_OPCODE_RANGE = 128;
+export const STACK_OPCODE_COUNT = 71;
+
+/**
  * v2 packed-wire operand masks (Phase 1.1 / R-2).
  *
  * The on-wire instruction stream is variable-length: each instruction is a

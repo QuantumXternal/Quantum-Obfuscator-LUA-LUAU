@@ -1,0 +1,301 @@
+{
+ "phase": "1.2c",
+ "commit": "pending",
+ "note": "Numeric-path byte-identity to (b) is intentionally broken by (c) (sparse wire space changes H words / stack opcodes). These hashes re-baseline all later phases. Benches: PUC 5.4.8 debug.sethook tick-100 instruction estimates, 16 seeds, reg/max; two per-build dispatch modes (bimodal, seed-assigned) — compare per-mode, never the pooled mean.",
+ "numericHashes": {
+  "reg": {
+   "0": "84fdef2ee061e0aa5ecb96444b61d85c5eae5ac209b767c3513651d5ee84bf2f",
+   "1": "022c8400dfa86eec11b03ae5cfb08ff0492a1702ed49681891eb1f611fe7a322",
+   "7": "2f5feaf69bfc24257e8e7abf9cc7aa4bee370ee73227c4e8072d753819bc9533",
+   "42": "0230cb620b46063ecf3393d5445e86b489a4b72f16fda6c7619f2805bd1a9bf6",
+   "99": "6ef042ee662791521757b700e18a1128f759ea5a96f138d3619de6862dba2ac0",
+   "555": "4c4d49b7133351b62e99ce22974368cfb2312cb57273f7f104d2de623ccc1dc2",
+   "999": "69dff5874ea69ddf62e49f3556aaa7d10dd82b4a84dac262470f36bc3f935442",
+   "1234": "79fc590547149575da28e52e8fa5a1bf027f698107a9be21d8f8849aef965457",
+   "2024": "c9edc476cb99802631ebdb602c5fb1a9dca450500b77a500ba135416cd039440",
+   "31337": "f987095ded8e9665637f5bf0bafe7d69ef09d0913698d009d2dba1a373635b50"
+  },
+  "stack": {
+   "0": "19eef70068e7160610c34fd3c632c8903cb483b620804a46bc16259edc380d33",
+   "1": "461be3fb98dca624a9a94f9fc0021e44faff7aa2a1c741036abb0e981eceeaef",
+   "7": "b040223677bc7d0df0b5cb092cf2862ce6d3050a47203ade98aa4a0d2e177bde",
+   "42": "e2f61f99779d7589ea3e82cf1a6c5c316903812d95e6bb01075a2318b2dec3a4",
+   "99": "fe54ac35d1bc250c2c990ec059255411a64444a3b8626f7d69b1a269c5de396f",
+   "555": "125aea608a2017f153c1f59bfd1a819eaf3aee473c749d7840532916357839d1",
+   "999": "9229dabdc84ba1c07cbf35ff1124762f1007fd647e6969f79e5871c33b3743ee",
+   "1234": "6095a314a01775b96bf71c7b3e2bb70b0e5d01acb86f103729a2392202343d3c",
+   "2024": "76ad6d4fb5d2398e460f97edb5355b86ec1ba008f2ecf77b673441e64edea3e5",
+   "31337": "3999431a86f23185e0541c5223a6357f38a0f985dd2a0f02f9cc2be69020fc82"
+  }
+ },
+ "bench": {
+  "preC": {
+   "numeric": {
+    "1": {
+     "instr": 30958600,
+     "bytes": 34862
+    },
+    "2": {
+     "instr": 30769400,
+     "bytes": 32500
+    },
+    "3": {
+     "instr": 34671700,
+     "bytes": 33925
+    },
+    "4": {
+     "instr": 31189800,
+     "bytes": 35123
+    },
+    "5": {
+     "instr": 31264400,
+     "bytes": 35366
+    },
+    "7": {
+     "instr": 31202000,
+     "bytes": 34599
+    },
+    "17": {
+     "instr": 34697800,
+     "bytes": 34721
+    },
+    "42": {
+     "instr": 34764800,
+     "bytes": 35328
+    },
+    "99": {
+     "instr": 34757200,
+     "bytes": 35276
+    },
+    "555": {
+     "instr": 30896400,
+     "bytes": 33501
+    },
+    "777": {
+     "instr": 31178600,
+     "bytes": 34370
+    },
+    "999": {
+     "instr": 34618500,
+     "bytes": 33719
+    },
+    "1234": {
+     "instr": 31031800,
+     "bytes": 35487
+    },
+    "2024": {
+     "instr": 34928800,
+     "bytes": 34414
+    },
+    "31337": {
+     "instr": 31145700,
+     "bytes": 33563
+    },
+    "65535": {
+     "instr": 35014800,
+     "bytes": 35446
+    }
+   },
+   "table": {
+    "1": {
+     "instr": 28931700,
+     "bytes": 35479
+    },
+    "2": {
+     "instr": 28991700,
+     "bytes": 36141
+    },
+    "3": {
+     "instr": 32029100,
+     "bytes": 35279
+    },
+    "4": {
+     "instr": 29036900,
+     "bytes": 36669
+    },
+    "5": {
+     "instr": 28966200,
+     "bytes": 35750
+    },
+    "7": {
+     "instr": 29008000,
+     "bytes": 35460
+    },
+    "17": {
+     "instr": 32092600,
+     "bytes": 36003
+    },
+    "42": {
+     "instr": 32322900,
+     "bytes": 36286
+    },
+    "99": {
+     "instr": 32315400,
+     "bytes": 36198
+    },
+    "555": {
+     "instr": 28709100,
+     "bytes": 34885
+    },
+    "777": {
+     "instr": 28873500,
+     "bytes": 34844
+    },
+    "999": {
+     "instr": 32287100,
+     "bytes": 36048
+    },
+    "1234": {
+     "instr": 28989000,
+     "bytes": 36098
+    },
+    "2024": {
+     "instr": 32253200,
+     "bytes": 35679
+    },
+    "31337": {
+     "instr": 29180600,
+     "bytes": 35428
+    },
+    "65535": {
+     "instr": 32227100,
+     "bytes": 35355
+    }
+   }
+  },
+  "postC": {
+   "numeric": {
+    "1": {
+     "instr": 34807100,
+     "bytes": 35968
+    },
+    "2": {
+     "instr": 31201900,
+     "bytes": 33887
+    },
+    "3": {
+     "instr": 31342600,
+     "bytes": 34219
+    },
+    "4": {
+     "instr": 31437800,
+     "bytes": 34720
+    },
+    "5": {
+     "instr": 34711100,
+     "bytes": 34525
+    },
+    "7": {
+     "instr": 31294100,
+     "bytes": 35848
+    },
+    "17": {
+     "instr": 30922300,
+     "bytes": 34589
+    },
+    "42": {
+     "instr": 30924900,
+     "bytes": 34406
+    },
+    "99": {
+     "instr": 34920900,
+     "bytes": 37166
+    },
+    "555": {
+     "instr": 34999400,
+     "bytes": 35748
+    },
+    "777": {
+     "instr": 31137400,
+     "bytes": 34022
+    },
+    "999": {
+     "instr": 30885000,
+     "bytes": 33986
+    },
+    "1234": {
+     "instr": 34707800,
+     "bytes": 34278
+    },
+    "2024": {
+     "instr": 31026900,
+     "bytes": 35488
+    },
+    "31337": {
+     "instr": 31038300,
+     "bytes": 35708
+    },
+    "65535": {
+     "instr": 34953300,
+     "bytes": 35044
+    }
+   },
+   "table": {
+    "1": {
+     "instr": 32263500,
+     "bytes": 35910
+    },
+    "2": {
+     "instr": 29213000,
+     "bytes": 35960
+    },
+    "3": {
+     "instr": 29096600,
+     "bytes": 35024
+    },
+    "4": {
+     "instr": 29264600,
+     "bytes": 36647
+    },
+    "5": {
+     "instr": 32021800,
+     "bytes": 35274
+    },
+    "7": {
+     "instr": 28991000,
+     "bytes": 35502
+    },
+    "17": {
+     "instr": 28735800,
+     "bytes": 35262
+    },
+    "42": {
+     "instr": 29104600,
+     "bytes": 37310
+    },
+    "99": {
+     "instr": 32349200,
+     "bytes": 36505
+    },
+    "555": {
+     "instr": 32234700,
+     "bytes": 35553
+    },
+    "777": {
+     "instr": 29072500,
+     "bytes": 36969
+    },
+    "999": {
+     "instr": 28718800,
+     "bytes": 35020
+    },
+    "1234": {
+     "instr": 32018700,
+     "bytes": 35190
+    },
+    "2024": {
+     "instr": 28815800,
+     "bytes": 36153
+    },
+    "31337": {
+     "instr": 28856900,
+     "bytes": 36592
+    },
+    "65535": {
+     "instr": 32353600,
+     "bytes": 36776
+    }
+   }
+  }
+ }
+}

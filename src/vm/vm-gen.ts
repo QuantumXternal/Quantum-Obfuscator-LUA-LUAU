@@ -1,4 +1,5 @@
 import type { BytecodeChunk, Constant } from "./bytecode.js";
+import { SPARSE_OPCODE_RANGE, STACK_OPCODE_COUNT } from "./bytecode.js";
 import { Lexer } from "../lexer/Lexer.js";
 import { Parser } from "../parser/Parser.js";
 import { compile as compileAST } from "./Compiler.js";
@@ -68,21 +69,46 @@ function compileString(luaSource: string): BytecodeChunk {
   return compileAST(ast);
 }
 
+// Phase 1.2(c): test seam — records the wire map every shuffled generation
+// actually used, in draw order (nested builds record inner then outer).
+// Module-local; never emitted into artifacts.
+const _recordedOpcodeMaps: number[][] = [];
+export function takeRecordedOpcodeMaps(): number[][] {
+  return _recordedOpcodeMaps.splice(0);
+}
+
+/**
+ * Sparse per-build opcode map (Phase 1.2(c)).
+ *
+ * Real ops 0..STACK_OPCODE_COUNT-1 map to a uniform random injection over
+ * the sparse wire space 0..SPARSE_OPCODE_RANGE-1 (71 ops => 57 gaps), never
+ * a contiguous 0..70 image. Single-byte VLE for every wire op (v < 128)
+ * keeps the packed code stream length-class uniform; the max-level 0..127
+ * key scan and the split-table probe stay complete. Draw is a full
+ * Fisher-Yates over the range, first `count` entries taken; the guard
+ * throws if count ever exceeds the range ((e) fused additions).
+ *
+ * Debug level (doShuffle=false) is the documented plaintext bypass:
+ * identity map, consistent with all other features being off at debug.
+ */
 function shuffleOpcodes(doShuffle: boolean): { encode: number[]; decode: number[] } {
-  const n = 71;
-  const arr = Array.from({ length: n }, (_, i) => i);
-  if (doShuffle) {
-    for (let i = n - 1; i > 0; i--) {
-      const j = Math.floor(rng() * (i + 1));
-      [arr[i], arr[j]] = [arr[j], arr[i]];
-    }
+  if (STACK_OPCODE_COUNT > SPARSE_OPCODE_RANGE) {
+    throw new Error(`[VMGen] opcode count ${STACK_OPCODE_COUNT} exceeds sparse range ${SPARSE_OPCODE_RANGE} — widen the range before adding ops`);
   }
-  const encode = new Array(n);
-  const decode = new Array(n);
-  for (let i = 0; i < n; i++) {
-    encode[i] = arr[i];
-    decode[arr[i]] = i;
+  const n = STACK_OPCODE_COUNT;
+  const encode = new Array<number>(n);
+  const decode = new Array<number>(SPARSE_OPCODE_RANGE).fill(-1);
+  if (!doShuffle) {
+    for (let i = 0; i < n; i++) { encode[i] = i; decode[i] = i; }
+    return { encode, decode };
   }
+  const arr = Array.from({ length: SPARSE_OPCODE_RANGE }, (_, i) => i);
+  for (let i = SPARSE_OPCODE_RANGE - 1; i > 0; i--) {
+    const j = Math.floor(rng() * (i + 1));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+  for (let i = 0; i < n; i++) { encode[i] = arr[i]; decode[arr[i]] = i; }
+  _recordedOpcodeMaps.push([...encode]);
   return { encode, decode };
 }
 

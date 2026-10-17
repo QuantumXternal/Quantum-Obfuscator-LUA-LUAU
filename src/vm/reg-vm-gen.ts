@@ -1,4 +1,4 @@
-import { RegOp, REG_OPCODE_COUNT, RK_OFFSET, REG_OP_MASK, REG_FUSED_SLOTS, REG_SKIP_OPS, regOpArgc } from "./bytecode.js";
+import { RegOp, REG_OPCODE_COUNT, RK_OFFSET, REG_OP_MASK, REG_FUSED_SLOTS, REG_SKIP_OPS, regOpArgc, SPARSE_OPCODE_RANGE } from "./bytecode.js";
 import type { RegBytecodeChunk, Constant } from "./bytecode.js";
 import { randomBytes } from "crypto";
 import { writeFileSync as _dumpWrite } from "fs";
@@ -345,16 +345,45 @@ function featureEnabled(options: RegVMGenOptions, flag: RegFeatureFlag, levelDef
   return levelDefault;
 }
 
+// Phase 1.2(c): test seam — records the wire map every shuffled generation
+// actually used, in draw order (nested builds record inner then outer).
+// Module-local; never emitted into artifacts.
+const _recordedOpcodeMaps: number[][] = [];
+export function takeRecordedOpcodeMaps(): number[][] {
+  return _recordedOpcodeMaps.splice(0);
+}
+
+/**
+ * Sparse per-build opcode map (Phase 1.2(c)).
+ *
+ * Real ops 0..REG_OPCODE_COUNT-1 map to a uniform random injection over the
+ * sparse wire space 0..SPARSE_OPCODE_RANGE-1 (57 ops => 71 gaps), never a
+ * contiguous 0..56 image. Draw is a full Fisher-Yates over the range, first
+ * `count` entries taken: injective by construction, deterministic for the
+ * RNG stream state. The guard throws if count ever exceeds the range, so
+ * (e) fused additions can never silently overflow the space.
+ *
+ * decode has length SPARSE_OPCODE_RANGE with -1 at gap values; it is
+ * informational only (no runtime consumer — the handler table IS the decode
+ * map). dtrace `_opNames` keys follow ctx.opcodeEncode, i.e. this same map.
+ */
 function shuffleOpcodes(doShuffle: boolean): { encode: number[]; decode: number[] } {
-  const encode: number[] = [];
-  const decode: number[] = [];
-  for (let i = 0; i < REG_OPCODE_COUNT; i++) { encode[i] = i; decode[i] = i; }
-  if (!doShuffle) return { encode, decode };
-  for (let i = REG_OPCODE_COUNT - 1; i > 0; i--) {
-    const j = Math.floor(rng() * (i + 1));
-    [encode[i], encode[j]] = [encode[j], encode[i]];
+  if (REG_OPCODE_COUNT > SPARSE_OPCODE_RANGE) {
+    throw new Error(`[RegVM] opcode count ${REG_OPCODE_COUNT} exceeds sparse range ${SPARSE_OPCODE_RANGE} — widen the range before adding ops`);
   }
-  for (let i = 0; i < REG_OPCODE_COUNT; i++) decode[encode[i]] = i;
+  const encode = new Array<number>(REG_OPCODE_COUNT);
+  const decode = new Array<number>(SPARSE_OPCODE_RANGE).fill(-1);
+  if (!doShuffle) {
+    for (let i = 0; i < REG_OPCODE_COUNT; i++) { encode[i] = i; decode[i] = i; }
+    return { encode, decode };
+  }
+  const arr = Array.from({ length: SPARSE_OPCODE_RANGE }, (_, i) => i);
+  for (let i = SPARSE_OPCODE_RANGE - 1; i > 0; i--) {
+    const j = Math.floor(rng() * (i + 1));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+  for (let i = 0; i < REG_OPCODE_COUNT; i++) { encode[i] = arr[i]; decode[arr[i]] = i; }
+  _recordedOpcodeMaps.push([...encode]);
   return { encode, decode };
 }
 
@@ -377,7 +406,10 @@ function generateArgPerms(doRemap: boolean): number[][] {
  * Replaces the fixed 4-word stride (`op,A,B,C` + `ip+=4`) that static
  * analyzers slice directly. Each packed instruction is a header word
  * H = shuffledOp * 16 + argc followed by its operand words, where argc is
- * the trailing word count (0..3 normal, 7/11 fused units). Stride is therefore
+ * the trailing word count (0..3 normal, 7/11 fused units). Phase 1.2(c):
+ * shuffledOp <= 127 (sparse) => H <= 2043 (11 bits); argc < 16 always, so
+ * floor(H/16) decodes exactly and the 8-bit rot key stays a bijection.
+ * Stride is therefore
  * variable (1,2,3,4,8,12 words) and only recoverable via the emitted offset
  * table P (word start of every unit) plus the instruction counter k.
  *
@@ -1751,6 +1783,10 @@ function buildVMRuntime(ctx: BuildCtx, assignStyle: boolean = false): string {
   }
 
   if (ctx.debugTrace) {
+    // Keys follow ctx.opcodeEncode — the same sparse wire map dispatch
+    // decodes — so trace output stays exact for every level where shuffle
+    // is on. The debug LEVEL itself (doShuffle=false) is the documented
+    // plaintext bypass: identity map, matching the rest of debug output.
     const entries = REG_OP_NAMES.map((name, realOp) => {
       const shuffled = ctx.opcodeEncode[realOp];
       return `[${shuffled}]="${name}"`;
