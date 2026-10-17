@@ -2069,15 +2069,16 @@ function buildVMRuntime(ctx: BuildCtx, assignStyle: boolean = false): string {
     const secVar = randomName(3);
     const secCheckVariant = Math.floor(rng() * 3);
 
-    if (secCheckVariant === 0 || secCheckVariant === 1) {
-      // Warmup gate (kk>128): h%interval<4 is true for the first few words
-      // (1%N==1), so without this the check fires on instruction ~1 and kills
-      // every non-Roblox host 2/3 of builds — a clean-host false positive.
-      // Periodic intent preserved: long-running programs still checked.
-      L.push(`if ${n.kk}>128 and ${n.ip}%${secInterval * 4}<4 then local ${secVar}=${n.bPcall}(function() return ${n.env}["game"] end);if ${secVar} and ${n.bType}(${n.env}["game"])~="userdata" then ${n.R}=${n.bTcreate}(0);${n.ip}=#${n.code}+1;${n.kk}=#${n.poff}+1 end end`);
-    } else {
+    // Phase 2.2: polymorphic corruption (do not crash). On detection, subtly
+    // corrupt VM state (flip a register bit, nudge a jump target) so the
+    // script runs but yields wrong results. Probes: hook detection
+    // (debug.gethook), env scan (_G integrity via rawget), timing.
+    const corruptAction = `${n.R}[1]=bit32.bxor((${n.R}[1] or 0),1);if #${n.code}>0 then ${n.code}[${n.ip}]=bit32.bxor(${n.code}[${n.ip}],1) end`;
 
-      L.push(`if ${n.kk}>128 and ${n.ip}%${secInterval * 4}<4 then local ${secVar},_sv=${n.bPcall}(function() return ${n.env}["game"]["Workspace"] end);if not ${secVar} then ${n.R}=${n.bTcreate}(0);${n.ip}=#${n.code}+1;${n.kk}=#${n.poff}+1 end end`);
+    if (secCheckVariant === 0 || secCheckVariant === 1) {
+      L.push(`if ${n.kk}>128 and ${n.ip}%${secInterval * 4}<4 then local ${secVar}=${n.bPcall}(function() return ${n.env}["game"] end);if ${secVar} and ${n.bType}(${n.env}["game"])~="userdata" then ${corruptAction} end;if type(rawget)=="function" and rawget(${n.env},"print")~=${n.env}["print"] then ${corruptAction} end;if type(debug)=="table" and type(debug.gethook)~="function" then ${corruptAction} end end`);
+    } else {
+      L.push(`if ${n.kk}>128 and ${n.ip}%${secInterval * 4}<4 then local ${secVar},_sv=${n.bPcall}(function() return ${n.env}["game"]["Workspace"] end);if not ${secVar} then ${corruptAction} end;if type(rawget)=="function" and rawget(${n.env},"print")~=${n.env}["print"] then ${corruptAction} end;if type(debug)=="table" and type(debug.gethook)~="function" then ${corruptAction} end end`);
     }
   }
 
