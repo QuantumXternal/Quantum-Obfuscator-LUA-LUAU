@@ -8,6 +8,32 @@ Conventions: times are single-run wall ms (run-to-run variance ± several ms —
 only consistent directional deltas across all 9 fixtures count). `none` path
 is the AST-only control: byte-identical before/after in every comparison.
 
+## Hardening — Phase 1.2(e) (new fused ops, both VMs)
+
+- REG new fused ops (reg-vm-gen.ts): FUSED_ADD_MOVE (RegOp 57) - ADD followed
+  by MOVE copying the ADD result (MOVE src == ADD dest); FUSED_MUL_ADD
+  (RegOp 58) - MUL followed by ADD whose second operand is the MUL result
+  (ADD B == MUL dest). Both 2-quad fused units through the existing
+  fused-verbatim pack path; added to REG_FUSED_SLOTS (2), ALL_FUSION_IDS,
+  the generation enabled set, REG_OP_NAMES, and the flattenControlFlow
+  unsafe-split lists. REG_OPCODE_COUNT 57 -> 59 (sparse range 128 = 69
+  gaps). Patterns are the two highest-frequency non-jump bigrams in
+  compiled output (ADD->MOVE 741, MUL->ADD 402 occurrences across the
+  fixture corpus).
+- STACK new fused ops (vm-gen.ts): FUSED_POW (op 71) - LOAD_L,LOAD_L,POW,
+  STORE_L store-back using raw ^ (native __pow dispatch), completing the
+  binary arithmetic fusion family; FUSED_UNM_STORE (op 72) -
+  LOAD_L,UNM,STORE_L unary store-back using raw negation (native __unm
+  dispatch in the runner). fuseOpcodes gains the POW case in the binary-
+  arith branch (arith 14 -> 71) and a new 5-word unary-store branch.
+  STACK_OPCODE_COUNT 71 -> 73 (sparse range 128 = 55 gaps). Runner cases
+  71/72 added.
+- BREAKS numeric-path byte-identity vs (d) by construction (new fused
+  patterns shift rng consumption). Bench gate +/-2% vs (d)'s postD sweep.
+- Evidence: 503/503 suite (perPattern census 12 -> 14; nested-independence
+  op count 71 -> 73); adversarial Clyde@87102086 2/2 REFUSE on both
+  VMs pre-commit; run-baseline clean; debug artifacts byte-identical.
+
 ## Hardening — Phase 1.2(d) (per-op wire-arity changes, both VMs)
 
 - REG lead salt (`REG_LEAD_SALT`, reg-vm-gen.ts): five normal ops emit one
