@@ -8,6 +8,61 @@ Conventions: times are single-run wall ms (run-to-run variance ± several ms —
 only consistent directional deltas across all 9 fixtures count). `none` path
 is the AST-only control: byte-identical before/after in every comparison.
 
+## Release — Phase 5 (v3.0.0) - complete
+
+Core-engine closeout: standard-executor hardening, guaranteed wrapper
+determinism, and adversarial re-verification.
+
+- 5.1 wrapper determinism: `seedRandom`/`seedRandom128` exported; optional
+  `seed` (number | string, string = 128-bit path) on `wrapCustomCipher`,
+  `wrapNestedVM`, `wrapStubVM`, applied with a shared name-counter reset —
+  same seed => byte-identical wrapper output; absent seed keeps the legacy
+  ambient stream. `tests/wrapper-determinism.test.js` (6 tests), including
+  Luau + PUC execution of a seeded chain.
+- 5.3 executor environment hardening: pcall-guarded `getfenv` resolvers with
+  `_G` fallback (stack primary/secondary/debug paths, ldFunc loader);
+  `loadstring or load` fallbacks in the reg runtime boot loader, both env
+  bootstrap emitters, and the Quantum bootstrap builtin capture (hosts with
+  neither loader degrade via `return nil`, no crash); anti-tamper probe now
+  requires positive hook detection (`debug.gethook` callable AND returning
+  non-nil) instead of firing on stripped debug tables.
+  `tests/restricted-executor.test.js`: 6 restriction profiles
+  (getfenv-nil, getfenv-throws, debug-nil, stripped-debug, load-only,
+  worst-case) x reg/stack/debug/wrapped artifacts on Luau (+PUC subset) —
+  all pass with correct stdout, zero false corruption.
+- 5.2 re-verification + docs: ClydeDeobfuscator@87102086 **5/5 REFUSE**;
+  Luraph V15@892b48ac **5/5 GARBAGE** (270-271 B harness stubs; trace
+  aborts `attempt to index nil with 'pack'/'bxor'/'floor'` — missing
+  bit32/string.pack in its sandbox); 24/24 dual-VM execution matrix;
+  deterministic SHAs measured: pipeline `f9fef00e…856c` (33910 B),
+  wrapCustomCipher `33276098…8f01` (48293 B), seeded chain `b638694e…bd67`
+  (101602 B). SECURITY.md updated (Phase-1 table retained).
+- Gate: build clean; **556/556 tests (42 suites)**; RNG draw-order canaries
+  green (legacy unseeded byte-identity preserved).
+
+## Hardening — Phase 3 & 4 (v2.2.0) - complete
+
+- 3.0 lazydec: runtime-mutable constSalt with K re-encoding.
+- 3.1-3.3 performance tiers (turbo/balanced/maximum), macro no-vm
+  directive (`noVmFunctions`), RESULTS.md.
+- 4.1-4.2 Mixed Boolean-Arithmetic constant encoding (520-constant test)
+  and real state-machine CFF (while/break dispatch) + CFF fake branches.
+- 4.3 per-build rkOffset threaded through RK encoding; dual-VM nesting
+  (register payload under cipher/nested/stub wrappers) executes on both
+  Luau and PUC.
+- Adversarial standing during the line: Clyde REFUSE across all swept
+  seeds; full re-verification completed in Phase 5 (v3.0.0).
+
+## Hardening — Phase 2 (v2.1.0) - complete
+
+- 2.1 multi-layer blob cipher: 4-round Feistel round keys + CBC layered
+  over the existing XOR over the LZMA envelope.
+- 2.2 polymorphic anti-tamper: corruption-on-divergence (never crash);
+  probe calibration against restricted debug libraries finalized in
+  Phase 5.3 (positive hook detection).
+- 2.3 shadow PC/ip verification (shadow stack); divergence triggers
+  polymorphic corruption.
+
 ## Hardening — Phase 1 (v2.0.0) - complete
 
 Phase 1 hardening of the Quantum Obfuscator against ClydeDeobfuscator and

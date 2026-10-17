@@ -1,7 +1,7 @@
-# Quantum Obfuscator — Security (v2.2.0)
+# Quantum Obfuscator — Security (v3.0.0)
 
 This document records the adversarial and robustness validation for the
-v2.2.0 hardening line (Phases 1–5): dual-VM architecture, guaranteed
+v3.0.0 hardening line (Phases 1–5): dual-VM architecture, guaranteed
 determinism, and executor-environment hardening. Superseded tool runs are
 retained below under "Phase 1 baseline (historical)".
 
@@ -17,7 +17,7 @@ retained below under "Phase 1 baseline (historical)".
 - **Outer wrappers**: `wrapCustomCipher`, `wrapNestedVM`, `wrapStubVM`
   (composable; triple-stacked in the execution matrix).
 
-## Adversarial validation (v2.2.0, MEASURED)
+## Adversarial validation (v3.0.0, MEASURED)
 
 Artifacts: `benchmarks/fixtures/mod-loopheavy.lua`, reg-max. Tool commits
 re-verified via `git rev-parse` on the cloned trees in this environment.
@@ -36,7 +36,7 @@ classifies `REFUSE`.
 
 ### Deobfuscator-Luraph-V15 — 5/5 GARBAGE
 
-Seeds `quantum-string-seed-01 … -05` (fresh v2.2.0 reg-max artifacts,
+Seeds `quantum-string-seed-01 … -05` (fresh v3.0.0 reg-max artifacts,
 29006/29238/28960/30179/30409 bytes). Every cell: exit 0, output is a
 **270–271-byte harness stub only** — no source recovered. The tool's trace
 sandbox aborts inside the Quantum bootstrap chunk:
@@ -50,7 +50,7 @@ sandbox aborts inside the Quantum bootstrap chunk:
 | quantum-max-5 | `[string "Quantum"]:121: attempt to index nil with 'floor'` |
 
 Behavior note vs Phase 1: the Phase-1 baseline emitted the **identical
-27-byte decoy** (`task.wait()\nprint(2, 2000)`) for every input; v2.2.0
+27-byte decoy** (`task.wait()\nprint(2, 2000)`) for every input; v3.0.0
 artifacts instead drive the tool into per-artifact sandbox aborts (bit32 /
 string.pack absent in its harness). Both classify GARBAGE; neither
 recovers source.
@@ -74,7 +74,7 @@ Result: **24 passed, 0 failed**. The dual-VM nesting path (reg payload
 surviving cipher wrapper layers) is covered by `tests/dualvm-nesting.test.js`
 in the test suite as well.
 
-## Guaranteed determinism (v2.2.0, MEASURED)
+## Guaranteed determinism (v3.0.0, MEASURED)
 
 Same source + options + `polymorphicSeed` ⇒ byte-identical artifact, for the
 pipeline and for the outer wrappers. Wrapper API: `wrapCustomCipher`,
@@ -90,11 +90,11 @@ a seed, behavior is unchanged (ambient stream).
 
 Covered by `tests/wrapper-determinism.test.js`.
 
-## Executor environment hardening (new in v2.2.0, MEASURED)
+## Executor environment hardening (new in v3.0.0, MEASURED)
 
 Standard script executors may block `getfenv` (present-but-throwing), omit
 `loadstring` (load-only hosts), or ship a `debug` library with hook APIs
-stripped. The v2.2.0 bootstrap degrades gracefully in all such environments:
+stripped. The v3.0.0 bootstrap degrades gracefully in all such environments:
 
 - **getfenv reduction**: every environment resolver attempts `pcall(getfenv,0)`
   and falls back to `_G` (register VM core is `_G`-based; stack VM primary,
@@ -148,5 +148,5 @@ REFUSE with verbatim output and exit 1 (verified during Phase 1.2h).
 
 Phase 1 result: no tool achieved SUCCESS or PARTIAL. Adversarial gate: PASS.
 The larpcorrupt and Prometheus cells are historical MEASURED runs against
-Phase-1 artifacts (their clones were not present in the v2.2.0 re-run
+Phase-1 artifacts (their clones were not present in the v3.0.0 re-run
 environment; Clyde and Luraph V15 were re-verified above).
