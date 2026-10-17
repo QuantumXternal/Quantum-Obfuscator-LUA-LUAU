@@ -350,7 +350,12 @@ describe("protection profiles", () => {
   test("FAST/BALANCED/MAXIMUM resolve to explicit tradeoffs", () => {
     expect(resolveProfile({ profile: "FAST" })).toMatchObject({ vmType: "none", encodeStrings: false, scramble: false, executorGlobals: false });
     expect(resolveProfile({ profile: "BALANCED" })).toMatchObject({ vmType: "register", vmLevel: "normal", encodeStrings: true, scramble: true, executorGlobals: false });
-    expect(resolveProfile({ profile: "MAXIMUM" })).toMatchObject({ vmType: "register", vmLevel: "max", encodeStrings: true, scramble: true, executorGlobals: false });
+    expect(resolveProfile({ profile: "MAXIMUM" })).toMatchObject({ vmType: "register", vmLevel: "max", encodeStrings: true, scramble: true, executorGlobals: false, mba: true });
+  });
+  test("MBA constants activate for MAXIMUM only", () => {
+    expect(resolveProfile({ profile: "MAXIMUM" }).mba).toBe(true);
+    expect(resolveProfile({ profile: "BALANCED" }).mba).toBeUndefined();
+    expect(resolveProfile({ profile: "FAST" }).mba).toBeUndefined();
   });
   test("MAXIMUM stays generic unless target is roblox", () => {
     expect(resolveProfile({ profile: "MAXIMUM", target: "roblox" }).executorGlobals).toBe(true);

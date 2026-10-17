@@ -30,9 +30,10 @@ export interface ProfileRequest {
  *           (shuffle, string cipher, fusion, flattening, dead-handler
  *           elimination). No nesting, no lazy/fragment pools, no
  *           environment-specific behavior. This is the web UI default.
- * MAXIMUM:  BALANCED + register VM at max level. Still generic unless
- *           target === "roblox", which additionally enables executor
- *           globals and the Roblox anti-tamper bootstrap block.
+ * MAXIMUM:  BALANCED + register VM at max level + MBA constant encoding.
+ *           Still generic unless target === "roblox", which additionally
+ *           enables executor globals and the Roblox anti-tamper bootstrap
+ *           block.
  */
 export function resolveProfile(req: ProfileRequest): PipelineOptions {
   const target: ObfuscationTarget = req.target ?? "generic";
@@ -77,6 +78,8 @@ export function resolveProfile(req: ProfileRequest): PipelineOptions {
         oneLine: false,
         vmType: req.vmType ?? "register",
         vmLevel: req.vmLevel ?? "max",
+        // Phase 4.1 activation: MBA constants are a MAXIMUM-tier pass.
+        mba: true,
         seed,
         polymorphicSeed,
         target,

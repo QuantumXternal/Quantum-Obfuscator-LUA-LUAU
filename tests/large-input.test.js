@@ -177,24 +177,9 @@ describe("StringEncoder: large-input budget", () => {
 describe("MBA: large-table field budget", () => {
   const numbers = (n) => Array.from({ length: n }, (_, i) => String(i + 1)).join(", ");
 
-  // The parser stores NumberLiteral.value as its source lexeme (string), while
-  // mbaTransformExpression only expands finite numbers. Coerce the literals to
-  // numeric values so this suite exercises the expansion/budget logic itself.
-  function coerceNumberValues(node) {
-    if (!node || typeof node !== "object") return node;
-    if (node.type === "NumberLiteral" && typeof node.value === "string") node.value = Number(node.value);
-    for (const k of Object.keys(node)) {
-      if (k === "loc") continue;
-      const v = node[k];
-      if (Array.isArray(v)) for (const item of v) coerceNumberValues(item);
-      else if (v && typeof v === "object") coerceNumberValues(v);
-    }
-    return node;
-  }
-
   test(`tables with more than ${MBA_TABLE_FIELD_BUDGET} fields keep plain numbers`, () => {
     const count = MBA_TABLE_FIELD_BUDGET + 10;
-    const ast = coerceNumberValues(parse(lex(`local t = {${numbers(count)}}`).tokens));
+    const ast = parse(lex(`local t = {${numbers(count)}}`).tokens);
     const out = applyMBA(ast, { enabled: true, seed: 7 });
     const table = findNodeByType(out, "TableConstructor");
     expect(table).toBeTruthy();
@@ -203,7 +188,7 @@ describe("MBA: large-table field budget", () => {
   });
 
   test("functions nested in large tables are still fully transformed", () => {
-    const ast = coerceNumberValues(parse(lex(`local t = {f = function() local x = 5 return x end, ${numbers(MBA_TABLE_FIELD_BUDGET + 10)}}`).tokens));
+    const ast = parse(lex(`local t = {f = function() local x = 5 return x end, ${numbers(MBA_TABLE_FIELD_BUDGET + 10)}}`).tokens);
     const out = applyMBA(ast, { enabled: true, seed: 7 });
     const table = findNodeByType(out, "TableConstructor");
     expect(table.fields[0].value.type).toBe("FunctionExpression");
@@ -214,10 +199,20 @@ describe("MBA: large-table field budget", () => {
   });
 
   test("small tables still expand numbers as before", () => {
-    const ast = coerceNumberValues(parse(lex("local t = {1, 2, 3}").tokens));
+    const ast = parse(lex("local t = {1, 2, 3}").tokens);
     const out = applyMBA(ast, { enabled: true, seed: 7 });
     const table = findNodeByType(out, "TableConstructor");
     for (const f of table.fields) expect(f.value.type).toBe("BinaryExpression");
+  });
+
+  test("return values are transformed via values (not args)", () => {
+    const ast = parse(lex("local function f() return 5 end\n").tokens);
+    const out = applyMBA(ast, { enabled: true, seed: 7 });
+    const fn = findNodeByType(out, "LocalFunctionStatement");
+    expect(fn).toBeTruthy();
+    const ret = findNodeByType(fn, "ReturnStatement");
+    expect(ret).toBeTruthy();
+    expect(ret.values[0].type).toBe("BinaryExpression");
   });
 });
 

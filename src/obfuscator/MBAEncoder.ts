@@ -28,14 +28,16 @@ function mulberry32(seed: number): () => number {
   };
 }
 
-// MBA identities (all equal to n when var is any integer):
-//   n = (var + n) - var
-//   n = (var ^ n) ^ var   (xor)  -- only if no carry; use add/sub form for correctness
-//   n = (var * 1) + (n - var + var) ... simplify: use (var + n - var)
-// We use: (v + n) - v  and  (v - (v - n)) and table-length form #{...}.
+// MBA identities (FP-exact for every finite n and runtime v):
+//   n = (v - v) + n        (v - v is exactly +0)
+//   n = n - (v - v)
+//   n = (v * 0 + n) + (v - v)
+// Every canceling subexpression evaluates to an exact +0, so the rounding
+// error of additive cancellation forms like (v + n) - v never occurs
+// (observed as 63.2 -> 63.20000000001164 before this was fixed).
 const VARIANTS = [
-  (n: number, v: string) => `((${v} + ${n}) - ${v})`,
-  (n: number, v: string) => `(${v} - (${v} - ${n}))`,
+  (n: number, v: string) => `((${v} - ${v}) + ${n})`,
+  (n: number, v: string) => `(${n} - (${v} - ${v}))`,
   (n: number, v: string) => `((${v} * 0 + ${n}) + (${v} - ${v}))`,
 ];
 
@@ -67,34 +69,27 @@ export function mbaTransformExpression(exp: Expression, rng: () => number, varNa
   if (exp.type === "NumberLiteral") {
     const n = (exp as any).value as number;
     if (!Number.isFinite(n)) return exp;
-    // Skip 0/1 to keep output reasonable; still transform via identity.
     const variant = VARIANTS[Math.floor(rng() * VARIANTS.length)];
-    const expr = variant(n, varName);
-    // Parse back? We return a raw expression node by constructing a
-    // BinaryExpression tree for (v + n) - v form to keep AST valid.
-    // Build: (v + n) - v
     if (variant === VARIANTS[0]) {
+      // ((v - v) + n)
       return {
         type: "BinaryExpression",
-        operator: "-",
-        left: { type: "BinaryExpression", operator: "+", left: { type: "Identifier", name: varName, loc: exp.loc }, right: { type: "NumberLiteral", value: n, loc: exp.loc }, loc: exp.loc } as any,
-        right: { type: "Identifier", name: varName, loc: exp.loc } as any,
+        operator: "+",
+        left: { type: "BinaryExpression", operator: "-", left: { type: "Identifier", name: varName, loc: exp.loc }, right: { type: "Identifier", name: varName, loc: exp.loc }, loc: exp.loc } as any,
+        right: { type: "NumberLiteral", value: n, loc: exp.loc } as any,
         loc: exp.loc,
       } as any;
     }
     if (variant === VARIANTS[1]) {
+      // (n - (v - v))
       return {
         type: "BinaryExpression",
         operator: "-",
-        left: { type: "Identifier", name: varName, loc: exp.loc } as any,
-        right: {
-          type: "BinaryExpression", operator: "-", left: { type: "Identifier", name: varName, loc: exp.loc } as any,
-          right: { type: "NumberLiteral", value: n, loc: exp.loc } as any, loc: exp.loc,
-        } as any,
+        left: { type: "NumberLiteral", value: n, loc: exp.loc } as any,
+        right: { type: "BinaryExpression", operator: "-", left: { type: "Identifier", name: varName, loc: exp.loc }, right: { type: "Identifier", name: varName, loc: exp.loc }, loc: exp.loc } as any,
         loc: exp.loc,
       } as any;
     }
-    // variant 2: (v*0 + n) + (v - v)
     return {
       type: "BinaryExpression",
       operator: "+",
@@ -141,7 +136,7 @@ function transformStatement(stmt: any, rng: () => number, varName: string): any 
     return { ...stmt, values: (stmt.values || []).map((e: any) => mbaTransformExpression(e, rng, varName)) };
   }
   if (stmt.type === "ReturnStatement") {
-    return { ...stmt, args: (stmt.args || []).map((e: any) => mbaTransformExpression(e, rng, varName)) };
+    return { ...stmt, values: (stmt.values || []).map((e: any) => mbaTransformExpression(e, rng, varName)) };
   }
   if (stmt.type === "IfStatement") {
     return { ...stmt, condition: mbaTransformExpression(stmt.condition, rng, varName), thenBody: (stmt.thenBody || []).map((s: any) => transformStatement(s, rng, varName)), elseifClauses: (stmt.elseifClauses || []).map((c: any) => ({ ...c, condition: mbaTransformExpression(c.condition, rng, varName), body: (c.body || []).map((s: any) => transformStatement(s, rng, varName)) })), elseBody: (stmt.elseBody || []).map((s: any) => transformStatement(s, rng, varName)) };
