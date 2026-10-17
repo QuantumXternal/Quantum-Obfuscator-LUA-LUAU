@@ -99,6 +99,11 @@ interface BuildCtx {
   rotStep2: number;
   usedOps?: Set<number>;
   argPerm: number[][];
+  /**
+   * Phase 1.2(d): per-op leading salt-word count for normal packed units
+   * (empty at debug level = documented plaintext bypass).
+   */
+  leadSalt: Map<number, number>;
   /** Per-build constant-table salt (v2 computed-index K layout). */
   constSalt: number;
   /** Per-build jump-delta bias (v2 packed wire; applied at pack time). */
@@ -401,6 +406,58 @@ function generateArgPerms(doRemap: boolean): number[][] {
 }
 
 /**
+ * Phase 1.2(d): wire-arity deltas. Selected normal ops carry `delta` leading
+ * salt words between the header word H and their present operand words:
+ * H argc becomes popcount(mask) + delta (still < 16, so floor(H/16) stays
+ * exact), and the handler remap bakes the lead in at generation time — the
+ * runtime never decodes an operand count. Every downstream word index in the
+ * stream shifts, so no universal op -> operand-count table covers the packed
+ * wire anymore. Salt words are derived from ctx.rotSeed + unit index without
+ * consuming rng, so the rest of the build stays byte-identical to pre-(d).
+ *
+ * Constraints (validated loudly at pack time):
+ *  - normal units only: fused geometry is read verbatim by fused bodies;
+ *  - non-jump, non-skip ops only: pack-time delta patching and skip landings
+ *    assume slot-level rank for their operand words;
+ *  - popcount(mask) + delta <= 3: operands must stay within s1..s3.
+ */
+export const REG_LEAD_SALT = new Map<number, number>([
+  [RegOp.LOADK as number, 1],
+  [RegOp.MOVE as number, 1],
+  [RegOp.NEWTABLE as number, 1],
+  [RegOp.UNM as number, 1],
+  [RegOp.GETUPVAL as number, 1],
+]);
+
+export function regPackedArgc(realOp: number): number {
+  const mask = REG_OP_MASK[realOp] ?? 0b111;
+  const argc = (mask & 1) + ((mask >> 1) & 1) + ((mask >> 2) & 1);
+  return argc + (REG_LEAD_SALT.get(realOp) ?? 0);
+}
+
+function validateRegLeadSalt(): void {
+  for (const [op, delta] of REG_LEAD_SALT) {
+    const mask = REG_OP_MASK[op] ?? 0b111;
+    const argc = (mask & 1) + ((mask >> 1) & 1) + ((mask >> 2) & 1);
+    if (!Number.isInteger(delta) || delta < 1) {
+      throw new Error(`[RegVM] lead-salt delta for op ${op} must be a positive integer`);
+    }
+    if (argc + delta > 3) {
+      throw new Error(`[RegVM] lead-salt for op ${op} exceeds the s1..s3 operand window`);
+    }
+    if (REG_FUSED_SLOTS.has(op)) {
+      throw new Error(`[RegVM] lead-salt must not target fused op ${op}`);
+    }
+    if (REG_SKIP_OPS.has(op)) {
+      throw new Error(`[RegVM] lead-salt must not target skip op ${op}`);
+    }
+    if (op === RegOp.JMP || op === RegOp.FORPREP || op === RegOp.FORLOOP) {
+      throw new Error(`[RegVM] lead-salt must not target jump op ${op}`);
+    }
+  }
+}
+
+/**
  * v2 packed-wire stream (Phase 1.1 / R-2).
  *
  * Replaces the fixed 4-word stride (`op,A,B,C` + `ip+=4`) that static
@@ -435,6 +492,7 @@ function packRegStream(
   code: number[],
   ctx: BuildCtx,
 ): PackedStream {
+  validateRegLeadSalt();
   const { opcodeEncode: encode, argPerm, jumpBias: jBias } = ctx;
   const rot = { seed: ctx.rotSeed, step: ctx.rotStep, step2: ctx.rotStep2 };
   const NOP_OP = RegOp.NOP as number;
@@ -544,13 +602,17 @@ function packRegStream(
         patches.push({ at: stream.length - 2, fusedQuad: u.quadStart, baseUnit: ui });
       }
     } else {
-      // Normal packed unit: H + present slots ordered by perm key.
+      // Normal packed unit: H + [lead salt words] + present slots by perm key.
+      const lead = ctx.leadSalt.get(u.realOp) ?? 0;
       const mask = REG_OP_MASK[u.realOp] ?? 0b111;
       const slots: number[] = [];
       for (let s = 1; s <= 3; s++) if (mask & (1 << (s - 1))) slots.push(s);
       slots.sort((a, b) => p[a - 1] - p[b - 1]);
       hPos.push(stream.length);
-      stream.push(encode[u.realOp] * 16 + slots.length);
+      stream.push(encode[u.realOp] * 16 + slots.length + lead);
+      for (let li = 0; li < lead; li++) {
+        stream.push((((ctx.rotSeed + 17) * (ui + 5) + (li + 1) * 0x9E3779B9) >>> 3) & 0x3FFFF);
+      }
       for (const s of slots) stream.push(code[u.quadStart * 4 + s]);
     }
   });
@@ -570,7 +632,9 @@ function packRegStream(
       const bold = code[q * 4 + 2];
       const target = q + 1 + bold;
       const tui = assertUnitStart(target, "jump");
-      // B word stream position: rank of slot 2 among present slots.
+      // B word stream position: rank of slot 2 among present slots (lead is
+      // validated to be 0 for jump ops; kept in the index for self-consistency).
+      const lead = ctx.leadSalt.get(u.realOp) ?? 0;
       const mask = REG_OP_MASK[u.realOp] ?? 0b111;
       const p = argPerm[u.realOp];
       const slots: number[] = [];
@@ -578,7 +642,7 @@ function packRegStream(
       slots.sort((a, b) => p[a - 1] - p[b - 1]);
       const rank = slots.indexOf(2);
       if (rank < 0) throw new Error(`[packRegStream] B slot absent for jump op ${u.realOp}`);
-      stream[(P[ui] - 1) + 1 + rank] = tui - (ui + 1) + jBias;
+      stream[(P[ui] - 1) + 1 + lead + rank] = tui - (ui + 1) + jBias;
     }
   });
   for (const pt of patches) {
@@ -1545,15 +1609,19 @@ function buildHandlerBodies(n: NameMap, ctx: BuildCtx, usedOps?: Set<number>): M
     const p = ctx.argPerm[op as number];
     // v2 packed wire: only mask-present slots are emitted, ordered by perm
     // key. Bake the compaction into the remap (absent slots -> nil; bodies
-    // only read their own operands). Full-mask ops keep the legacy form.
+    // only read their own operands). Phase 1.2(d): lead salt words shift the
+    // present-slot ranks by `lead`. Full-mask ops keep the legacy form.
     const mask = REG_OP_MASK[op as number] ?? 0b111;
     const present: number[] = [];
     for (let s = 1; s <= 3; s++) if (mask & (1 << (s - 1))) present.push(s);
     present.sort((a, b) => p[a - 1] - p[b - 1]);
+    const lead = ctx.leadSalt.get(op as number) ?? 0;
     const slots = [n.s1, n.s2, n.s3];
     const expr = (slot: number): string => {
       const rank = present.indexOf(slot);
-      return rank < 0 ? "nil" : slots[rank];
+      if (rank < 0) return "nil";
+      const idx = rank + lead;
+      return idx < slots.length ? slots[idx] : "nil";
     };
     const remap = `local A,B,C=${expr(1)},${expr(2)},${expr(3)};`;
 
@@ -3702,6 +3770,7 @@ export function generateRegVM(chunk: RegBytecodeChunk, options: RegVMGenOptions 
     spiralPrime, spiralOffset, layerVariants,
     dispatchVariant, dispatchMask, rotSeed, rotStep, rotStep2,
     argPerm: generateArgPerms(isObf), jumpBias, constSalt,
+    leadSalt: isObf ? REG_LEAD_SALT : new Map(),
   };
 
   const doFusion = featureEnabled(options, "opcodeFusion", level !== "debug");

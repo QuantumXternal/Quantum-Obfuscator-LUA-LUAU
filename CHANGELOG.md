@@ -8,6 +8,35 @@ Conventions: times are single-run wall ms (run-to-run variance ± several ms —
 only consistent directional deltas across all 9 fixtures count). `none` path
 is the AST-only control: byte-identical before/after in every comparison.
 
+## Hardening — Phase 1.2(d) (per-op wire-arity changes, both VMs)
+
+- REG lead salt (`REG_LEAD_SALT`, reg-vm-gen.ts): five normal ops emit one
+  leading salt word between the header word H and their operand words —
+  LOADK/MOVE/UNM/GETUPVAL 2 -> 3, NEWTABLE 1 -> 2. H argc becomes
+  popcount(mask) + lead (still < 16, floor(H/16) stays exact; worst-case H
+  unchanged at 2043 — fused argc 11 dominates). Handler remap bakes the
+  lead in at generation time; the runtime still never decodes an operand
+  count. Salt words derive from rotSeed + unit index without consuming rng
+  (rest of the build byte-identical). Constraints validated loudly at pack
+  time: normal (non-fused), non-jump, non-skip ops only, popcount + lead
+  <= 3 (s1..s3 window); empty map at debug level. Effect: per-unit stride
+  now depends on op identity beyond its operand count — no universal
+  op -> operand-count table covers the packed wire.
+- Mechanism no-op proof: with the map empty the mechanism alone produced
+  byte-identical artifacts to (c) (seeds 1234/7, reg 09ab6927 / 7b9da574).
+  With ops enabled: reg hashes move (2230f3e5 / 248b7569), stack hashes
+  untouched in this half (0960c0da / 9db2e329). Debug-level artifacts
+  byte-identical to (c) for both VMs (regDbg 6fa38a1b / 1a5595d1,
+  stackDbg 8f17b57b / acfdfb9b) — plaintext bypass preserved.
+- BREAKS numeric-path byte-identity vs (c) by construction (new reg wire
+  layout); re-baselined to `benchmarks/baseline-1.2d.json` in the stack
+  half of this phase.
+- Evidence: 492/492 suite (5 new: tests/arity-changes.test.js pins the
+  selection, wire arities, constraints, restated H ceiling, same-seed
+  determinism); per-op subsets run after each op (reg-execution,
+  regression, reg-len-unm, reg-comparisons, envelope-parse — 137 -> 198
+  tests across the five ops, all green at each step).
+
 ## Hardening — Phase 1.2(c) (sparse per-build opcode space, both VMs)
 
 - Wire opcode maps are now uniform sparse injections into 0..127
