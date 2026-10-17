@@ -837,7 +837,7 @@ function compileStatement(ctx: CompileContext, stmt: Statement | LastStatement):
       emit(c, Op.STORE_L, hiddenCounter);
       compileExpression(ctx, stmt.end);
       emit(c, Op.STORE_L, limitSlot);
-      compileExpression(ctx, stmt.step ?? { type: "NumberLiteral", value: "1", loc: stmt.loc });
+      compileExpression(ctx, stmt.step ?? { type: "NumberLiteral", value: 1, loc: stmt.loc });
       emit(c, Op.STORE_L, stepSlot);
 
       const condStart = c.code.length;

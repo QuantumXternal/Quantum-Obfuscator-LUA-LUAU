@@ -31,11 +31,11 @@ function createOpaquePredicate(index: number, loc: SourceLocation): BinaryExpres
     left: {
       type: "BinaryExpression",
       operator: op,
-      left: { type: "NumberLiteral", value: String(a), loc },
-      right: { type: "NumberLiteral", value: String(b), loc },
+      left: { type: "NumberLiteral", value: a, loc },
+      right: { type: "NumberLiteral", value: b, loc },
       loc,
     },
-    right: { type: "NumberLiteral", value: String(c), loc },
+    right: { type: "NumberLiteral", value: c, loc },
     loc,
   };
 }

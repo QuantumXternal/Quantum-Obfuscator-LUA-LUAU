@@ -404,7 +404,7 @@ export function printExpression(exp: Expression): string {
     case "BooleanLiteral":
       return exp.value ? "true" : "false";
     case "NumberLiteral":
-      return exp.raw ?? exp.value;
+      return String(exp.raw ?? exp.value);
     case "StringLiteral":
       return luauEscapeString(exp.value);
     case "VarargExpression":

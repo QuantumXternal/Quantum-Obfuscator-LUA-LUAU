@@ -901,7 +901,10 @@ export class Parser {
     }
     if (t.type === "Number") {
       this.consume();
-      return { type: "NumberLiteral", value: (t as any).value, raw: (t as any).raw, loc: t.loc };
+      // Numeric lexeme -> JS number (lexer already strips separators; hex/bin
+      // formats via Number()). raw keeps the exact source spelling so the
+      // Printer can reproduce it byte-for-byte when the literal survives.
+      return { type: "NumberLiteral", value: Number((t as any).value), raw: (t as any).raw, loc: t.loc };
     }
     if (t.type === "String") {
       this.consume();

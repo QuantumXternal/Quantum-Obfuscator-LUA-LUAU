@@ -323,6 +323,29 @@ describe("shared pipeline engine", () => {
   });
 });
 
+describe("NumberLiteral: numeric value + raw lexeme", () => {
+  const numLit = (src) => {
+    const ast = parse(lex(src).tokens);
+    return ast.body[0].values[0];
+  };
+
+  test("parser stores JS numbers; raw keeps the exact source spelling", () => {
+    expect(numLit("local x = 1e5\n")).toMatchObject({ type: "NumberLiteral", value: 100000, raw: "1e5" });
+    expect(numLit("local x = 0xFF\n")).toMatchObject({ type: "NumberLiteral", value: 255, raw: "0xFF" });
+    expect(numLit("local x = 1_000\n")).toMatchObject({ type: "NumberLiteral", value: 1000, raw: "1_000" });
+    expect(numLit("local x = 3.5\n")).toMatchObject({ type: "NumberLiteral", value: 3.5, raw: "3.5" });
+  });
+
+  test("AST-only printing reproduces the original lexemes (no MBA)", () => {
+    const src = "local x = 1e5\nlocal y = 0xFF\n";
+    const out = printChunk(parse(lex(src).tokens));
+    expect(out).toContain("1e5");
+    expect(out).toContain("0xFF");
+    expect(out).not.toContain("100000");
+    expect(out).not.toContain("255");
+  });
+});
+
 describe("protection profiles", () => {
   test("FAST/BALANCED/MAXIMUM resolve to explicit tradeoffs", () => {
     expect(resolveProfile({ profile: "FAST" })).toMatchObject({ vmType: "none", encodeStrings: false, scramble: false, executorGlobals: false });

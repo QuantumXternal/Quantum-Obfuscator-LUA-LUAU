@@ -31,7 +31,7 @@ function makeDecodeCall(
     kind: "value" as const,
     value: {
       type: "NumberLiteral",
-      value: String(b),
+      value: b,
       loc,
     },
   }));
@@ -49,7 +49,7 @@ function makeDecodeCall(
       name: decoderName,
       loc,
     },
-    args: [table, { type: "NumberLiteral", value: String(key), loc }],
+    args: [table, { type: "NumberLiteral", value: key, loc }],
     loc,
   };
 }
@@ -105,7 +105,7 @@ function makeDecoderStatements(
   const forLoopStmt: Statement = {
     type: "ForNumericStatement",
     var: { type: "Identifier", name: "i", loc },
-    start: { type: "NumberLiteral", value: "1", loc },
+    start: { type: "NumberLiteral", value: 1, loc },
     end: {
       type: "UnaryExpression",
       operator: "#",

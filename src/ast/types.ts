@@ -199,7 +199,8 @@ export interface BooleanLiteral extends BaseNode {
 
 export interface NumberLiteral extends BaseNode {
   type: "NumberLiteral";
-  value: string;
+  /** Numeric value. Parsed literals also carry the exact source spelling in raw. */
+  value: number;
   raw?: string;
 }
 
