@@ -4,6 +4,8 @@ export interface BootstrapConfig {
   xorKey: number[];
   invSbox: number[];
   checksum: number;
+  /** Phase 2.1: 4 Feistel round keys. Defaults to [0,0,0,0] (identity) if absent. */
+  feistelKeys?: number[];
   chunkName?: string;
   rng: () => number;
   /**
@@ -297,6 +299,8 @@ export function generateBootstrap(config: BootstrapConfig): string {
   ];
   fragments.push({ code: decoderLines.join('\n'), layer: L_FUNCS });
 
+  const fk = config.feistelKeys || [0, 0, 0, 0];
+  const fkLua = `{${fk.join(",")}}`;
   const decryptLines = [
     `local function ${nDecrypt}(data)`,
     `local n=#data`,
@@ -305,9 +309,27 @@ export function generateBootstrap(config: BootstrapConfig): string {
     `for i=1,n do`,
     `local enc=${nByte}(data,i)`,
     `local sub=${nBxor}(${nBxor}(enc,${nKey}[((i-1)%${nKeyLen})+1]),prev)`,
-    `o[i]=${nChar}(${nSbox}[sub+1])`,
+    `o[i]=sub`,
     `prev=enc`,
     `end`,
+    // Phase 2.1: Feistel inverse (4 rounds, reverse order).
+    `local _fk=${fkLua}`,
+    `for i=1,n,2 do`,
+    `if i+1<=n then`,
+    `local L=o[i]`,
+    `local R=o[i+1]`,
+    `for r=4,1,-1 do`,
+    `local newL=${nBxor}(R,${nBand}((L+_fk[r])%256,0xFF))`,
+    `local newR=L`,
+    `L=newL`,
+    `R=newR`,
+    `end`,
+    `o[i]=L`,
+    `o[i+1]=R`,
+    `end`,
+    `end`,
+    // S-box inverse.
+    `for i=1,n do o[i]=${nChar}(${nSbox}[o[i]+1]) end`,
     `return ${nTconcat}(o)`,
     `end`,
   ];

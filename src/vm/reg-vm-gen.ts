@@ -4140,16 +4140,17 @@ export function generateRegVM(chunk: RegBytecodeChunk, options: RegVMGenOptions 
   if (level !== "debug" && process.env.NO_CIPHER !== '1') {
     const vmRawLen = Buffer.byteLength(output, 'utf-8');
     if (_tel()) console.log(`[RegVM] Blob: encrypting VM runtime (${vmRawLen} bytes)...`);
-    const { blob: vmBlob, xorKey, invSbox, checksum, origLen: vmOrigLen } = encryptAndEncode(output, rng);
+    const { blob: vmBlob, xorKey, invSbox, checksum, origLen: vmOrigLen, feistelKeys } = encryptAndEncode(output, rng);
     if (_tel()) console.log(`[RegVM] Blob: VM blob = ${vmBlob.length} chars (SBox+CBC+Base85), key=${xorKey.length}B, checksum=${checksum}`);
 
     output = generateBootstrap({
       vmBlob,
       vmOrigLen,
-      xorKey,
-      invSbox,
-      checksum,
-      chunkName: "Quantum",
+       xorKey,
+       invSbox,
+       checksum,
+       feistelKeys,
+       chunkName: "Quantum",
       rng,
       // Environment-specific anti-tamper is strictly opt-in.
       // Generic output stays generic; only target === "roblox" emits it.
