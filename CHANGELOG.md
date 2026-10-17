@@ -36,6 +36,54 @@ is the AST-only control: byte-identical before/after in every comparison.
   determinism); per-op subsets run after each op (reg-execution,
   regression, reg-len-unm, reg-comparisons, envelope-parse — 137 -> 198
   tests across the five ops, all green at each step).
+- STACK lead decoy (`STACK_LEAD_DECOY`, vm-gen.ts): four normal ops emit
+  one leading decoy word between the op word and their real argument words
+  — LOAD_G/STORE_G 1 -> 2, UNM/LEN 0 -> 1. Applied by
+  applyArityDecoysChunk (after flatten, before contextTransform) whenever
+  generation is obfuscating; one decoySalt draw (1 + rng()*0xFFFF) per
+  build; jump targets rewritten through insertedBefore prefix offsets
+  (jump ops excluded by validation). Matching handlers consume the decoy
+  first (baked at generation time: read into a dead local, ip++), so every
+  downstream word index shifts — the stack wire no longer admits a
+  universal op -> operand-count table. Constraints validated loudly when
+  the pass runs: no jump ops, no terminators, no camouflage ops (64-66)
+  and not the context op (67); empty map at debug level. The pass is
+  wrapped in try/finally so a nested build's recursive generateVM cannot
+  leak the active flag (nesting branch runs before the flag is set).
+- Mechanism no-op proof (stack): with the map empty the mechanism alone
+  produced byte-identical artifacts (seeds 1234/7, all four hashes
+  unchanged). With ops enabled: stack hashes move (deacf64d / da79236f vs
+  (c) 0960c0da / 9db2e329); reg hashes untouched in this half
+  (2230f3e5 / 248b7569 — moved by the reg half); debug-level artifacts
+  byte-identical to (c) for both VMs (regDbg 6fa38a1b / 1a5595d1,
+  stackDbg 8f17b57b / acfdfb9b) — plaintext bypass preserved.
+- PRE-EXISTING DEFECT FIXED (bootstrap-template.ts:17, `longStringLevel`):
+  the guard excluded closers appearing INSIDE the blob but not a blob
+  TAIL equal to `]` + `=`*level, which merges with the closer and closes
+  the long-bracket literal one char early (stray `]` where `)` expected:
+  "')' expected near ']'"). Latent since before (b); first exposed when
+  the (d) reg data shift ended seed 31337's blob with `]`. Fix: also
+  escalate when the blob ends with the tail run. Found via byte-position
+  localization (incremental Lua `load` reader) after parse-check sweeps
+  isolated seed 31337 numeric/max.
+- Evidence (stack half): 503/503 suite (11 new: 4 stack-section + 1
+  string-seed determinism in tests/arity-changes.test.js, 6 in
+  tests/bootstrap-longstring.test.js — 3 of them fail pre-fix by
+  stash-rebuild). Per-op subsets run after each op (stackmax-puc,
+  stackmax-order, op-semantics, concat-semantics, regression — all green
+  at each step). tests/tamper-evidence.test.js recalibrated for the (d)
+  layout shift: old start+200/+300/+1000 landed on dead/decoy slots;
+  replaced by live neighbors +210/+310/+1005 (flip-scan verified on Luau).
+  Post-fix 16-seed x numeric/table reg/max sweep: all load + execute
+  clean on PUC 5.4.8 (postD-sweep.json).
+- Re-baselined to `benchmarks/baseline-1.2d.json` (10 seeds x reg + stack
+  sha256 — all 10/10 changed on both paths — plus 16-seed postC/postD
+  bench sweeps). Bench deltas (per-mode cluster means, never pooled):
+  numeric 31.12M -> 31.12M low (+0.01%), 34.85M -> 34.85M high (+0.01%);
+  table 28.99M -> 28.99M low (+0.02%), 32.21M -> 32.21M high (+0.02%) —
+  all far inside the 1.1 +-2% gate.
+- Adversarial (ClydeDeobfuscator @87102086, mod-loopheavy stack/max seeds
+  1234,7): 2/2 REFUSE verbatim, exit 1, no `.clean.lua`, pre-commit.
 
 ## Hardening — Phase 1.2(c) (sparse per-build opcode space, both VMs)
 

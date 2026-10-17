@@ -121,6 +121,61 @@ const OPCODES_2ARG = new Set([39, 53, 60, 61, 66]);
 
 const OPCODES_3ARG = new Set([56, 57, 58, 59, 62, 63, 68, 69, 70]);
 
+/**
+ * Phase 1.2(d): stack-vm wire-arity decoys. Selected normal ops carry one
+ * leading decoy word between the op word and their real argument words. The
+ * matching handler consumes the decoy first (baked at generation time), so
+ * every downstream word index shifts and the wire no longer admits a
+ * universal op -> operand-count table. Applied by applyArityDecoysChunk
+ * (after flatten, before contextTransform) whenever generation is
+ * obfuscating (doShuffle); empty at debug level = plaintext bypass.
+ *
+ * Constraints (validated loudly when the pass runs): no jump ops (target
+ * rewriting assumes their arg layout), no terminators, no camouflage ops
+ * (64-66, random arg counts) and not the context op (67).
+ */
+export const STACK_LEAD_DECOY = new Map<number, number>([
+  [7, 1],
+  [8, 1],
+  [25, 1],
+  [26, 1],
+]);
+
+let _stackArityDecoysActive = false;
+
+function baseStackArgc(op: number): number {
+  if (OPCODES_3ARG.has(op)) return 3;
+  if (OPCODES_2ARG.has(op)) return 2;
+  if (OPCODES_1ARG.has(op)) return 1;
+  return 0;
+}
+
+function stackArgc(op: number): number {
+  return _stackArityDecoysActive ? baseStackArgc(op) + (STACK_LEAD_DECOY.get(op) ?? 0) : baseStackArgc(op);
+}
+
+/** Wire arity of an op once arity decoys are applied (test seam). */
+export function stackWireArgc(op: number): number {
+  return baseStackArgc(op) + (STACK_LEAD_DECOY.get(op) ?? 0);
+}
+
+function validateStackLeadDecoy(): void {
+  for (const [op, decoy] of STACK_LEAD_DECOY) {
+    if (!Number.isInteger(decoy) || decoy < 1) {
+      throw new Error(`[StackVM] arity decoy count for op ${op} must be a positive integer`);
+    }
+    if (isJumpOp(op) !== null) {
+      throw new Error(`[StackVM] arity decoys must not target jump op ${op}`);
+    }
+    if (isTerminator(op)) {
+      throw new Error(`[StackVM] arity decoys must not target terminator op ${op}`);
+    }
+    if (op >= 64 && op <= 67) {
+      throw new Error(`[StackVM] arity decoys must not target camouflage/context op ${op}`);
+    }
+  }
+}
+
 // Stage 18: dynamic hot-subset dispatch (hybrid rule). Smallest opcode set
 // covering SELECTION_TARGET of measured dispatches, capped at SELECTION_KMAX
 // entries. Selected per emitted code unit from post-transform real-opcode
@@ -152,7 +207,7 @@ function countOpcodes(code: number[], hist: Map<number, number>): void {
   while (i < code.length) {
     const op = code[i];
     hist.set(op, (hist.get(op) ?? 0) + 1);
-    i += 1 + (OPCODES_3ARG.has(op) ? 3 : OPCODES_2ARG.has(op) ? 2 : OPCODES_1ARG.has(op) ? 1 : 0);
+    i += 1 + stackArgc(op);
   }
 }
 
@@ -165,7 +220,7 @@ function mapBytecode(code: number[], opcodeEncode: number[]): number[] {
       result[i] = opcodeEncode[op];
     }
     i++;
-    const argCount = OPCODES_3ARG.has(op) ? 3 : OPCODES_2ARG.has(op) ? 2 : OPCODES_1ARG.has(op) ? 1 : 0;
+    const argCount = stackArgc(op);
     i += argCount;
   }
   return result;
@@ -187,7 +242,7 @@ function collectJumpTargets(code: number[]): Set<number> {
       targets.add(code[i]);
       i++;
     } else {
-      const ac = OPCODES_3ARG.has(op) ? 3 : OPCODES_2ARG.has(op) ? 2 : OPCODES_1ARG.has(op) ? 1 : 0;
+      const ac = stackArgc(op);
       i += ac;
     }
   }
@@ -252,7 +307,7 @@ function fuseOpcodes(code: number[]): number[] {
     }
 
     i++;
-    const ac = OPCODES_3ARG.has(op) ? 3 : OPCODES_2ARG.has(op) ? 2 : OPCODES_1ARG.has(op) ? 1 : 0;
+    const ac = stackArgc(op);
     i += ac;
   }
   return result;
@@ -273,7 +328,7 @@ function injectCamouflage(code: number[]): number[] {
     boundaries.push(i);
     const op = code[i];
     i++;
-    const ac = OPCODES_3ARG.has(op) ? 3 : OPCODES_2ARG.has(op) ? 2 : OPCODES_1ARG.has(op) ? 1 : 0;
+    const ac = stackArgc(op);
     i += ac;
   }
   boundaries.push(code.length);
@@ -326,7 +381,7 @@ function injectCamouflage(code: number[]): number[] {
       result[newI + 2] = safeTarget + offsets[safeTarget];
     }
     i++;
-    const ac = OPCODES_3ARG.has(op) ? 3 : OPCODES_2ARG.has(op) ? 2 : OPCODES_1ARG.has(op) ? 1 : 0;
+    const ac = stackArgc(op);
     i += ac;
   }
 
@@ -341,7 +396,7 @@ function injectCamouflageChunk(chunk: BytecodeChunk): void {
 }
 
 function instrSize(op: number): number {
-  return 1 + (OPCODES_3ARG.has(op) ? 3 : OPCODES_2ARG.has(op) ? 2 : OPCODES_1ARG.has(op) ? 1 : 0);
+  return 1 + stackArgc(op);
 }
 
 function isTerminator(op: number): boolean {
@@ -470,6 +525,47 @@ function flattenChunk(chunk: BytecodeChunk): void {
   }
 }
 
+function applyArityDecoys(code: number[], decoySalt: number): number[] {
+  validateStackLeadDecoy();
+  if (STACK_LEAD_DECOY.size === 0) return code;
+
+  const insertedBefore = new Array<number>(code.length + 1).fill(0);
+  const out: number[] = [];
+  let i = 0;
+  while (i < code.length) {
+    const op = code[i];
+    const argc = baseStackArgc(op);
+    insertedBefore[i] = out.length - i;
+    out.push(op);
+    const decoy = STACK_LEAD_DECOY.get(op) ?? 0;
+    for (let d = 0; d < decoy; d++) {
+      out.push(((decoySalt + (i + 1) * 0x9E37) >>> 3) & 0xFFFF);
+    }
+    for (let a = 0; a < argc; a++) out.push(code[i + 1 + a]);
+    i += 1 + argc;
+  }
+  insertedBefore[code.length] = out.length - code.length;
+
+  let j = 0;
+  while (j < code.length) {
+    const op = code[j];
+    const jmp = isJumpOp(op);
+    if (jmp) {
+      const t = Math.min(code[j + 1 + jmp.argIdx], code.length);
+      out[insertedBefore[j] + j + 1 + jmp.argIdx] = t + insertedBefore[t];
+    }
+    j += 1 + baseStackArgc(op);
+  }
+  return out;
+}
+
+function applyArityDecoysChunk(chunk: BytecodeChunk, decoySalt: number): void {
+  chunk.code = applyArityDecoys(chunk.code, decoySalt);
+  if (chunk.protos) {
+    for (const p of chunk.protos) applyArityDecoysChunk(p, decoySalt);
+  }
+}
+
 function computeCtxBit(ctxInit: number, ctxPrime: number, pos: number): number {
 
   const luaIp = pos + 1;
@@ -490,7 +586,7 @@ function contextOpcodeTransform(code: number[], ctxInit: number, ctxPrime: numbe
     }
 
     i++;
-    const ac = OPCODES_3ARG.has(op) ? 3 : OPCODES_2ARG.has(op) ? 2 : OPCODES_1ARG.has(op) ? 1 : 0;
+    const ac = stackArgc(op);
     i += ac;
   }
   return result;
@@ -524,7 +620,7 @@ function encodeJumpTargets(code: number[], jumpKey: number): number[] {
       result[i] = (result[i] + jumpKey) % M;
       i++;
     } else {
-      const ac = OPCODES_3ARG.has(op) ? 3 : OPCODES_2ARG.has(op) ? 2 : OPCODES_1ARG.has(op) ? 1 : 0;
+      const ac = stackArgc(op);
       i += ac;
     }
   }
@@ -2848,6 +2944,25 @@ function buildVMFunction(
   const doJumpEnc = jumpKeyVal !== 0;
   const doMultiLayer = !!cipherSeeds;
   const handlers = buildHandlerTemplates(n, doJumpEnc, protoKeys);
+
+  if (_stackArityDecoysActive) {
+    // Phase 1.2(d): decoy-ops read and discard their leading wire word before
+    // their real body runs. Matches applyArityDecoysChunk (decoy first, then
+    // args); bodies read consumed arguments through the shared ip counter.
+    for (const op of STACK_LEAD_DECOY.keys()) {
+      const body = handlers[op];
+      if (body === undefined) {
+        throw new Error(`[StackVM] no handler body for arity-decoy op ${op}`);
+      }
+      const tag = "function()";
+      const at = body.indexOf(tag);
+      if (at < 0) {
+        throw new Error(`[StackVM] handler body shape unexpected for arity-decoy op ${op}`);
+      }
+      const dv = randomName(2);
+      handlers[op] = body.slice(0, at + tag.length) + ` local ${dv}=${n.code}[${n.ip}];${n.ip}=${n.ip}+1;` + body.slice(at + tag.length);
+    }
+  }
   const lines: string[] = [];
 
   if (doStringPools) {
@@ -3807,6 +3922,13 @@ export function generateVM(chunk: BytecodeChunk, options: VMGenOptions = {}): st
     flattenChunk(chunk);
   }
 
+  if (doShuffle && STACK_LEAD_DECOY.size > 0) {
+    const decoySalt = 1 + Math.floor(rng() * 0xFFFF);
+    applyArityDecoysChunk(chunk, decoySalt);
+    _stackArityDecoysActive = true;
+  }
+
+  try {
   if (doContextOps) {
     contextTransformChunk(chunk, ctxInit, ctxPrime);
   }
@@ -4008,5 +4130,8 @@ export function generateVM(chunk: BytecodeChunk, options: VMGenOptions = {}): st
     output = watermark + output;
   }
 
-  return output;
+    return output;
+  } finally {
+    _stackArityDecoysActive = false;
+  }
 }

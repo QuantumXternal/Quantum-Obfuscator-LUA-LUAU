@@ -22,10 +22,19 @@ const { parse } = await import("../dist/parser/Parser.js");
 const { regCompile } = await import("../dist/vm/RegCompiler.js");
 const { generateRegVM, REG_LEAD_SALT, regPackedArgc } = await import("../dist/vm/reg-vm-gen.js");
 const { REG_OPCODE_COUNT, REG_OP_MASK, REG_FUSED_SLOTS, REG_SKIP_OPS } = await import("../dist/vm/bytecode.js");
+const { lex: lex2 } = await import("../dist/lexer/Lexer.js");
+const { obfuscate } = await import("../dist/obfuscator/index.js");
+const { compile } = await import("../dist/vm/Compiler.js");
+const { generateVM, STACK_LEAD_DECOY, stackWireArgc } = await import("../dist/vm/vm-gen.js");
 
 // Wire-visible RegOp numbers (RegOp is a const enum, erased from dist).
 const OP_LOADK = 1, OP_MOVE = 4, OP_NEWTABLE = 9, OP_UNM = 17, OP_GETUPVAL = 37;
 const OP_JMP = 21, OP_FORPREP = 30, OP_FORLOOP = 31;
+
+// Wire-visible stack Op numbers (same const-enum caveat).
+const S_LOAD_G = 7, S_STORE_G = 8, S_UNM = 25, S_LEN = 26;
+const S_JUMP_OPS = [32, 33, 42, 43, 53];
+const S_TERMINATORS = [31, 41, 32];
 
 const SRC = readFileSync(join(ROOT, "benchmarks", "fixtures", "small.lua"), "utf8");
 const rcl = (c) => ({ ...c, K: [...c.K], code: [...c.code], protos: (c.protos || []).map(rcl) });
@@ -80,5 +89,54 @@ describe("(d) reg VM lead-salt arity", () => {
     expect(genReg(1234)).toBe(genReg(1234));
     expect(genReg(7)).toBe(genReg(7));
     expect(genReg(1234)).not.toBe(genReg(7));
+  });
+});
+
+const scl = (c) => ({ ...c, K: [...c.K], code: [...c.code], protos: (c.protos || []).map(scl) });
+const genStack = (seed) =>
+  quiet(() => {
+    const base = compile(obfuscate(parse(lex2(SRC).tokens), { renameLocals: false, preserveGlobals: true }));
+    return generateVM(scl(base), { level: "max", polymorphicSeed: seed, executorGlobals: false });
+  });
+
+describe("(d) stack VM lead-decoy arity", () => {
+  test("selection is exactly four ops with one decoy word each", () => {
+    const expected = new Map([[S_LOAD_G, 1], [S_STORE_G, 1], [S_UNM, 1], [S_LEN, 1]]);
+    expect(STACK_LEAD_DECOY.size).toBe(expected.size);
+    for (const [op, d] of expected) expect(STACK_LEAD_DECOY.get(op)).toBe(d);
+  });
+
+  test("wire arity pins: LOAD_G 2, STORE_G 2, UNM 1, LEN 1", () => {
+    expect(stackWireArgc(S_LOAD_G)).toBe(2);
+    expect(stackWireArgc(S_STORE_G)).toBe(2);
+    expect(stackWireArgc(S_UNM)).toBe(1);
+    expect(stackWireArgc(S_LEN)).toBe(1);
+  });
+
+  test("selection constraints: no jump, no terminator, no camo/context op", () => {
+    for (const op of STACK_LEAD_DECOY.keys()) {
+      expect(S_JUMP_OPS).not.toContain(op);
+      expect(S_TERMINATORS).not.toContain(op);
+      expect(op >= 64 && op <= 67).toBe(false);
+    }
+  });
+
+  test("same seed regenerates byte-identical stack artifact", () => {
+    expect(genStack(1234)).toBe(genStack(1234));
+    expect(genStack(7)).toBe(genStack(7));
+    expect(genStack(1234)).not.toBe(genStack(7));
+  });
+});
+
+describe("(d) determinism under new arities (numeric + string seeds)", () => {
+  test("string seeds are deterministic on both VMs and distinct across seeds", () => {
+    const s1 = "d-phase-seed-alpha-0123456789";
+    const s2 = "another-seed-abcdefghijklmnopqrstuvwxyz";
+    expect(genReg(s1)).toBe(genReg(s1));
+    expect(genStack(s1)).toBe(genStack(s1));
+    expect(genReg(s2)).toBe(genReg(s2));
+    expect(genStack(s2)).toBe(genStack(s2));
+    expect(genReg(s1)).not.toBe(genReg(s2));
+    expect(genStack(s1)).not.toBe(genStack(s2));
   });
 });
