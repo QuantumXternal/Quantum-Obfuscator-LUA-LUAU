@@ -431,7 +431,7 @@ export function encodeStrings(ast: Chunk, options: StringEncoderOptions = {}): C
   if (!enabled) return ast;
 
   const rng = options.seed !== undefined ? mulberry32(options.seed) : Math.random;
-  const decoderName = `_clydeDec_${randomSuffix(rng, 6)}`;
+  const decoderName = `_quantumDec_${randomSuffix(rng, 6)}`;
   const loc = ast.body[0]?.loc ?? { start: { line: 1, column: 1, offset: 0 }, end: { line: 1, column: 1, offset: 0 } };
   const decoders = makeDecoderStatements(key, loc, decoderName, rng);
 

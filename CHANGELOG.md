@@ -1,4 +1,4 @@
-# Clyde Upgrade Changelog
+# Quantum Obfuscator Changelog
 
 Incremental, benchmarked stages. Every entry: FILE / CHANGE / REASON /
 MEASURED / RISK / TESTS. Baselines in `benchmarks/` (`baseline.json` pre-change,
@@ -7,6 +7,368 @@ MEASURED / RISK / TESTS. Baselines in `benchmarks/` (`baseline.json` pre-change,
 Conventions: times are single-run wall ms (run-to-run variance ± several ms —
 only consistent directional deltas across all 9 fixtures count). `none` path
 is the AST-only control: byte-identical before/after in every comparison.
+
+## Hardening — Phase 1 (v2.0.0) - complete
+
+Phase 1 hardening of the Quantum Obfuscator against ClydeDeobfuscator and
+related deobfuscators. Sub-phases (a)-(h) of 1.2 plus 1.3 (env binding)
+and 1.4 (adversarial validation). Summary of deliverables:
+
+- 1.2(a): P1/P2/P3 gate; hardening/phase1-2 branch.
+- 1.2(b): number|string polymorphic seeds with 128-bit dual-path RNG.
+- 1.2(c): sparse per-build opcode space (128-wide; reg 59/stack 73 real ops).
+- 1.2(d): per-op wire-arity changes (reg lead-salt, stack lead-decoy).
+- 1.2(e): new fused ops (reg ADD_MOVE/MUL_ADD, stack POW/UNM_STORE);
+  instruction count -5.14%.
+- 1.2(f): decoy opcodes (reg 59-62, stack 64-66+73-76); fuzz
+  indistinguishable (2000 iters).
+- 1.2(g): per-build RK_OFFSET (default 2049, domain [2049,8191]); proto
+  arity audit (no positional consumers).
+- 1.2(h): proofs (NMI 0.000176, tau 0.4991, 200/200 uniqueness);
+  10 adversarial cells REFUSE; closeout.
+- 1.3: env binding + self-modifying bytecode verification; boot overhead
+  (reg/normal 21ms, stack/normal 15ms, < 50ms gate).
+- 1.4: adversarial validation vs Clyde, Luraph-V15, larpcorrupt, Prometheus
+  (no SUCCESS/PARTIAL; all REFUSE/CRASH/GARBAGE). SECURITY.md committed.
+
+Final state: 521 tests (36 suites) green; hot-loop bench within +/-2%;
+string/numeric determinism preserved; debug artifacts byte-identical
+(plaintext bypass preserved).
+
+Phase 1.2(h) (proofs + docs + 1.2 closeout)
+
+- Cross-build isolation: NMI < 0.01 (pooled, 0.000176) and normalized
+  Kendall-tau in [0.45, 0.55] (0.4991) over 190 cross-build pairs.
+  Same-seed control: tau_norm = 1.0, NMI = 1.0.
+- 200-seed uniqueness: 200/200 distinct maps for both VMs. Permutation
+  space: reg ~2^390, stack ~2^510.
+- exposeMap (takeRecordedOpcodeMaps) is gen-time only (module-local, never
+  serialized).
+- 10 new adversarial cells (seeds 5,17,777,31337,90210 x reg/stack): all
+  REFUSE verbatim, exit 1, no .clean.lua.
+- Standing baseline (plain/stack-max/reg) still refuses.
+- Hot-loop bench: reg numeric 30.85M (vs 31.0M, -0.5%), within +/-2%.
+- Full suite green: 514 tests (32 suites).
+
+Phase 1.2 (complete) summary
+- (a) P1/P2/P3 gate; hardening/phase1-2 branch.
+- (b) seed widening + 128-bit PRNG (number|string polymorphic seeds).
+- (c) sparse per-build opcode space (128-wide, reg 59/stack 73 real ops).
+- (d) per-op wire-arity changes (reg lead-salt, stack lead-decoy).
+- (e) new fused ops (reg ADD_MOVE/MUL_ADD, stack POW/UNM_STORE); -5.14%
+  instruction count.
+- (f) decoy opcodes (reg 59-62, stack 64-66+73-76); fuzz indistinguishable.
+- (g) RK_OFFSET per-build (default 2049, domain [2049,8191]); proto arity
+  audit passed (no positional consumers).
+- (h) proofs + closeout.
+
+Phase 1.2(g) (RK_OFFSET per-build + proto arity audit)
+
+- REG: RK_OFFSET is no longer a fixed 256. Default 2049 (odd, non-power-
+  of-two, above the global max K length ~402); domain [2049, 8191] for
+  per-build draws. Parameterized through RegCompiler ({rkOffset}), regEmit
+  (maxRegs boundary via chunk.rkOffset), reg-runner (decode via
+  chunk.rkOffset ?? RK_OFFSET), and the emitted threshold algebra
+  (ctx.rkOffset; variants corrected to evaluate to rkOffset for arbitrary
+  odd values). Threaded per-build by obfuscatePipeline (seeded draw, passed
+  to regCompile + generateRegVM). Hard generation-time error if K length
+  >= rkOffset (tested). K-length audit: max 402 across all fixtures x
+  standing seeds.
+- STACK: proto positional-consumer audit passed (grep for proto[...] /
+  .protos[...] returned no positional array access; all proto fields are
+  read by name via protoKeys). No migration required; proto arity (nParams)
+  already serialized and consumed by name. No code change needed in this
+  half; gate satisfied by verification.
+- BREAKS numeric-path byte-identity vs (f) by construction (RK_OFFSET
+  threshold algebra + per-build draw). Bench +/-2%.
+
+Phase 1.2(f) (decoy opcodes, both VMs)
+
+- REG decoys (reg-vm-gen.ts): DECOY_0..3 (RegOp 59-62) with plausible
+  arity 0/1/2/3 and no-op bodies. REG_OPCODE_COUNT 59 -> 63 (sparse
+  range 128 = 65 gaps). REG_OP_MASK set per arity. Never emitted by the
+  compiler (tests/decoy-nonemission.test.js across fixture corpus + complex
+  control flow). Decoy-hit and dispatch-miss indistinguishable under fuzz
+  (tests/decoy-fuzz.test.js, 2000 iterations x 2 VMs, no throws).
+- STACK decoys (vm-gen.ts): hardens 64-66 (NOP/1-arg/2-arg camo) and adds
+  73-76 (0/1/2/3-arg decoys). STACK_OPCODE_COUNT 73 -> 77 (sparse range
+  128 = 51 gaps). OPCODES sets updated; handlers h[73-76]; runner cases
+  added. Compiler non-emission proven.
+- BREAKS numeric-path byte-identity vs (e). Bench +/-2%.
+
+Phase 1.2(e) (new fused ops, both VMs)
+
+- REG new fused ops (reg-vm-gen.ts): FUSED_ADD_MOVE (RegOp 57) - ADD followed
+  by MOVE copying the ADD result (MOVE src == ADD dest); FUSED_MUL_ADD
+  (RegOp 58) - MUL followed by ADD whose second operand is the MUL result
+  (ADD B == MUL dest). Both 2-quad fused units through the existing
+  fused-verbatim pack path; added to REG_FUSED_SLOTS (2), ALL_FUSION_IDS,
+  the generation enabled set, REG_OP_NAMES, and the flattenControlFlow
+  unsafe-split lists. REG_OPCODE_COUNT 57 -> 59 (sparse range 128 = 69
+  gaps). Patterns are the two highest-frequency non-jump bigrams in
+  compiled output (ADD->MOVE 741, MUL->ADD 402 occurrences across the
+  fixture corpus).
+- STACK new fused ops (vm-gen.ts): FUSED_POW (op 71) - LOAD_L,LOAD_L,POW,
+  STORE_L store-back using raw ^ (native __pow dispatch), completing the
+  binary arithmetic fusion family; FUSED_UNM_STORE (op 72) -
+  LOAD_L,UNM,STORE_L unary store-back using raw negation (native __unm
+  dispatch in the runner). fuseOpcodes gains the POW case in the binary-
+  arith branch (arith 14 -> 71) and a new 5-word unary-store branch.
+  STACK_OPCODE_COUNT 71 -> 73 (sparse range 128 = 55 gaps). Runner cases
+  71/72 added.
+- BREAKS numeric-path byte-identity vs (d) by construction (new fused
+  patterns shift rng consumption). Bench gate +/-2% vs (d)'s postD sweep.
+- Evidence: 503/503 suite (perPattern census 12 -> 14; nested-independence
+  op count 71 -> 73); adversarial Clyde@87102086 2/2 REFUSE on both
+  VMs pre-commit; run-baseline clean; debug artifacts byte-identical.
+
+## Hardening — Phase 1.2(d) (per-op wire-arity changes, both VMs)
+
+- REG lead salt (`REG_LEAD_SALT`, reg-vm-gen.ts): five normal ops emit one
+  leading salt word between the header word H and their operand words —
+  LOADK/MOVE/UNM/GETUPVAL 2 -> 3, NEWTABLE 1 -> 2. H argc becomes
+  popcount(mask) + lead (still < 16, floor(H/16) stays exact; worst-case H
+  unchanged at 2043 — fused argc 11 dominates). Handler remap bakes the
+  lead in at generation time; the runtime still never decodes an operand
+  count. Salt words derive from rotSeed + unit index without consuming rng
+  (rest of the build byte-identical). Constraints validated loudly at pack
+  time: normal (non-fused), non-jump, non-skip ops only, popcount + lead
+  <= 3 (s1..s3 window); empty map at debug level. Effect: per-unit stride
+  now depends on op identity beyond its operand count — no universal
+  op -> operand-count table covers the packed wire.
+- Mechanism no-op proof: with the map empty the mechanism alone produced
+  byte-identical artifacts to (c) (seeds 1234/7, reg 09ab6927 / 7b9da574).
+  With ops enabled: reg hashes move (2230f3e5 / 248b7569), stack hashes
+  untouched in this half (0960c0da / 9db2e329). Debug-level artifacts
+  byte-identical to (c) for both VMs (regDbg 6fa38a1b / 1a5595d1,
+  stackDbg 8f17b57b / acfdfb9b) — plaintext bypass preserved.
+- BREAKS numeric-path byte-identity vs (c) by construction (new reg wire
+  layout); re-baselined to `benchmarks/baseline-1.2d.json` in the stack
+  half of this phase.
+- Evidence: 492/492 suite (5 new: tests/arity-changes.test.js pins the
+  selection, wire arities, constraints, restated H ceiling, same-seed
+  determinism); per-op subsets run after each op (reg-execution,
+  regression, reg-len-unm, reg-comparisons, envelope-parse — 137 -> 198
+  tests across the five ops, all green at each step).
+- STACK lead decoy (`STACK_LEAD_DECOY`, vm-gen.ts): four normal ops emit
+  one leading decoy word between the op word and their real argument words
+  — LOAD_G/STORE_G 1 -> 2, UNM/LEN 0 -> 1. Applied by
+  applyArityDecoysChunk (after flatten, before contextTransform) whenever
+  generation is obfuscating; one decoySalt draw (1 + rng()*0xFFFF) per
+  build; jump targets rewritten through insertedBefore prefix offsets
+  (jump ops excluded by validation). Matching handlers consume the decoy
+  first (baked at generation time: read into a dead local, ip++), so every
+  downstream word index shifts — the stack wire no longer admits a
+  universal op -> operand-count table. Constraints validated loudly when
+  the pass runs: no jump ops, no terminators, no camouflage ops (64-66)
+  and not the context op (67); empty map at debug level. The pass is
+  wrapped in try/finally so a nested build's recursive generateVM cannot
+  leak the active flag (nesting branch runs before the flag is set).
+- Mechanism no-op proof (stack): with the map empty the mechanism alone
+  produced byte-identical artifacts (seeds 1234/7, all four hashes
+  unchanged). With ops enabled: stack hashes move (deacf64d / da79236f vs
+  (c) 0960c0da / 9db2e329); reg hashes untouched in this half
+  (2230f3e5 / 248b7569 — moved by the reg half); debug-level artifacts
+  byte-identical to (c) for both VMs (regDbg 6fa38a1b / 1a5595d1,
+  stackDbg 8f17b57b / acfdfb9b) — plaintext bypass preserved.
+- PRE-EXISTING DEFECT FIXED (bootstrap-template.ts:17, `longStringLevel`):
+  the guard excluded closers appearing INSIDE the blob but not a blob
+  TAIL equal to `]` + `=`*level, which merges with the closer and closes
+  the long-bracket literal one char early (stray `]` where `)` expected:
+  "')' expected near ']'"). Latent since before (b); first exposed when
+  the (d) reg data shift ended seed 31337's blob with `]`. Fix: also
+  escalate when the blob ends with the tail run. Found via byte-position
+  localization (incremental Lua `load` reader) after parse-check sweeps
+  isolated seed 31337 numeric/max.
+- Evidence (stack half): 503/503 suite (11 new: 4 stack-section + 1
+  string-seed determinism in tests/arity-changes.test.js, 6 in
+  tests/bootstrap-longstring.test.js — 3 of them fail pre-fix by
+  stash-rebuild). Per-op subsets run after each op (stackmax-puc,
+  stackmax-order, op-semantics, concat-semantics, regression — all green
+  at each step). tests/tamper-evidence.test.js recalibrated for the (d)
+  layout shift: old start+200/+300/+1000 landed on dead/decoy slots;
+  replaced by live neighbors +210/+310/+1005 (flip-scan verified on Luau).
+  Post-fix 16-seed x numeric/table reg/max sweep: all load + execute
+  clean on PUC 5.4.8 (postD-sweep.json).
+- Re-baselined to `benchmarks/baseline-1.2d.json` (10 seeds x reg + stack
+  sha256 — all 10/10 changed on both paths — plus 16-seed postC/postD
+  bench sweeps). Bench deltas (per-mode cluster means, never pooled):
+  numeric 31.12M -> 31.12M low (+0.01%), 34.85M -> 34.85M high (+0.01%);
+  table 28.99M -> 28.99M low (+0.02%), 32.21M -> 32.21M high (+0.02%) —
+  all far inside the 1.1 +-2% gate.
+- Adversarial (ClydeDeobfuscator @87102086, mod-loopheavy stack/max seeds
+  1234,7): 2/2 REFUSE verbatim, exit 1, no `.clean.lua`, pre-commit.
+
+## Hardening — Phase 1.2(c) (sparse per-build opcode space, both VMs)
+
+- Wire opcode maps are now uniform sparse injections into 0..127
+  (`SPARSE_OPCODE_RANGE=128`): reg 57 ops => 71 gaps, stack 71 ops => 57
+  gaps. Full Fisher-Yates over the range, first `count` taken — never a
+  contiguous 0..count-1 image (kills the dense-image recognition prior).
+  Both generators throw at generation time if count exceeds the range.
+- Ceilings (stated): reg packed wire H = sparseOp*16 + argc <= 127*16 + 11
+  = 2043 (11 bits, < 2^53; argc < 16 so floor(H/16) stays exact; 8-bit rot
+  key remains a bijection). Stack: every wire opcode < 128 => single-byte
+  VLE, uniform length class (0..255 would add two-byte opcode signatures).
+  Reg shape-B dispatch mask (1..254, 8-bit) and stack hxk (<= 16-bit)
+  cover the 7-bit space; stack max-level +128 mirror keys verified
+  collision-free against real keys exhaustively for all hxk 1..0xFFFE.
+- `_opNames` (debugTrace) keys follow the sparse map (test-pinned by
+  parsing a debugTrace artifact against the recorded map); debug LEVEL
+  stays the documented plaintext bypass (identity map), consistent with
+  all other features being off at debug.
+- Test seam: `takeRecordedOpcodeMaps()` exported from both generators
+  (records the exact map of each shuffled generation — inner then outer
+  for nested builds; never emitted into artifacts).
+- BREAKS numeric-path byte-identity vs (b) by construction (new wire
+  format). Stated, not silent: re-baselined to
+  `benchmarks/baseline-1.2c.json` (10 seeds x reg + stack sha256 + pre/post
+  16-seed bench sweeps) for all later phases.
+- Evidence: 487/487 suite (30 new). NESTED INDEPENDENCE: NMI(inner, outer)
+  = 0.000369 (4x4 bins, N=100 Maximum nested builds x 71 ops) < 0.01,
+  inside permutation null (mean 0.000446, sd 0.000216); same-seed
+  extraction control identical (tau=1.0); inner != outer per build.
+  Cross-VM uniqueness: 5 builds, all reg maps distinct, all stack maps
+  distinct, reg(s) != stack(s). String-seed determinism 5/5 both VMs on
+  the sparse encoding. Benches (16 seeds x both reg fixtures, per-mode
+  clusters — bimodal dispatch behavior from (b) confirmed, no new mode):
+  numeric 31.07M -> 31.12M low (+0.16%), 34.78M -> 34.85M high (+0.20%);
+  table 28.97M -> 28.99M low (+0.08%), 32.22M -> 32.21M high (-0.04%) —
+  all inside the 1.1 +-2% gate. Artifact bytes +1.3% numeric / +0.7%
+  table (H decimal width, expected). Adversarial (ClydeDeobfuscator
+  @87102086, mod-loopheavy reg/max seeds 1234,7,42,99,2024): 5/5 REFUSE
+  verbatim, exit 1, no `.clean.lua`, pre-commit.
+
+## Hardening — Phase 1.2(b) (seed widening + 128-bit PRNG)
+
+- `polymorphicSeed: number | string` (pipeline, profiles, both VM options,
+  server validation). Contract: numbers keep the legacy 32-bit stream
+  bit-for-bit (0 honored, negatives wrap); strings (any UTF-16 incl. empty
+  — valid, deterministic, distinct from absent) expand through two cyrb128
+  passes (distinct domain separators) into 128-bit sfc32 state; absent =
+  legacy nondeterministic fallback. >= 16 chars recommended for full
+  entropy; short/human seeds proportionally less. CLI takes no seed flag
+  (Date.now numeric default) — unchanged.
+- Dual-path RNG in both VMs (each file's own idiom: flag-dispatch in
+  reg-vm-gen, closure-swap in vm-gen). Numeric draws never touch the wide
+  path. Nested string builds derive domain-separated string sub-seeds
+  (parent + " inner"/" outer": injective per parent, mutually exclusive),
+  so every layer takes the wide path.
+- SPACE CLAIM (stated numerically): string-seed space = 2^128, bounded by
+  the 128-bit expansion, below the factorial opcode-permutation bounds
+  (57! ~= 2^254 reg; 71! ~= 2^372 stack). The factorial counts
+  permutations; the expansion counts reachable mappings — the binding
+  constraint is 2^128.
+- Cache key (`src/cacheKey.ts`, extracted pure from server.ts for testability;
+  never import server.ts in tests — binds port 3000): JSON discriminates
+  seed types, so numeric 1234 vs string "1234" never share an entry.
+  Pinned by `tests/server-cache.test.js` (4 tests).
+- Evidence: 457/457 suite (40 new: 36 seed-widening incl. 200/200 uniqueness
+  per VM, 4 cache-key); numeric byte-identity 20/20 vs pre-(b) tree (10
+  seeds x reg+stack/max); string determinism 10/10 (5 seeds x both VMs);
+  benches: numeric path IDENTICAL to 1.1 (31,031,800 / 28,989,000, same
+  bytes, ±0%); string gen-setup no excess (~5ms steady both paths);
+  string-artifact runtime in-family (bimodal 31.0-31.2M/34.7-34.8M
+  per-build variation across BOTH seed types — dispatch-variant-driven,
+  seed-type-independent).
+- RISK: none to numeric history (dual-path, proven identical); new-string
+  path carries the 2^128 claim, proven by the 200-draw test, not by review.
+
+## Hardening — Phase 1.2(a) (P1/P2/P3 gate; `hardening/phase1-2`)
+
+- Branch strategy (binding for all of 1.2): `hardening/phase1` is the frozen
+  1.1 line (tip `9889228`, untouched); `hardening/phase1-2` is the 1.2
+  working branch for (a)→(h), forked from `9889228`. Merge decisions at
+  1.2 review. Pushes fully-qualified `SHA:refs/heads/hardening/phase1-2`.
+- SCOPE REDUCTION (closes the 1.1 P1/P2/P3 TODO by finding, not by new
+  mitigation): emitted comparison handlers in BOTH VMs delegate every
+  comparison to host operators (reg `EQ/LT/LE` + all `FUSED_*_JMP` bodies;
+  stack `h[16-21]`). Shipped artifacts were already host-correct on both
+  targets — P1/P2/P3 were never an output defect, only a test-oracle blind
+  spot. A lifted artifact delegates to the host, so no divergence leaks to
+  a semantic layer. `comparisonMode` (`"puc"` default, `"luau"` opt-in)
+  lives in `runVM`/`runReg` oracles only; zero gen-file changes in (a).
+- 1.1-RECORD CORRECTIONS (load-bearing for any future CFF/opaque-predicate
+  work — truth, not footnote): (1) PUC `__eq` is FIRST-THEN-SECOND among
+  tables, not first-only (E4: second-only fires, `cB=1`); the old oracle
+  matched Luau there and diverged PUC. (2) Luau 0.742 honors NO ordering
+  metamethods on tables — every `<,<=,>,>=` involving a table raises
+  `attempt to compare {ta} {op} {tb}`, even with `__lt`/`__le` defined.
+  Both corrections pinned in `tests/comparison-modes.test.js` (21 tests:
+  P1/P2/P3 x both modes x both runners, M1/M5/G4 fallback, 4 raise
+  messages, mixed-skip, default-is-puc). PUC `<=`/`>=` fall back to
+  NOT-swapped-`__lt` absent `__le`; two stale mixed-`__eq` expectations
+  corrected to probe-measured values (E5/N4).
+- `65302bb` — Evidence: 417/417 suite; default-path byte-identity proven
+  (5/5 re-gen hashes == 1.1 tree).
+
+## Hardening — Phase 1.1 (reg-VM v2 vs ClydeDeobfuscator@87102086; `hardening/phase1` tip `206d452`)
+
+- `ea3d800` — Packed v2 instruction wire `H=shuffledOp*16+argc`, variable
+  strides 1/2/3/4/8/12, P table + `kk`, `jbias=128+rng*896`, fused verbatim,
+  skip-pad, `run(K,code,P,...)`, 8-field protos, `secCheck kk>128`.
+- `4077bad` — Stack envelope + code-stream hardening (R-1 `bootEscape`,
+  R-3 additive jumps mod 2^32, R-6 inline `table.concat` + `buildAlphabet`).
+- `69deb03` — Computed-index K `K[bxor(j,S%#K)+1]` + pow2 decoys, both VMs;
+  hot-arithmetic-only RK-inline.
+- `fa285ab` — (d) Closure-table dispatch, both VMs (reg dv0–3 via
+  `_dh`/`_dr` with packed returns through `tPack`/`tUnpack`; stack
+  split-table + masked hot-chain). MEASURED numeric hot loop 31,353,700 →
+  31,031,800 host instrs (−1.0%; dispatch cheaper than if-chain, no hybrid
+  fallback). TESTS 396/396 (reg subset 98/98).
+- `206d452` — (e) RK-inline extended to all handlers. MEASURED table-heavy
+  loop 29,181,500 → 28,989,000 (−0.7%); numeric loop unchanged 31,031,800
+  (RK-heavy handlers absent; zero downside). Decision KEEP. TESTS 396/396.
+- Adversarial (`JamiesNolandGiggleShi1er/ClydeDeobfuscator@87102086`,
+  mod-loopheavy reg/max × seeds 1234,7,42,99,2024): 5/5 REFUSE, exit 1,
+  "this does not look like Clyde output, so there is nothing here I know
+  how to undo." No `.clean.lua` written. No-refusal regression PASS:
+  plain-lua, stack-VM max, and reg-VM shapes all refuse identically.
+- Determinism 5/5 byte-identical on re-gen; Luau 0.742 / PUC 5.4.8 matrix
+  5/5 parity (PUC via `tests/helpers/lua54-compat.lua`; raw PUC lacks
+  `bit32` — harness fact, not product).
+- TODO (must resurface before 1.2): deferred comparison semantics P1
+  (rawequal) / P2 (same-mm) / P3 (second-only) become load-bearing the
+  moment any future seed passes recognition. Current adversarial standing
+  rests on recognition-layer refusal only.
+
+## 1.0.0 (2026-10-14)
+
+Five reviewed post-RC changes since `1.0.0-rc.1` (Stage 19 freeze, `884a3bd`).
+Gate: build clean, 243/243 tests, deterministic generation byte-identical
+across fixtures × seeds `1234, 1, 7, 42, 999`, CLI exit-code and server/API
+smoke suites green. Static byte/primitive deltas below are measured artifact
+facts, not runtime speedups (target-runtime wall time remains unmeasured —
+no Luau executor).
+
+- `77d85c5` — Simplify redundant identity-mask checks (`src/vm/vm-gen.ts`,
+  2-line). Removes `bit32.band(stateAcc,0xFFFFFFFF)` guards whose uint32
+  proof holds over the full reachable domain; tripwire comparison emits the
+  accumulator directly. Structural PASS; no detection/punishment change.
+- `7e322f2` — Normalize server/API errors into JSON responses
+  (`src/server.ts`, +21; `benchmarks/server-smoke.mjs`, +44). Unknown
+  endpoints 404 plus error middleware mapping 400/413/status/500 — all
+  JSON bodies; smoke pins the envelope.
+- `867c193` — CLI lexer/parser failures produce nonzero exit codes
+  (`src/cli/lex.ts`, `parse.ts`, `engine/obfuscatePipeline.ts`,
+  `obfuscate.ts`, `reg-vm-obfuscate.ts`; `benchmarks/cli-exit-codes.mjs`
+  new). All 15 error cells 0→1; valid-input stdout byte-identical.
+- `f365bf6` — Preserve benchmark clone metadata through spread-first
+  cloning (4 harness files, +5/−5). Harness-only fix: chunk clones now
+  carry `nParams`/`hasVarargs`/`upvalues`; no product behavior change.
+  Prior stage verdicts confirmed unaffected.
+- `ccddc55` — Remove `dv1`/`dv2` runtime chaff while preserving RNG/
+  name-counter draws (`src/vm/vm-gen.ts`, +2/−6). Deletes the dv
+  declaration, the per-dispatch accumulator/mix lines, and the dead-branch
+  dv writes (state-transition skeleton kept); the two `randomName(2)`
+  ballast calls execute unchanged, so all downstream gate constants and
+  names are identical across all 5 seeds. Measured −116 B generated body,
+  uniform across fixtures.
+
+Deferred, unchanged: POW super-op, N=16 C3 sampling (redesign verdict A,
+CLOSED under Guarantee-first criteria), DUP peephole, G1/G2 gate-test
+subsumption. Product renamed `luau-obfuscator` → `quantum-obfuscator`,
+version `1.0.0`.
 
 ## Stage 0 — Protected baseline (no code changes)
 

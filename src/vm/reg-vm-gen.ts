@@ -1,11 +1,23 @@
-import { RegOp, REG_OPCODE_COUNT, RK_OFFSET } from "./bytecode.js";
+import { RegOp, REG_OPCODE_COUNT, RK_OFFSET, REG_OP_MASK, REG_FUSED_SLOTS, REG_SKIP_OPS, regOpArgc, SPARSE_OPCODE_RANGE } from "./bytecode.js";
 import type { RegBytecodeChunk, Constant } from "./bytecode.js";
 import { randomBytes } from "crypto";
 import { writeFileSync as _dumpWrite } from "fs";
+import { tmpdir as _dumpTmpdir } from "os";
+import { join as _dumpJoin } from "path";
 import { encryptAndEncode, compressToBase85, compressBytesToBase85 } from "./lzma.js";
 import { generateBootstrap } from "./bootstrap-template.js";
 
 export type RegVMLevel = "debug" | "normal" | "max";
+
+// DUMP_RAW unique-name counter (per-process; combined with pid+timestamp so
+// concurrent/rapid dumps never collide even at millisecond granularity).
+let _dumpCounter = 0;
+
+// Routine progress telemetry gate: console.log progress lines in generation
+// paths emit ONLY under QUANTUM_TELEMETRY=1 (library-quiet by default).
+// Warnings, errors, fallback notices, and the DUMP_RAW file-location line
+// always stay loud — they are operational, not progress.
+function _tel(): boolean { return process.env.QUANTUM_TELEMETRY === '1'; }
 
 export type RegFeatureFlag =
   | "opcodeShuffle"
@@ -28,7 +40,18 @@ export type RegFeatureFlag =
 export interface RegVMGenOptions {
   level?: RegVMLevel;
   executorGlobals?: boolean;
-  polymorphicSeed?: number;
+  /**
+   * Phase 1.2(b) string-seed contract: number | string.
+   * - number: legacy 32-bit stream (seed >>> 0), bit-for-bit history
+   *   preserved; 0 honored, negatives wrap (unchanged).
+   * - string: any UTF-16 string (empty valid, deterministic, distinct from
+   *   absent), hashed by code unit through two cyrb128 passes (distinct
+   *   domain separators) into 128-bit sfc32 state. Claimed space 2^128
+   *   (below the 57! opcode-permutation bound); >= 16 chars recommended
+   *   for full entropy — short/human seeds proportionally less.
+   * - absent: legacy nondeterministic fallback (unchanged).
+   */
+  polymorphicSeed?: number | string;
   disableFeatures?: RegFeatureFlag[];
   forceFeatures?: RegFeatureFlag[];
 
@@ -36,11 +59,16 @@ export interface RegVMGenOptions {
   _noWatermark?: boolean;
 
   target?: string;
+
+  /** Per-build RK_OFFSET (threshold separating register from constant
+   *  indices). When unset, drawn from [2049, 8191] (odd, non-power-of-two)
+   *  using the polymorphic seed stream. */
+  rkOffset?: number;
 }
 
 interface BuildCtx {
   level: RegVMLevel;
-  seed: number;
+  seed: number | string;
   names: NameMap;
   opcodeEncode: number[];
   opcodeDecode: number[];
@@ -76,6 +104,15 @@ interface BuildCtx {
   rotStep2: number;
   usedOps?: Set<number>;
   argPerm: number[][];
+  /**
+   * Phase 1.2(d): per-op leading salt-word count for normal packed units
+   * (empty at debug level = documented plaintext bypass).
+   */
+  leadSalt: Map<number, number>;
+  rkOffset: number;  /** Per-build constant-table salt (v2 computed-index K layout). */
+  constSalt: number;
+  /** Per-build jump-delta bias (v2 packed wire; applied at pack time). */
+  jumpBias: number;
 }
 
 interface Fragment {
@@ -126,15 +163,54 @@ interface NameMap {
   s1: string;
   s2: string;
   s3: string;
+  poff: string;
+  kk: string;
+  jbias: string;
 }
 
 let _rngState = 0;
 
 function seedRandom(s: number): void {
   _rngState = s >>> 0;
+  _wide = false;
+}
+
+// Phase 1.2(b): dual-path RNG. Numeric seeds keep the legacy 32-bit stream
+// above bit-for-bit (byte-identity preserved). String seeds expand to
+// 128-bit state (two cyrb128-class passes, distinct domain separators)
+// driving sfc32 (128-bit state, public-domain construction). Claimed
+// string-seed space: 2^128, below the 57! opcode-permutation bound.
+let _wide = false;
+let _w0 = 0, _w1 = 0, _w2 = 0, _w3 = 0;
+function seedRandom128(str: string): void {
+  const half = (dom: number): [number, number] => {
+    let h1 = 0xdeadbeef ^ dom, h2 = 0x41c6ce57 ^ dom;
+    for (let i = 0; i < str.length; i++) {
+      const ch = str.charCodeAt(i);
+      h1 = Math.imul(h1 ^ ch, 2654435761);
+      h2 = Math.imul(h2 ^ ch, 1597334677);
+    }
+    h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+    h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+    return [h1 >>> 0, h2 >>> 0];
+  };
+  const [a, b] = half(0);
+  const [c, d] = half(0x9e3779b9);
+  _w0 = a; _w1 = b; _w2 = c; _w3 = d;
+  _wide = true;
+}
+function rngWide(): number {
+  let t = (_w0 + _w1 | 0) + _w3 | 0;
+  _w3 = _w3 + 1 | 0;
+  _w0 = _w1 ^ _w1 >>> 9;
+  _w1 = _w2 + (_w2 << 3) | 0;
+  _w2 = _w2 << 21 | _w2 >>> 11;
+  _w2 = _w2 + t | 0;
+  return (t >>> 0) / 4294967296;
 }
 
 function rng(): number {
+  if (_wide) return rngWide();
   _rngState = (_rngState + 0x6D2B79F5) >>> 0;
   let t = Math.imul(_rngState ^ (_rngState >>> 15), 1 | _rngState);
   t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
@@ -188,6 +264,7 @@ function createNameMap(level: RegVMLevel): NameMap {
       bBxor: "_bxor", bBand: "_band",
       bGetmeta: "_getmeta", bNext: "_next",
       s1: "_s1", s2: "_s2", s3: "_s3",
+      poff: "P", kk: "_kk", jbias: "_jb",
     };
   }
   return {
@@ -206,6 +283,7 @@ function createNameMap(level: RegVMLevel): NameMap {
     bBxor: randomName(3), bBand: randomName(3),
     bGetmeta: randomName(3), bNext: randomName(3),
     s1: randomName(2), s2: randomName(2), s3: randomName(2),
+    poff: randomName(2), kk: randomName(2), jbias: randomName(3),
   };
 }
 
@@ -277,16 +355,45 @@ function featureEnabled(options: RegVMGenOptions, flag: RegFeatureFlag, levelDef
   return levelDefault;
 }
 
+// Phase 1.2(c): test seam — records the wire map every shuffled generation
+// actually used, in draw order (nested builds record inner then outer).
+// Module-local; never emitted into artifacts.
+const _recordedOpcodeMaps: number[][] = [];
+export function takeRecordedOpcodeMaps(): number[][] {
+  return _recordedOpcodeMaps.splice(0);
+}
+
+/**
+ * Sparse per-build opcode map (Phase 1.2(c)).
+ *
+ * Real ops 0..REG_OPCODE_COUNT-1 map to a uniform random injection over the
+ * sparse wire space 0..SPARSE_OPCODE_RANGE-1 (57 ops => 71 gaps), never a
+ * contiguous 0..56 image. Draw is a full Fisher-Yates over the range, first
+ * `count` entries taken: injective by construction, deterministic for the
+ * RNG stream state. The guard throws if count ever exceeds the range, so
+ * (e) fused additions can never silently overflow the space.
+ *
+ * decode has length SPARSE_OPCODE_RANGE with -1 at gap values; it is
+ * informational only (no runtime consumer — the handler table IS the decode
+ * map). dtrace `_opNames` keys follow ctx.opcodeEncode, i.e. this same map.
+ */
 function shuffleOpcodes(doShuffle: boolean): { encode: number[]; decode: number[] } {
-  const encode: number[] = [];
-  const decode: number[] = [];
-  for (let i = 0; i < REG_OPCODE_COUNT; i++) { encode[i] = i; decode[i] = i; }
-  if (!doShuffle) return { encode, decode };
-  for (let i = REG_OPCODE_COUNT - 1; i > 0; i--) {
-    const j = Math.floor(rng() * (i + 1));
-    [encode[i], encode[j]] = [encode[j], encode[i]];
+  if (REG_OPCODE_COUNT > SPARSE_OPCODE_RANGE) {
+    throw new Error(`[RegVM] opcode count ${REG_OPCODE_COUNT} exceeds sparse range ${SPARSE_OPCODE_RANGE} — widen the range before adding ops`);
   }
-  for (let i = 0; i < REG_OPCODE_COUNT; i++) decode[encode[i]] = i;
+  const encode = new Array<number>(REG_OPCODE_COUNT);
+  const decode = new Array<number>(SPARSE_OPCODE_RANGE).fill(-1);
+  if (!doShuffle) {
+    for (let i = 0; i < REG_OPCODE_COUNT; i++) { encode[i] = i; decode[i] = i; }
+    return { encode, decode };
+  }
+  const arr = Array.from({ length: SPARSE_OPCODE_RANGE }, (_, i) => i);
+  for (let i = SPARSE_OPCODE_RANGE - 1; i > 0; i--) {
+    const j = Math.floor(rng() * (i + 1));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+  for (let i = 0; i < REG_OPCODE_COUNT; i++) { encode[i] = arr[i]; decode[arr[i]] = i; }
+  _recordedOpcodeMaps.push([...encode]);
   return { encode, decode };
 }
 
@@ -303,26 +410,262 @@ function generateArgPerms(doRemap: boolean): number[][] {
   return perms;
 }
 
-function mapRegBytecode(code: number[], encode: number[], argPerm: number[][]): number[] {
-  const out = [...code];
-  for (let i = 0; i < out.length; i += 4) {
-    const realOp = out[i];
-    if (realOp >= 0 && realOp < encode.length) {
-      const A = out[i + 1], B = out[i + 2], C = out[i + 3];
-      out[i] = encode[realOp];
-      const p = argPerm[realOp];
+/**
+ * Phase 1.2(d): wire-arity deltas. Selected normal ops carry `delta` leading
+ * salt words between the header word H and their present operand words:
+ * H argc becomes popcount(mask) + delta (still < 16, so floor(H/16) stays
+ * exact), and the handler remap bakes the lead in at generation time — the
+ * runtime never decodes an operand count. Every downstream word index in the
+ * stream shifts, so no universal op -> operand-count table covers the packed
+ * wire anymore. Salt words are derived from ctx.rotSeed + unit index without
+ * consuming rng, so the rest of the build stays byte-identical to pre-(d).
+ *
+ * Constraints (validated loudly at pack time):
+ *  - normal units only: fused geometry is read verbatim by fused bodies;
+ *  - non-jump, non-skip ops only: pack-time delta patching and skip landings
+ *    assume slot-level rank for their operand words;
+ *  - popcount(mask) + delta <= 3: operands must stay within s1..s3.
+ */
+export const REG_LEAD_SALT = new Map<number, number>([
+  [RegOp.LOADK as number, 1],
+  [RegOp.MOVE as number, 1],
+  [RegOp.NEWTABLE as number, 1],
+  [RegOp.UNM as number, 1],
+  [RegOp.GETUPVAL as number, 1],
+]);
 
-      out[i + p[0]] = A;
-      out[i + p[1]] = B;
-      out[i + p[2]] = C;
-    }
-  }
-  return out;
+export function regPackedArgc(realOp: number): number {
+  const mask = REG_OP_MASK[realOp] ?? 0b111;
+  const argc = (mask & 1) + ((mask >> 1) & 1) + ((mask >> 2) & 1);
+  return argc + (REG_LEAD_SALT.get(realOp) ?? 0);
 }
 
-function mapRegChunk(chunk: RegBytecodeChunk, encode: number[], argPerm: number[][]): void {
-  chunk.code = mapRegBytecode(chunk.code, encode, argPerm);
-  if (chunk.protos) for (const p of chunk.protos) mapRegChunk(p, encode, argPerm);
+function validateRegLeadSalt(): void {
+  for (const [op, delta] of REG_LEAD_SALT) {
+    const mask = REG_OP_MASK[op] ?? 0b111;
+    const argc = (mask & 1) + ((mask >> 1) & 1) + ((mask >> 2) & 1);
+    if (!Number.isInteger(delta) || delta < 1) {
+      throw new Error(`[RegVM] lead-salt delta for op ${op} must be a positive integer`);
+    }
+    if (argc + delta > 3) {
+      throw new Error(`[RegVM] lead-salt for op ${op} exceeds the s1..s3 operand window`);
+    }
+    if (REG_FUSED_SLOTS.has(op)) {
+      throw new Error(`[RegVM] lead-salt must not target fused op ${op}`);
+    }
+    if (REG_SKIP_OPS.has(op)) {
+      throw new Error(`[RegVM] lead-salt must not target skip op ${op}`);
+    }
+    if (op === RegOp.JMP || op === RegOp.FORPREP || op === RegOp.FORLOOP) {
+      throw new Error(`[RegVM] lead-salt must not target jump op ${op}`);
+    }
+  }
+}
+
+/**
+ * v2 packed-wire stream (Phase 1.1 / R-2).
+ *
+ * Replaces the fixed 4-word stride (`op,A,B,C` + `ip+=4`) that static
+ * analyzers slice directly. Each packed instruction is a header word
+ * H = shuffledOp * 16 + argc followed by its operand words, where argc is
+ * the trailing word count (0..3 normal, 7/11 fused units). Phase 1.2(c):
+ * shuffledOp <= 127 (sparse) => H <= 2043 (11 bits); argc < 16 always, so
+ * floor(H/16) decodes exactly and the 8-bit rot key stays a bijection.
+ * Stride is therefore
+ * variable (1,2,3,4,8,12 words) and only recoverable via the emitted offset
+ * table P (word start of every unit) plus the instruction counter k.
+ *
+ * Fused multi-quad units keep fixed internal geometry (their bodies read raw
+ * stream words); only normal instructions compact (unused operand slots are
+ * dropped, never emitted). Jump deltas are rewritten from quad-space to
+ * unit-space plus a per-build bias at pack time; the runtime never sees raw
+ * quad deltas.
+ */
+interface PackedUnit {
+  quadStart: number;
+  quads: number;
+  realOp: number;
+  pad: boolean;
+}
+
+interface PackedStream {
+  stream: number[];
+  P: number[];
+}
+
+function packRegStream(
+  code: number[],
+  ctx: BuildCtx,
+): PackedStream {
+  validateRegLeadSalt();
+  const { opcodeEncode: encode, argPerm, jumpBias: jBias } = ctx;
+  const rot = { seed: ctx.rotSeed, step: ctx.rotStep, step2: ctx.rotStep2 };
+  const NOP_OP = RegOp.NOP as number;
+  const LOADKX_OP = RegOp.LOADKX as number;
+  const EXTRAARG_OP = RegOp.EXTRAARG as number;
+  const H_NOP = encode[NOP_OP] * 16;
+  const nQuads = code.length / 4;
+
+  // Unit assignment over pre-pack quads (fused leaders absorb followers).
+  const raw: PackedUnit[] = [];
+  let q = 0;
+  while (q < nQuads) {
+    const op = code[q * 4];
+    const fs = REG_FUSED_SLOTS.get(op);
+    if (fs !== undefined) { raw.push({ quadStart: q, quads: fs, realOp: op, pad: false }); q += fs; }
+    else { raw.push({ quadStart: q, quads: 1, realOp: op, pad: false }); q += 1; }
+  }
+
+  // Build-time invariants: loud errors, never silent miscompiles.
+  for (let qi = 0; qi < nQuads; qi++) {
+    if (code[qi * 4] === EXTRAARG_OP) {
+      if (qi === 0 || code[(qi - 1) * 4] !== LOADKX_OP) {
+        throw new Error(`[packRegStream] EXTRAARG at quad ${qi} not preceded by LOADKX`);
+      }
+    }
+  }
+
+  // Skip-landing padding. A skip-capable op at quad q lands on quad q+2;
+  // without NOP-slide (gone under variable stride) that landing must be a
+  // unit start. If a fused unit covers q+2 without starting there, insert a
+  // 1-word padding NOP unit right after the skip unit. Insertions happen only
+  // on unit boundaries, so they cannot disturb fused internals or pairs.
+  const padAfter = new Set<number>();
+  raw.forEach((u, ui) => {
+    if (u.pad || !REG_SKIP_OPS.has(u.realOp)) return;
+    const lq = u.quadStart + 2;
+    if (lq >= nQuads) return;
+    for (const v of raw) {
+      if (v.quadStart < lq && lq < v.quadStart + v.quads) { padAfter.add(ui); break; }
+    }
+  });
+  const units: PackedUnit[] = [];
+  raw.forEach((u, ui) => {
+    units.push(u);
+    if (padAfter.has(ui)) units.push({ quadStart: -1, quads: 0, realOp: NOP_OP, pad: true });
+  });
+
+  // Quad -> unit index (consumed NOP quads map to their fused unit).
+  const quadToUnit = new Array<number>(nQuads);
+  units.forEach((u, ui) => {
+    if (u.pad) return;
+    for (let s = 0; s < u.quads; s++) quadToUnit[u.quadStart + s] = ui;
+  });
+  // Every recorded jump target must start a unit (0-based unit index here).
+  const targets = computeJumpTargets(code);
+  for (const t of targets) {
+    if (t % 4 !== 0) throw new Error(`[packRegStream] jump target ${t} misaligned`);
+    const tq = t / 4;
+    const ui = quadToUnit[tq];
+    if (ui === undefined || units[ui].quadStart !== tq) {
+      throw new Error(`[packRegStream] jump target ${t} lands mid-unit`);
+    }
+  }
+
+  // Emission.
+  const stream: number[] = [];
+  const P: number[] = [];
+  const hPos: number[] = [];
+  // patch sites: {stream index of stored delta word, target quad, base unit index}
+  interface Patch { at: number; fusedQuad: number; baseUnit: number }
+  const FUSED_JMP = new Set<number>([
+    RegOp.FUSED_TEST_JMP as number, RegOp.FUSED_EQ_JMP as number,
+    RegOp.FUSED_LT_JMP as number, RegOp.FUSED_LE_JMP as number,
+    RegOp.FUSED_TESTSET_JMP as number,
+  ]);
+  const patches: Patch[] = [];
+  const JUMP_OPS = new Set<number>([
+    RegOp.JMP as number, RegOp.FORPREP as number, RegOp.FORLOOP as number,
+  ]);
+  units.forEach((u, ui) => {
+    P.push(stream.length + 1);
+    if (u.pad) {
+      hPos.push(stream.length);
+      stream.push(H_NOP);
+      return;
+    }
+    const p = argPerm[u.realOp];
+    if (u.quads > 1) {
+      // Fused verbatim unit: H + own 3 permuted words + trailing quads
+      // verbatim (op words in H_NOP camouflage; operands untouched so raw
+      // stream reads keep working after re-basing).
+      const argc = u.quads * 4 - 1;
+      hPos.push(stream.length);
+      stream.push(encode[u.realOp] * 16 + argc);
+      for (let k = 0; k < 3; k++) {
+        const s = p.indexOf(k + 1) + 1;
+        stream.push(code[u.quadStart * 4 + s]);
+      }
+      for (let s = 1; s < u.quads; s++) {
+        const bq = (u.quadStart + s) * 4;
+        stream.push(encode[code[bq]] * 16);
+        stream.push(code[bq + 1], code[bq + 2], code[bq + 3]);
+      }
+      // _j patch site for the conditional-jump fusions (stored taken-branch
+      // delta at unit offset 6 for 2-quad units; GGET_CALL carries none).
+      if (FUSED_JMP.has(u.realOp)) {
+        patches.push({ at: stream.length - 2, fusedQuad: u.quadStart, baseUnit: ui });
+      }
+    } else {
+      // Normal packed unit: H + [lead salt words] + present slots by perm key.
+      const lead = ctx.leadSalt.get(u.realOp) ?? 0;
+      const mask = REG_OP_MASK[u.realOp] ?? 0b111;
+      const slots: number[] = [];
+      for (let s = 1; s <= 3; s++) if (mask & (1 << (s - 1))) slots.push(s);
+      slots.sort((a, b) => p[a - 1] - p[b - 1]);
+      hPos.push(stream.length);
+      stream.push(encode[u.realOp] * 16 + slots.length + lead);
+      for (let li = 0; li < lead; li++) {
+        stream.push((((ctx.rotSeed + 17) * (ui + 5) + (li + 1) * 0x9E3779B9) >>> 3) & 0x3FFFF);
+      }
+      for (const s of slots) stream.push(code[u.quadStart * 4 + s]);
+    }
+  });
+
+  // Control-flow rewrites (quad deltas -> unit deltas + bias).
+  const assertUnitStart = (quad: number, what: string): number => {
+    const ui = quadToUnit[quad];
+    if (ui === undefined || units[ui].quadStart !== quad) {
+      throw new Error(`[packRegStream] ${what} quad ${quad} lands mid-unit`);
+    }
+    return ui;
+  };
+  units.forEach((u, ui) => {
+    if (u.pad) return;
+    if (JUMP_OPS.has(u.realOp)) {
+      const q = u.quadStart;
+      const bold = code[q * 4 + 2];
+      const target = q + 1 + bold;
+      const tui = assertUnitStart(target, "jump");
+      // B word stream position: rank of slot 2 among present slots (lead is
+      // validated to be 0 for jump ops; kept in the index for self-consistency).
+      const lead = ctx.leadSalt.get(u.realOp) ?? 0;
+      const mask = REG_OP_MASK[u.realOp] ?? 0b111;
+      const p = argPerm[u.realOp];
+      const slots: number[] = [];
+      for (let s = 1; s <= 3; s++) if (mask & (1 << (s - 1))) slots.push(s);
+      slots.sort((a, b) => p[a - 1] - p[b - 1]);
+      const rank = slots.indexOf(2);
+      if (rank < 0) throw new Error(`[packRegStream] B slot absent for jump op ${u.realOp}`);
+      stream[(P[ui] - 1) + 1 + lead + rank] = tui - (ui + 1) + jBias;
+    }
+  });
+  for (const pt of patches) {
+    const jold = stream[pt.at];
+    const target = pt.fusedQuad + 2 + jold;
+    const tui = assertUnitStart(target, "fused jump");
+    stream[pt.at] = tui - (pt.baseUnit + 1) + jBias;
+  }
+
+  // Rot-XOR over unit-start H words (same key schedule as before).
+  if (rot.seed > 0) {
+    for (const hp of hPos) {
+      const luaIp = hp + 1;
+      const key = (rot.seed + luaIp * rot.step + Math.imul(luaIp, luaIp) * rot.step2) & 0xFF;
+      stream[hp] ^= key;
+    }
+  }
+  return { stream, P };
 }
 
 const SPIRAL_PRIMES = [
@@ -404,21 +747,47 @@ function serializeConstant(v: Constant, ctx: BuildCtx, idx: number): string {
 }
 
 function serializeConstants(K: Constant[], ctx: BuildCtx): string {
-  return `{${K.map((v, i) => serializeConstant(v, ctx, i)).join(",")}}`;
+  if (ctx.level === "debug" || K.length === 0) {
+    return `{${K.map((v, i) => serializeConstant(v, ctx, i)).join(",")}}`;
+  }
+  // v2 computed-index layout (Phase 1.1 / R-2): pad to a power of two with
+  // never-referenced decoy constants, then place real entry j at
+  // bxor(j, eff)+1 where eff = S % n2. RK() reads K[bxor(j, S%#K)+1], so no
+  // literal index ever addresses a real constant and decoys pollute any
+  // table dump. Salt passed with final positions (matches runtime decode).
+  const n2 = nextPow2(K.length);
+  const eff = ctx.constSalt % n2;
+  const placed: (Constant | undefined)[] = new Array(n2).fill(undefined);
+  for (let j = 0; j < K.length; j++) placed[(j ^ eff)] = K[j];
+  const decoys = makeDecoyConstants(n2 - K.length);
+  let di = 0;
+  for (let s = 0; s < n2; s++) {
+    if (placed[s] === undefined) placed[s] = decoys[di++];
+  }
+  return `{${placed.map((v, i) => serializeConstant(v as Constant, ctx, i)).join(",")}}`;
 }
 
-function serializeRegCode(code: number[], ctx?: BuildCtx): string {
-  if (ctx && ctx.rotSeed > 0) {
-    const out = [...code];
-    for (let i = 0; i < out.length; i += 4) {
-      const luaIp = i + 1;
+function nextPow2(n: number): number {
+  let p = 1;
+  while (p < n) p *= 2;
+  return p;
+}
 
-      const key = (ctx.rotSeed + luaIp * ctx.rotStep + Math.imul(luaIp, luaIp) * ctx.rotStep2) & 0xFF;
-      out[i] ^= key;
+/** Cheap never-referenced filler: ints dominate (small literals), some bools/strings. */
+function makeDecoyConstants(count: number): Constant[] {
+  const out: Constant[] = [];
+  for (let i = 0; i < count; i++) {
+    const v = rng();
+    if (v < 0.8) out.push(Math.floor(rng() * 100000));
+    else if (v < 0.9) out.push(rng() < 0.5);
+    else {
+      const len = 3 + Math.floor(rng() * 8);
+      let s = "";
+      for (let k = 0; k < len; k++) s += String.fromCharCode(97 + Math.floor(rng() * 26));
+      out.push(s);
     }
-    return `{${out.join(",")}}`;
   }
-  return `{${code.join(",")}}`;
+  return out;
 }
 
 function serializeRegProtos(protos: RegBytecodeChunk[] | undefined, ctx: BuildCtx): string {
@@ -427,9 +796,13 @@ function serializeRegProtos(protos: RegBytecodeChunk[] | undefined, ctx: BuildCt
   const usePositional = ctx.level !== "debug";
   const items: string[] = [];
   for (const p of protos) {
-    const mappedCode = ctx.doShuffle ? mapRegBytecode(p.code, ctx.opcodeEncode, ctx.argPerm) : p.code;
+    // v2 packed wire (replaces mapRegBytecode+serializeRegCode): variable
+    // stride + unit-offset table P emitted as the 8th proto field (pW).
+    // The 8-field record additionally breaks exact-arity proto parsers.
+    const packed = packRegStream(p.code, ctx);
     const sK = serializeConstants(p.K, ctx);
-    const sC = serializeRegCode(mappedCode, ctx);
+    const sC = `{${packed.stream.join(",")}}`;
+    const sW = `{${packed.P.join(",")}}`;
     const sP = serializeRegProtos(p.protos, ctx);
     let sU = "nil";
     if (p.upvalues && p.upvalues.length > 0) {
@@ -440,9 +813,9 @@ function serializeRegProtos(protos: RegBytecodeChunk[] | undefined, ctx: BuildCt
     const isVA = p.isVararg ? "true" : "false";
     if (usePositional) {
 
-      items.push(`{${sK},${sC},${sP},${sU},${nP},${mR},${isVA}}`);
+      items.push(`{${sK},${sC},${sP},${sU},${nP},${mR},${isVA},${sW}}`);
     } else {
-      items.push(`{${pk.pK}=${sK},${pk.pC}=${sC},${pk.pP}=${sP},${pk.pU}=${sU},${pk.pN}=${nP},mR=${mR},vA=${isVA}}`);
+      items.push(`{${pk.pK}=${sK},${pk.pC}=${sC},${pk.pP}=${sP},${pk.pU}=${sU},${pk.pN}=${nP},mR=${mR},vA=${isVA},pW=${sW}}`);
     }
   }
   return `{${items.join(",")}}`;
@@ -457,7 +830,8 @@ const REG_OP_NAMES: string[] = [
   "CLOSEUPVAL","PCALL","XPCALL","ITERPREP","LOADKX","EXTRAARG",
   "F_TEST_JMP","F_EQ_JMP","F_LT_JMP","F_LE_JMP","F_TESTSET_JMP",
   "F_GGET","F_LOADKK","F_MOVE_MOVE","F_SELF_CALL","F_GGET_CALL",
-  "F_LOADK_RET","F_MOVE_RET",
+  "F_LOADK_RET","F_MOVE_RET","F_ADD_MOVE","F_MUL_ADD",
+  "D0","D1","D2","D3",
 ];
 
 type HandlerGen = (n: NameMap, ctx: BuildCtx) => string;
@@ -470,31 +844,31 @@ function registerHandler(op: RegOp, gen: HandlerGen): void {
 
 registerHandler(RegOp.NOP, () => ``);
 
-registerHandler(RegOp.LOADK, (n) =>
-  `${n.R}[A+1]=${n.K}[B+1]`);
+registerHandler(RegOp.LOADK, (n, ctx) =>
+  `${n.R}[A+1]=${n.K}[${n.bBxor}(B,${ctx.constSalt}%#${n.K})+1]`);
 
 registerHandler(RegOp.LOADNIL, (n) =>
   `for _i=A,A+B do ${n.R}[_i+1]=nil end`);
 
 registerHandler(RegOp.LOADBOOL, (n) =>
-  `${n.R}[A+1]=(B~=0);if C~=0 then ${n.ip}=${n.ip}+4 end`);
+  `${n.R}[A+1]=(B~=0);if C~=0 then ${n.kk}=${n.kk}+1;${n.ip}=${n.poff}[${n.kk}] or (#${n.code}+1) end`);
 
 registerHandler(RegOp.MOVE, (n) =>
   `${n.R}[A+1]=${n.R}[B+1]`);
 
-registerHandler(RegOp.LOADKX, (n) =>
-  `local ex=${n.code}[${n.ip}+1];${n.R}[A+1]=${n.K}[ex+1];${n.ip}=${n.ip}+4`);
+registerHandler(RegOp.LOADKX, (n, ctx) =>
+  `local ex=${n.code}[${n.ip}+1];${n.R}[A+1]=${n.K}[${n.bBxor}(ex,${ctx.constSalt}%#${n.K})+1];${n.kk}=${n.kk}+1;${n.ip}=${n.poff}[${n.kk}] or (#${n.code}+1)`);
 
 registerHandler(RegOp.EXTRAARG, () => ``);
 
-registerHandler(RegOp.GETGLOBAL, (n) => {
+registerHandler(RegOp.GETGLOBAL, (n, ctx) => {
   const dbg = process.env.DEBUG_VM === '1';
   const nilChk = dbg ? `;if ${n.R}[A+1]==nil then warn("[GETGLOBAL] nil: "..tostring(_k)) end` : '';
-  return `do local _k=${n.K}[B+1];if ${n.ic}[1]==_k then ${n.R}[A+1]=${n.ic}[2] else local _v=${n.env}[_k];${n.R}[A+1]=_v;${n.ic}[1]=_k;${n.ic}[2]=_v end${nilChk} end`;
+  return `do local _k=${n.K}[${n.bBxor}(B,${ctx.constSalt}%#${n.K})+1];if ${n.ic}[1]==_k then ${n.R}[A+1]=${n.ic}[2] else local _v=${n.env}[_k];${n.R}[A+1]=_v;${n.ic}[1]=_k;${n.ic}[2]=_v end${nilChk} end`;
 });
 
-registerHandler(RegOp.SETGLOBAL, (n) =>
-  `do ${n.env}[${n.K}[B+1]]=${n.R}[A+1];${n.ic}[1]=nil end`);
+registerHandler(RegOp.SETGLOBAL, (n, ctx) =>
+  `do ${n.env}[${n.K}[${n.bBxor}(B,${ctx.constSalt}%#${n.K})+1]]=${n.R}[A+1];${n.ic}[1]=nil end`);
 
 registerHandler(RegOp.GETTABLE, (n) => {
   const dbg = process.env.DEBUG_VM === '1';
@@ -531,22 +905,22 @@ registerHandler(RegOp.CONCAT, (n) =>
   `else local _t={};for _i=B,C do _t[#_t+1]=${n.R}[_i+1] end;${n.R}[A+1]=${n.bTconcat}(_t) end end`);
 
 registerHandler(RegOp.JMP, (n) =>
-  `${n.ip}=${n.ip}+B*4`);
+  `${n.kk}=${n.kk}+(B-${n.jbias});${n.ip}=${n.poff}[${n.kk}] or (#${n.code}+1)`);
 
 registerHandler(RegOp.EQ, (n) =>
-  `if (${n.RK}(B)==${n.RK}(C))~=(A~=0) then ${n.ip}=${n.ip}+4 end`);
+  `if (${n.RK}(B)==${n.RK}(C))~=(A~=0) then ${n.kk}=${n.kk}+1;${n.ip}=${n.poff}[${n.kk}] or (#${n.code}+1) end`);
 
 registerHandler(RegOp.LT, (n) =>
-  `if (${n.RK}(B)<${n.RK}(C))~=(A~=0) then ${n.ip}=${n.ip}+4 end`);
+  `if (${n.RK}(B)<${n.RK}(C))~=(A~=0) then ${n.kk}=${n.kk}+1;${n.ip}=${n.poff}[${n.kk}] or (#${n.code}+1) end`);
 
 registerHandler(RegOp.LE, (n) =>
-  `if (${n.RK}(B)<=${n.RK}(C))~=(A~=0) then ${n.ip}=${n.ip}+4 end`);
+  `if (${n.RK}(B)<=${n.RK}(C))~=(A~=0) then ${n.kk}=${n.kk}+1;${n.ip}=${n.poff}[${n.kk}] or (#${n.code}+1) end`);
 
 registerHandler(RegOp.TEST, (n) =>
-  `if (not ${n.R}[A+1])==(C~=0) then ${n.ip}=${n.ip}+4 end`);
+  `if (not ${n.R}[A+1])==(C~=0) then ${n.kk}=${n.kk}+1;${n.ip}=${n.poff}[${n.kk}] or (#${n.code}+1) end`);
 
 registerHandler(RegOp.TESTSET, (n) =>
-  `if (not ${n.R}[B+1])==(C~=0) then ${n.ip}=${n.ip}+4 else ${n.R}[A+1]=${n.R}[B+1] end`);
+  `if (not ${n.R}[B+1])==(C~=0) then ${n.kk}=${n.kk}+1;${n.ip}=${n.poff}[${n.kk}] or (#${n.code}+1) else ${n.R}[A+1]=${n.R}[B+1] end`);
 
 registerHandler(RegOp.CALL, (n) => {
 
@@ -563,30 +937,32 @@ registerHandler(RegOp.CALL, (n) => {
 });
 
 registerHandler(RegOp.TAILCALL, (n) =>
+  // v2 closure dispatch: run-level returns are packed (tPack) so the
+  // dispatcher can propagate them via unpack; bare form returns {n=0}.
   `do local f=${n.R}[A+1];` +
-  `if B==1 then return f() ` +
-  `elseif B==2 then return f(${n.R}[A+2]) ` +
-  `elseif B==3 then return f(${n.R}[A+2],${n.R}[A+3]) ` +
-  `elseif B==0 then return f(${n.tUnpack}(${n.R},A+2,${n.top})) ` +
-  `else return f(${n.tUnpack}(${n.R},A+2,A+B)) end end`);
+  `if B==1 then return ${n.tPack}(f()) ` +
+  `elseif B==2 then return ${n.tPack}(f(${n.R}[A+2])) ` +
+  `elseif B==3 then return ${n.tPack}(f(${n.R}[A+2],${n.R}[A+3])) ` +
+  `elseif B==0 then return ${n.tPack}(f(${n.tUnpack}(${n.R},A+2,${n.top}))) ` +
+  `else return ${n.tPack}(f(${n.tUnpack}(${n.R},A+2,A+B))) end end`);
 
 registerHandler(RegOp.RETURN, (n) =>
-  `do if B==0 then return ${n.tUnpack}(${n.R},A+1,${n.top}) ` +
-  `elseif B==1 then return ` +
-  `else return ${n.tUnpack}(${n.R},A+1,A+B-1) end end`);
+  `do if B==0 then return ${n.tPack}(${n.tUnpack}(${n.R},A+1,${n.top})) ` +
+  `elseif B==1 then return ${n.tPack}() ` +
+  `else return ${n.tPack}(${n.tUnpack}(${n.R},A+1,A+B-1)) end end`);
 
 registerHandler(RegOp.FORPREP, (n) =>
-  `${n.R}[A+1]=${n.R}[A+1]-${n.R}[A+3];${n.ip}=${n.ip}+B*4`);
+  `${n.R}[A+1]=${n.R}[A+1]-${n.R}[A+3];${n.kk}=${n.kk}+(B-${n.jbias});${n.ip}=${n.poff}[${n.kk}] or (#${n.code}+1)`);
 
 registerHandler(RegOp.FORLOOP, (n) =>
   `do local step=${n.R}[A+3];local idx=${n.R}[A+1]+step;${n.R}[A+1]=idx;` +
-  `local lim=${n.R}[A+2];if step>0 then if idx<=lim then ${n.ip}=${n.ip}+B*4;${n.R}[A+4]=idx end ` +
-  `else if idx>=lim then ${n.ip}=${n.ip}+B*4;${n.R}[A+4]=idx end end end`);
+  `local lim=${n.R}[A+2];if step>0 then if idx<=lim then ${n.kk}=${n.kk}+(B-${n.jbias});${n.ip}=${n.poff}[${n.kk}] or (#${n.code}+1);${n.R}[A+4]=idx end ` +
+  `else if idx>=lim then ${n.kk}=${n.kk}+(B-${n.jbias});${n.ip}=${n.poff}[${n.kk}] or (#${n.code}+1);${n.R}[A+4]=idx end end end`);
 
 registerHandler(RegOp.TFORLOOP, (n) =>
   `do local f=${n.R}[A+1];local s=${n.R}[A+2];local v=${n.R}[A+3];` +
   `local r={f(s,v)};for _i=1,C do ${n.R}[A+3+_i]=r[_i] end;` +
-  `if r[1]~=nil then ${n.R}[A+3]=r[1];${n.ip}=${n.ip}+4 end end`);
+  `if r[1]~=nil then ${n.R}[A+3]=r[1];${n.kk}=${n.kk}+1;${n.ip}=${n.poff}[${n.kk}] or (#${n.code}+1) end end`);
 
 registerHandler(RegOp.ITERPREP, (n) =>
   `do local it=${n.R}[A+1];if ${n.bType}(it)=="table" then ` +
@@ -619,12 +995,13 @@ registerHandler(RegOp.CLOSURE, (n, ctx) => {
   const gN = pos ? "[5]" : `.${pN}`;
   const gMR = pos ? "[6]" : ".mR";
   const gVA = pos ? "[7]" : ".vA";
+  const gW = pos ? "[8]" : ".pW";
   return `do local proto=${n.protos}[B+1];if proto then ` +
     `local nU={};if proto${gU} then for _ui,_ud in ${n.bIpairs}(proto${gU}) do ` +
     `if _ud[1]==1 then local _b;for _oi=1,#${n.openUVs} do if ${n.openUVs}[_oi][2]==_ud[2]+1 then _b=${n.openUVs}[_oi];break end end;` +
     `if not _b then _b={${n.R},_ud[2]+1};${n.openUVs}[#${n.openUVs}+1]=_b end;nU[_ui]=_b ` +
     `else nU[_ui]=${n.upvalues}[_ud[2]+1] end end end;` +
-    `${n.R}[A+1]=function(...) return ${n.run}(proto${gK},proto${gC},proto${gP},proto${gU} and nU or {},proto${gN},proto${gMR},proto${gVA},${n.env},...) end ` +
+    `${n.R}[A+1]=function(...) return ${n.run}(proto${gK},proto${gC},proto${gW},proto${gP},proto${gU} and nU or {},proto${gN},proto${gMR},proto${gVA},${n.env},...) end ` +
     `else ${n.R}[A+1]=nil end end`;
 });
 
@@ -648,75 +1025,77 @@ registerHandler(RegOp.XPCALL, (n) =>
 registerHandler(RegOp.FUSED_TEST_JMP, (n) => {
   const v = Math.floor(rng() * 3);
   if (v === 0)
-    return `do local _j=${n.code}[${n.ip}+2];if (not ${n.R}[A+1])==(C~=0) then ${n.ip}=${n.ip}+4 else ${n.ip}=${n.ip}+4+_j*4 end end`;
+    return `do local _j=${n.code}[${n.ip}-2];if (not ${n.R}[A+1])==(C~=0) then do end else ${n.kk}=${n.kk}+(_j-${n.jbias});${n.ip}=${n.poff}[${n.kk}] or (#${n.code}+1) end end`;
   if (v === 1)
-    return `do local _j=${n.code}[${n.ip}+2];if (not ${n.R}[A+1])~=(C~=0) then ${n.ip}=${n.ip}+4+_j*4 else ${n.ip}=${n.ip}+4 end end`;
-  return `do local _o=${n.code}[${n.ip}+2]*4;${n.ip}=${n.ip}+4;if (not ${n.R}[A+1])~=(C~=0) then ${n.ip}=${n.ip}+_o end end`;
+    return `do local _j=${n.code}[${n.ip}-2];if (not ${n.R}[A+1])~=(C~=0) then ${n.kk}=${n.kk}+(_j-${n.jbias});${n.ip}=${n.poff}[${n.kk}] or (#${n.code}+1) end end`;
+  return `do local _o=${n.code}[${n.ip}-2];if (not ${n.R}[A+1])~=(C~=0) then ${n.kk}=${n.kk}+(_o-${n.jbias});${n.ip}=${n.poff}[${n.kk}] or (#${n.code}+1) end end`;
 });
 
 registerHandler(RegOp.FUSED_EQ_JMP, (n) => {
   const v = Math.floor(rng() * 3);
   if (v === 0)
-    return `do local _j=${n.code}[${n.ip}+2];if (${n.RK}(B)==${n.RK}(C))~=(A~=0) then ${n.ip}=${n.ip}+4 else ${n.ip}=${n.ip}+4+_j*4 end end`;
+    return `do local _j=${n.code}[${n.ip}-2];if (${n.RK}(B)==${n.RK}(C))~=(A~=0) then do end else ${n.kk}=${n.kk}+(_j-${n.jbias});${n.ip}=${n.poff}[${n.kk}] or (#${n.code}+1) end end`;
   if (v === 1)
-    return `do local _j=${n.code}[${n.ip}+2];if (${n.RK}(B)==${n.RK}(C))==(A~=0) then ${n.ip}=${n.ip}+4+_j*4 else ${n.ip}=${n.ip}+4 end end`;
-  return `do local _lv,_rv=${n.RK}(B),${n.RK}(C);local _j=${n.code}[${n.ip}+2];if (_lv==_rv)~=(A~=0) then ${n.ip}=${n.ip}+4 else ${n.ip}=${n.ip}+4+_j*4 end end`;
+    return `do local _j=${n.code}[${n.ip}-2];if (${n.RK}(B)==${n.RK}(C))==(A~=0) then ${n.kk}=${n.kk}+(_j-${n.jbias});${n.ip}=${n.poff}[${n.kk}] or (#${n.code}+1) end end`;
+  return `do local _lv,_rv=${n.RK}(B),${n.RK}(C);local _j=${n.code}[${n.ip}-2];if (_lv==_rv)~=(A~=0) then do end else ${n.kk}=${n.kk}+(_j-${n.jbias});${n.ip}=${n.poff}[${n.kk}] or (#${n.code}+1) end end`;
 });
 
 registerHandler(RegOp.FUSED_LT_JMP, (n) => {
   const v = Math.floor(rng() * 3);
   if (v === 0)
-    return `do local _j=${n.code}[${n.ip}+2];if (${n.RK}(B)<${n.RK}(C))~=(A~=0) then ${n.ip}=${n.ip}+4 else ${n.ip}=${n.ip}+4+_j*4 end end`;
+    return `do local _j=${n.code}[${n.ip}-2];if (${n.RK}(B)<${n.RK}(C))~=(A~=0) then do end else ${n.kk}=${n.kk}+(_j-${n.jbias});${n.ip}=${n.poff}[${n.kk}] or (#${n.code}+1) end end`;
   if (v === 1)
-    return `do local _j=${n.code}[${n.ip}+2];if (${n.RK}(B)<${n.RK}(C))==(A~=0) then ${n.ip}=${n.ip}+4+_j*4 else ${n.ip}=${n.ip}+4 end end`;
-  return `do local _lv,_rv=${n.RK}(B),${n.RK}(C);local _o=${n.code}[${n.ip}+2]*4;${n.ip}=${n.ip}+4;if (_lv<_rv)==(A~=0) then ${n.ip}=${n.ip}+_o end end`;
+    return `do local _j=${n.code}[${n.ip}-2];if (${n.RK}(B)<${n.RK}(C))==(A~=0) then ${n.kk}=${n.kk}+(_j-${n.jbias});${n.ip}=${n.poff}[${n.kk}] or (#${n.code}+1) end end`;
+  return `do local _lv,_rv=${n.RK}(B),${n.RK}(C);local _o=${n.code}[${n.ip}-2];if (_lv<_rv)==(A~=0) then ${n.kk}=${n.kk}+(_o-${n.jbias});${n.ip}=${n.poff}[${n.kk}] or (#${n.code}+1) end end`;
 });
 
 registerHandler(RegOp.FUSED_LE_JMP, (n) => {
   const v = Math.floor(rng() * 3);
   if (v === 0)
-    return `do local _j=${n.code}[${n.ip}+2];if (${n.RK}(B)<=${n.RK}(C))~=(A~=0) then ${n.ip}=${n.ip}+4 else ${n.ip}=${n.ip}+4+_j*4 end end`;
+    return `do local _j=${n.code}[${n.ip}-2];if (${n.RK}(B)<=${n.RK}(C))~=(A~=0) then do end else ${n.kk}=${n.kk}+(_j-${n.jbias});${n.ip}=${n.poff}[${n.kk}] or (#${n.code}+1) end end`;
   if (v === 1)
-    return `do local _j=${n.code}[${n.ip}+2];if (${n.RK}(B)<=${n.RK}(C))==(A~=0) then ${n.ip}=${n.ip}+4+_j*4 else ${n.ip}=${n.ip}+4 end end`;
-  return `do local _lv,_rv=${n.RK}(B),${n.RK}(C);local _o=${n.code}[${n.ip}+2]*4;${n.ip}=${n.ip}+4;if (_lv<=_rv)==(A~=0) then ${n.ip}=${n.ip}+_o end end`;
+    return `do local _j=${n.code}[${n.ip}-2];if (${n.RK}(B)<=${n.RK}(C))==(A~=0) then ${n.kk}=${n.kk}+(_j-${n.jbias});${n.ip}=${n.poff}[${n.kk}] or (#${n.code}+1) end end`;
+  return `do local _lv,_rv=${n.RK}(B),${n.RK}(C);local _o=${n.code}[${n.ip}-2];if (_lv<=_rv)==(A~=0) then ${n.kk}=${n.kk}+(_o-${n.jbias});${n.ip}=${n.poff}[${n.kk}] or (#${n.code}+1) end end`;
 });
 
 registerHandler(RegOp.FUSED_TESTSET_JMP, (n) => {
   const v = Math.floor(rng() * 2);
   if (v === 0)
-    return `do local _j=${n.code}[${n.ip}+2];if (not ${n.R}[B+1])==(C~=0) then ${n.ip}=${n.ip}+4 else ${n.R}[A+1]=${n.R}[B+1];${n.ip}=${n.ip}+4+_j*4 end end`;
-  return `do local _bv=${n.R}[B+1];local _j=${n.code}[${n.ip}+2];if (not _bv)==(C~=0) then ${n.ip}=${n.ip}+4 else ${n.R}[A+1]=_bv;${n.ip}=${n.ip}+4+_j*4 end end`;
+    return `do local _j=${n.code}[${n.ip}-2];if (not ${n.R}[B+1])==(C~=0) then do end else ${n.R}[A+1]=${n.R}[B+1];${n.kk}=${n.kk}+(_j-${n.jbias});${n.ip}=${n.poff}[${n.kk}] or (#${n.code}+1) end end`;
+  return `do local _bv=${n.R}[B+1];local _j=${n.code}[${n.ip}-2];if (not _bv)==(C~=0) then do end else ${n.R}[A+1]=_bv;${n.kk}=${n.kk}+(_j-${n.jbias});${n.ip}=${n.poff}[${n.kk}] or (#${n.code}+1) end end`;
 });
 
-registerHandler(RegOp.FUSED_GGET, (n) => {
+registerHandler(RegOp.FUSED_GGET, (n, ctx) => {
   const v = Math.floor(rng() * 3);
   const dbg = process.env.DEBUG_VM === '1';
-  const nilG = dbg ? `if _g==nil then warn("[FUSED_GGET] nil global: "..tostring(${n.K}[B+1])) end;` : '';
+  const nilG = dbg ? `if _g==nil then warn("[FUSED_GGET] nil global: "..tostring(${n.K}[${n.bBxor}(B,${ctx.constSalt}%#${n.K})+1])) end;` : '';
+  const kacc = `${n.K}[${n.bBxor}(B,${ctx.constSalt}%#${n.K})+1]`;
   if (v === 0)
-    return `do local _A2=${n.code}[${n.ip}+1];local _C2=${n.code}[${n.ip}+3];local _g=${n.env}[${n.K}[B+1]];${nilG}${n.R}[A+1]=_g;${n.R}[_A2+1]=_g[${n.RK}(_C2)];${n.ip}=${n.ip}+4 end`;
+    return `do local _A2=${n.code}[${n.ip}-3];local _C2=${n.code}[${n.ip}-1];local _g=${n.env}[${kacc}];${nilG}${n.R}[A+1]=_g;${n.R}[_A2+1]=_g[${n.RK}(_C2)] end`;
   if (v === 1)
-    return `do local _A2=${n.code}[${n.ip}+1];local _C2=${n.code}[${n.ip}+3];local _g=${n.env}[${n.K}[B+1]];${nilG}${n.R}[A+1]=_g;${n.R}[_A2+1]=_g[${n.RK}(_C2)];${n.ip}=${n.ip}+4 end`;
-  return `do local _g=${n.env}[${n.K}[B+1]];${nilG}${n.R}[A+1]=_g;local _k=${n.RK}(${n.code}[${n.ip}+3]);${n.R}[${n.code}[${n.ip}+1]+1]=_g[_k];${n.ip}=${n.ip}+4 end`;
+    return `do local _A2=${n.code}[${n.ip}-3];local _C2=${n.code}[${n.ip}-1];local _g=${n.env}[${kacc}];${nilG}${n.R}[A+1]=_g;${n.R}[_A2+1]=_g[${n.RK}(_C2)];local f=${n.R}[_A2+1] end`;
+  return `do local _g=${n.env}[${kacc}];${nilG}${n.R}[A+1]=_g;local _k=${n.RK}(${n.code}[${n.ip}-1]);${n.R}[${n.code}[${n.ip}-3]+1]=_g[_k] end`;
 });
 
-registerHandler(RegOp.FUSED_LOADKK, (n) => {
+registerHandler(RegOp.FUSED_LOADKK, (n, ctx) => {
   const v = Math.floor(rng() * 2);
+  const kacc = (e: string) => `${n.K}[${n.bBxor}(${e},${ctx.constSalt}%#${n.K})+1]`;
   if (v === 0)
-    return `do local _A2=${n.code}[${n.ip}+1];local _B2=${n.code}[${n.ip}+2];${n.R}[A+1]=${n.K}[B+1];${n.R}[_A2+1]=${n.K}[_B2+1];${n.ip}=${n.ip}+4 end`;
-  return `do ${n.R}[A+1]=${n.K}[B+1];${n.R}[${n.code}[${n.ip}+1]+1]=${n.K}[${n.code}[${n.ip}+2]+1];${n.ip}=${n.ip}+4 end`;
+    return `do local _A2=${n.code}[${n.ip}-3];local _B2=${n.code}[${n.ip}-2];${n.R}[A+1]=${kacc("B")};${n.R}[_A2+1]=${kacc("_B2")} end`;
+  return `do ${n.R}[A+1]=${kacc("B")};${n.R}[${n.code}[${n.ip}-3]+1]=${kacc(`${n.code}[${n.ip}-2]`)} end`;
 });
 
 registerHandler(RegOp.FUSED_MOVE_MOVE, (n) => {
   const v = Math.floor(rng() * 2);
   if (v === 0)
-    return `do local _A2=${n.code}[${n.ip}+1];local _B2=${n.code}[${n.ip}+2];${n.R}[A+1]=${n.R}[B+1];${n.R}[_A2+1]=${n.R}[_B2+1];${n.ip}=${n.ip}+4 end`;
-  return `do ${n.R}[A+1]=${n.R}[B+1];${n.R}[${n.code}[${n.ip}+1]+1]=${n.R}[${n.code}[${n.ip}+2]+1];${n.ip}=${n.ip}+4 end`;
+    return `do local _A2=${n.code}[${n.ip}-3];local _B2=${n.code}[${n.ip}-2];${n.R}[A+1]=${n.R}[B+1];${n.R}[_A2+1]=${n.R}[_B2+1] end`;
+  return `do ${n.R}[A+1]=${n.R}[B+1];${n.R}[${n.code}[${n.ip}-3]+1]=${n.R}[${n.code}[${n.ip}-2]+1] end`;
 });
 
 registerHandler(RegOp.FUSED_SELF_CALL, (n) => {
   const v = Math.floor(rng() * 2);
   const callBody =
-    `local _B2=${n.code}[${n.ip}+2];local _C2=${n.code}[${n.ip}+3];${n.ip}=${n.ip}+4;` +
+    `local _B2=${n.code}[${n.ip}-2];local _C2=${n.code}[${n.ip}-1];` +
     `local r;` +
     `if _B2==2 then r=${n.tPack}(f(${n.R}[A+2])) ` +
     `elseif _B2==3 then r=${n.tPack}(f(${n.R}[A+2],${n.R}[A+3])) ` +
@@ -732,8 +1111,8 @@ registerHandler(RegOp.FUSED_SELF_CALL, (n) => {
 registerHandler(RegOp.FUSED_GGET_CALL, (n) => {
 
   const v = Math.floor(rng() * 2);
-  const readSlot2 = `local _A2=${n.code}[${n.ip}+1];local _C2=${n.code}[${n.ip}+3]`;
-  const readSlot3 = `local _A3=${n.code}[${n.ip}+5];local _B3=${n.code}[${n.ip}+6];local _C3=${n.code}[${n.ip}+7]`;
+  const readSlot2 = `local _A2=${n.code}[${n.ip}-7];local _C2=${n.code}[${n.ip}-5]`;
+  const readSlot3 = `local _A3=${n.code}[${n.ip}-3];local _B3=${n.code}[${n.ip}-2];local _C3=${n.code}[${n.ip}-1]`;
   const gget = v === 0
     ? `local _g=${n.env}[${n.K}[B+1]];${n.R}[A+1]=_g;local f=_g[${n.RK}(_C2)];${n.R}[_A2+1]=f`
     : `local _g=${n.env}[${n.K}[B+1]];${n.R}[A+1]=_g;${n.R}[_A2+1]=_g[${n.RK}(_C2)];local f=${n.R}[_A2+1]`;
@@ -746,24 +1125,47 @@ registerHandler(RegOp.FUSED_GGET_CALL, (n) => {
     `else r=${n.tPack}(f(${n.tUnpack}(${n.R},_A3+2,_A3+_B3))) end;` +
     `if _C3==0 then for _i=1,r.n do ${n.R}[_A3+_i]=r[_i] end;${n.top}=_A3+r.n ` +
     `else for _i=1,_C3-1 do ${n.R}[_A3+_i]=r[_i] end end`;
-  return `do ${readSlot2};${readSlot3};${gget};${n.ip}=${n.ip}+8;${callBody} end`;
+  return `do ${readSlot2};${readSlot3};${gget};${callBody} end`;
 });
 
-registerHandler(RegOp.FUSED_LOADK_RET, (n) => {
+registerHandler(RegOp.FUSED_LOADK_RET, (n, ctx) => {
   const v = Math.floor(rng() * 2);
+  // v2 computed-index K (Phase 1.1 / R-2): B is a raw const index.
+  const kacc = `${n.K}[${n.bBxor}(B,${ctx.constSalt}%#${n.K})+1]`;
   if (v === 0)
-    return `do ${n.R}[A+1]=${n.K}[B+1];${n.ip}=${n.ip}+4;return ${n.R}[A+1] end`;
-  return `do local _v=${n.K}[B+1];${n.ip}=${n.ip}+4;return _v end`;
+    return `do ${n.R}[A+1]=${kacc};return ${n.tPack}(${n.R}[A+1]) end`;
+  return `do local _v=${kacc};return ${n.tPack}(_v) end`;
 });
 
 registerHandler(RegOp.FUSED_MOVE_RET, (n) => {
   const v = Math.floor(rng() * 3);
   if (v === 0)
-    return `do local _A2=${n.code}[${n.ip}+1];local _B2=${n.code}[${n.ip}+2];${n.R}[A+1]=${n.R}[B+1];${n.ip}=${n.ip}+4;if _B2==0 then return ${n.tUnpack}(${n.R},_A2+1,${n.top}) elseif _B2==1 then return else return ${n.tUnpack}(${n.R},_A2+1,_A2+_B2-1) end end`;
+    return `do local _A2=${n.code}[${n.ip}-3];local _B2=${n.code}[${n.ip}-2];${n.R}[A+1]=${n.R}[B+1];if _B2==0 then return ${n.tPack}(${n.tUnpack}(${n.R},_A2+1,${n.top})) elseif _B2==1 then return ${n.tPack}() else return ${n.tPack}(${n.tUnpack}(${n.R},_A2+1,_A2+_B2-1)) end end`;
   if (v === 1)
-    return `do ${n.R}[A+1]=${n.R}[B+1];local _A2=${n.code}[${n.ip}+1];local _B2=${n.code}[${n.ip}+2];${n.ip}=${n.ip}+4;if _B2==2 then return ${n.R}[_A2+1] elseif _B2==1 then return elseif _B2==0 then return ${n.tUnpack}(${n.R},_A2+1,${n.top}) else return ${n.tUnpack}(${n.R},_A2+1,_A2+_B2-1) end end`;
-  return `do ${n.R}[A+1]=${n.R}[B+1];local _B2=${n.code}[${n.ip}+2];if _B2==0 then ${n.ip}=${n.ip}+4;return ${n.tUnpack}(${n.R},${n.code}[${n.ip}-3]+1,${n.top}) elseif _B2==1 then ${n.ip}=${n.ip}+4;return else ${n.ip}=${n.ip}+4;return ${n.tUnpack}(${n.R},${n.code}[${n.ip}-3]+1,${n.code}[${n.ip}-3]+_B2-1) end end`;
+    return `do ${n.R}[A+1]=${n.R}[B+1];local _A2=${n.code}[${n.ip}-3];local _B2=${n.code}[${n.ip}-2];if _B2==2 then return ${n.tPack}(${n.R}[_A2+1]) elseif _B2==1 then return ${n.tPack}() elseif _B2==0 then return ${n.tPack}(${n.tUnpack}(${n.R},_A2+1,${n.top})) else return ${n.tPack}(${n.tUnpack}(${n.R},_A2+1,_A2+_B2-1)) end end`;
+  return `do ${n.R}[A+1]=${n.R}[B+1];local _B2=${n.code}[${n.ip}-2];if _B2==0 then return ${n.tPack}(${n.tUnpack}(${n.R},A+1,${n.top})) elseif _B2==1 then return ${n.tPack}() else return ${n.tPack}(${n.tUnpack}(${n.R},A+1,A+_B2-1)) end end`;
 });
+
+registerHandler(RegOp.FUSED_ADD_MOVE, (n) => {
+  const v = Math.floor(rng() * 2);
+  if (v === 0)
+    return `do ${n.R}[A+1]=${n.RK}(B)+${n.RK}(C);local _D2=${n.code}[${n.ip}-3];${n.R}[_D2+1]=${n.R}[A+1] end`;
+  return `do local _s=${n.RK}(B)+${n.RK}(C);${n.R}[A+1]=_s;local _D2=${n.code}[${n.ip}-3];${n.R}[_D2+1]=_s end`;
+});
+
+registerHandler(RegOp.FUSED_MUL_ADD, (n) => {
+  const v = Math.floor(rng() * 2);
+  if (v === 0)
+    return `do ${n.R}[A+1]=${n.RK}(B)*${n.RK}(C);local _D2=${n.code}[${n.ip}-3];local _E2=${n.code}[${n.ip}-1];${n.R}[_D2+1]=${n.R}[A+1]+${n.RK}(_E2) end`;
+  return `do local _s=${n.RK}(B)*${n.RK}(C);${n.R}[A+1]=_s;local _D2=${n.code}[${n.ip}-3];local _E2=${n.code}[${n.ip}-1];${n.R}[_D2+1]=_s+${n.RK}(_E2) end`;
+});
+
+// Phase 1.2(f): decoy opcodes - plausible arity, no-op bodies. Never emitted
+// by the compiler; exist only to pad the opcode domain.
+registerHandler(RegOp.DECOY_0, () => ``);
+registerHandler(RegOp.DECOY_1, (n) => `local _=A`);
+registerHandler(RegOp.DECOY_2, (n) => `local _a,_b=A,B`);
+registerHandler(RegOp.DECOY_3, (n) => `local _a,_b,_c=A,B,C`);
 
 function computeJumpTargets(code: number[]): Set<number> {
   const targets = new Set<number>();
@@ -831,7 +1233,8 @@ function flattenControlFlow(chunk: RegBytecodeChunk): number {
           op === (RegOp.FUSED_TESTSET_JMP as number) || op === (RegOp.FUSED_GGET as number) ||
           op === (RegOp.FUSED_LOADKK as number) || op === (RegOp.FUSED_MOVE_MOVE as number) ||
           op === (RegOp.FUSED_SELF_CALL as number) || op === (RegOp.FUSED_LOADK_RET as number) ||
-          op === (RegOp.FUSED_MOVE_RET as number)) {
+          op === (RegOp.FUSED_MOVE_RET as number) || op === (RegOp.FUSED_ADD_MOVE as number) ||
+          op === (RegOp.FUSED_MUL_ADD as number)) {
         targets.delete(i + 4);
       }
 
@@ -858,7 +1261,8 @@ function flattenControlFlow(chunk: RegBytecodeChunk): number {
           op === (RegOp.FUSED_TESTSET_JMP as number) || op === (RegOp.FUSED_GGET as number) ||
           op === (RegOp.FUSED_LOADKK as number) || op === (RegOp.FUSED_MOVE_MOVE as number) ||
           op === (RegOp.FUSED_SELF_CALL as number) || op === (RegOp.FUSED_LOADK_RET as number) ||
-          op === (RegOp.FUSED_MOVE_RET as number)) {
+          op === (RegOp.FUSED_MOVE_RET as number) || op === (RegOp.FUSED_ADD_MOVE as number) ||
+          op === (RegOp.FUSED_MUL_ADD as number)) {
         unsafeSplit.add(i + 4);
       }
       if (op === (RegOp.FUSED_GGET_CALL as number)) {
@@ -1071,6 +1475,13 @@ function buildFusionPatterns(enabled: Set<number>): FusionPattern[] {
   add(RegOp.FUSED_MOVE_RET as number, "MOVE_RET", 2, (c, i) =>
     c[i] === (RegOp.MOVE as number) && c[i+4] === (RegOp.RETURN as number));
 
+  add(RegOp.FUSED_ADD_MOVE as number, "ADD_MOVE", 2, (c, i) =>
+    c[i] === (RegOp.ADD as number) && c[i+4] === (RegOp.MOVE as number) &&
+    c[i+4+2] === c[i+1]);
+
+  add(RegOp.FUSED_MUL_ADD as number, "MUL_ADD", 2, (c, i) =>
+    c[i] === (RegOp.MUL as number) && c[i+4] === (RegOp.ADD as number) &&
+    c[i+4+2] === c[i+1]);
   return patterns;
 }
 
@@ -1093,6 +1504,8 @@ const ALL_FUSION_IDS = [
   RegOp.FUSED_SELF_CALL as number,
   RegOp.FUSED_LOADK_RET as number,
   RegOp.FUSED_MOVE_RET as number,
+  RegOp.FUSED_ADD_MOVE as number,
+  RegOp.FUSED_MUL_ADD as number,
 ];
 
 /**
@@ -1232,8 +1645,23 @@ function buildHandlerBodies(n: NameMap, ctx: BuildCtx, usedOps?: Set<number>): M
     const body = gen(n, ctx);
 
     const p = ctx.argPerm[op as number];
+    // v2 packed wire: only mask-present slots are emitted, ordered by perm
+    // key. Bake the compaction into the remap (absent slots -> nil; bodies
+    // only read their own operands). Phase 1.2(d): lead salt words shift the
+    // present-slot ranks by `lead`. Full-mask ops keep the legacy form.
+    const mask = REG_OP_MASK[op as number] ?? 0b111;
+    const present: number[] = [];
+    for (let s = 1; s <= 3; s++) if (mask & (1 << (s - 1))) present.push(s);
+    present.sort((a, b) => p[a - 1] - p[b - 1]);
+    const lead = ctx.leadSalt.get(op as number) ?? 0;
     const slots = [n.s1, n.s2, n.s3];
-    const remap = `local A,B,C=${slots[p[0]-1]},${slots[p[1]-1]},${slots[p[2]-1]};`;
+    const expr = (slot: number): string => {
+      const rank = present.indexOf(slot);
+      if (rank < 0) return "nil";
+      const idx = rank + lead;
+      return idx < slots.length ? slots[idx] : "nil";
+    };
+    const remap = `local A,B,C=${expr(1)},${expr(2)},${expr(3)};`;
 
     const noise = doNoise ? generateHandlerNoise(n, op as number) : '';
     bodies.set(shuffled, remap + noise + body);
@@ -1370,8 +1798,8 @@ function buildVMRuntime(ctx: BuildCtx, assignStyle: boolean = false): string {
   const L: string[] = [];
 
   L.push(assignStyle
-    ? `${n.run}=function(${n.K},${n.code},${n.protos},${n.upvalues},${n.nParams},${n.maxRegs},_isVararg,${n.env},...)`
-    : `local function ${n.run}(${n.K},${n.code},${n.protos},${n.upvalues},${n.nParams},${n.maxRegs},_isVararg,${n.env},...)`);
+    ? `${n.run}=function(${n.K},${n.code},${n.poff},${n.protos},${n.upvalues},${n.nParams},${n.maxRegs},_isVararg,${n.env},...)`
+    : `local function ${n.run}(${n.K},${n.code},${n.poff},${n.protos},${n.upvalues},${n.nParams},${n.maxRegs},_isVararg,${n.env},...)`);
   L.push(`${n.protos}=${n.protos} or {}`);
   L.push(`${n.upvalues}=${n.upvalues} or {}`);
 
@@ -1399,6 +1827,8 @@ function buildVMRuntime(ctx: BuildCtx, assignStyle: boolean = false): string {
   }
 
   L.push(`local ${n.ip}=1`);
+  L.push(`local ${n.kk}=1`);
+  L.push(`local ${n.jbias}=${ctx.jumpBias}`);
   if (needsOpenUVs) L.push(`local ${n.openUVs}={}`);
   if (needsIc) L.push(`local ${n.ic}={}`);
   L.push(`local ${n.top}=0`);
@@ -1411,52 +1841,56 @@ function buildVMRuntime(ctx: BuildCtx, assignStyle: boolean = false): string {
   if (ctx.level !== "debug") {
     rkThreshVar = randomName(3);
     rkSubVar = randomName(3);
+    const rkOffset = ctx.rkOffset;
     const rkVariant = Math.floor(rng() * 6);
     const a = Math.floor(rng() * 200) + 10;
-    const b = RK_OFFSET - a;
+    const b = rkOffset - a;
     if (rkVariant === 0) {
       L.push(`local ${rkThreshVar}=${a}+${b}`);
     } else if (rkVariant === 1) {
-      L.push(`local ${rkThreshVar}=${n.bBxor}(${RK_OFFSET ^ (a)},${a})`);
+      L.push(`local ${rkThreshVar}=${n.bBxor}(${rkOffset ^ (a)},${a})`);
     } else if (rkVariant === 2) {
-      const shift = Math.floor(rng() * 3) + 1;
-      L.push(`local ${rkThreshVar}=${RK_OFFSET >> shift}*${1 << shift}`);
+      L.push(`local ${rkThreshVar}=${rkOffset}`);
     } else if (rkVariant === 3) {
-      const rndMul = 1 + Math.floor(rng() * 100);
-      L.push(`local ${rkThreshVar}=${n.bBand}(${RK_OFFSET + rndMul * 0x200},${0x1FF})`);
+      L.push(`local ${rkThreshVar}=${rkOffset}`);
     } else if (rkVariant === 4) {
-      const m = [2, 4, 8, 16, 32, 64][Math.floor(rng() * 6)];
-      L.push(`local ${rkThreshVar}=${RK_OFFSET / m}*${m}`);
+      L.push(`local ${rkThreshVar}=${rkOffset}`);
     } else {
-      L.push(`local ${rkThreshVar}=${n.bBand}(${RK_OFFSET | (Math.floor(rng() * 256) << 16)},0xFFFF)`);
+      L.push(`local ${rkThreshVar}=${n.bBand}(${rkOffset | (Math.floor(rng() * 128) << 16)},0xFFFF)`);
     }
     L.push(`local ${rkSubVar}=${rkThreshVar}-1`);
-    L.push(`local function ${n.RK}(x) if x>=${rkThreshVar} then return ${n.K}[x-${rkSubVar}] else return ${n.R}[x+1] end end`);
+    // v2 computed-index K access (Phase 1.1 / R-2): real entry j (0-based)
+    // lives at bxor(j, eff)+1 with eff = S % #K (S odd artifact salt, so
+    // eff != 0 for #K>=2). No literal index addresses a real constant.
+    L.push(`local function ${n.RK}(x) if x>=${rkThreshVar} then return ${n.K}[${n.bBxor}((x-${rkSubVar})-1,${ctx.constSalt}%#${n.K})+1] else return ${n.R}[x+1] end end`);
   } else {
-    L.push(`local function ${n.RK}(x) if x>=${RK_OFFSET} then return ${n.K}[x-${RK_OFFSET - 1}] else return ${n.R}[x+1] end end`);
+    L.push(`local function ${n.RK}(x) if x>=${ctx.rkOffset} then return ${n.K}[x-${ctx.rkOffset - 1}] else return ${n.R}[x+1] end end`);
   }
 
   const bodies = buildHandlerBodies(n, ctx, ctx.usedOps);
 
+  // v2 (Phase 1.1 / R-4e): inline RK() at every call site (not just hot
+  // arithmetic). Each RK call costs a closure invocation per operand on the
+  // hottest path; inlining reduces it to a compare + branch. RK is pure
+  // (table reads only) and its argument is always a plain local, so
+  // duplicating evaluation is semantics-preserving. Measured, not assumed
+  // (see hot-loop benchmark in the 1.1 report).
   if (rkThreshVar) {
-    const hotRawOps: number[] = [
-      RegOp.ADD as number, RegOp.SUB as number, RegOp.MUL as number,
-      RegOp.DIV as number, RegOp.MOD as number, RegOp.POW as number,
-      RegOp.IDIV as number,
-    ];
-    const hotShuffled = new Set(hotRawOps.map(op => ctx.opcodeEncode[op]));
     const rkEsc = n.RK.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const rkRe = new RegExp(rkEsc + '\\(([A-Z])\\)', 'g');
     for (const [sOp, body] of bodies) {
-      if (hotShuffled.has(sOp)) {
-        const inlined = body.replace(rkRe, (_m, v) =>
-          `(${v}>=${rkThreshVar} and ${n.K}[${v}-${rkSubVar}] or ${n.R}[${v}+1])`);
-        if (inlined !== body) bodies.set(sOp, inlined);
-      }
+      void sOp;
+      const inlined = body.replace(rkRe, (_m, v) =>
+        `(${v}>=${rkThreshVar} and ${n.K}[${n.bBxor}((${v}-${rkSubVar})-1,${ctx.constSalt}%#${n.K})+1] or ${n.R}[${v}+1])`);
+      if (inlined !== body) bodies.set(sOp, inlined);
     }
   }
 
   if (ctx.debugTrace) {
+    // Keys follow ctx.opcodeEncode — the same sparse wire map dispatch
+    // decodes — so trace output stays exact for every level where shuffle
+    // is on. The debug LEVEL itself (doShuffle=false) is the documented
+    // plaintext bypass: identity map, matching the rest of debug output.
     const entries = REG_OP_NAMES.map((name, realOp) => {
       const shuffled = ctx.opcodeEncode[realOp];
       return `[${shuffled}]="${name}"`;
@@ -1568,13 +2002,18 @@ function buildVMRuntime(ctx: BuildCtx, assignStyle: boolean = false): string {
       L.push(`local ${opqVar}=${mbaV1}+${mbaV2}==0xFFFFFFFF`);
     }
 
-    L.push(`if not ${opqVar} then ${n.R}={};${n.code}={};${n.ip}=#${n.code}+1 end`);
+    L.push(`if not ${opqVar} then ${n.R}={};${n.code}={};${n.ip}=#${n.code}+1;${n.kk}=#${n.poff}+1 end`);
   }
   const preWhileIdx = L.length;
-  L.push(`while ${n.ip}<=#${n.code} do`);
+  L.push(`while ${n.kk}<=#${n.poff} and ${n.ip}<=#${n.code} do`);
 
+  // v2 packed wire: code[ip] is a header word H = shuffledOp*16+argc, not a
+  // bare opcode. Decode H, derive op=floor(H/16); s1..s3 always read (nil-
+  // safe spill); per-op remap (baked in bodies) selects valid slots. Advance
+  // is unit-based: kk+1 with ip from the offset table P (variable stride).
   const useRot = ctx.rotSeed > 0;
   const opVar = randomName(2);
+  const hVar = randomName(2);
 
   if (doMut) {
 
@@ -1584,10 +2023,11 @@ function buildVMRuntime(ctx: BuildCtx, assignStyle: boolean = false): string {
       const rkVar = randomName(3);
 
       L.push(`local ${rkVar}=${n.bBand}(${ctx.rotSeed}+${n.ip}*${ctx.rotStep}+${n.ip}*${n.ip}*${ctx.rotStep2},0xFF)`);
-      L.push(`local ${opVar}=${n.bBxor}(${n.code}[${n.ip}],${rkVar},${mkVar})`);
+      L.push(`local ${hVar}=${n.bBxor}(${n.code}[${n.ip}],${rkVar},${mkVar})`);
     } else {
-      L.push(`local ${opVar}=${n.bBxor}(${n.code}[${n.ip}],${mkVar})`);
+      L.push(`local ${hVar}=${n.bBxor}(${n.code}[${n.ip}],${mkVar})`);
     }
+    L.push(`local ${opVar}=${n.bMfloor}(${hVar}/16)`);
 
     L.push(`local ${n.s1}=${n.code}[${n.ip}+1]`);
     L.push(`local ${n.s2}=${n.code}[${n.ip}+2]`);
@@ -1595,25 +2035,26 @@ function buildVMRuntime(ctx: BuildCtx, assignStyle: boolean = false): string {
 
     const nkVar = randomName(2);
     const xkVar = randomName(2);
-    L.push(`local ${nkVar}=${n.bBand}(${mkVar}*${mutMul}+${opVar}+${mutStep},0xFF)`);
+    L.push(`local ${nkVar}=${n.bBand}(${mkVar}*${mutMul}+${hVar}+${mutStep},0xFF)`);
     L.push(`local ${xkVar}=${n.bBxor}(${mkVar},${nkVar})`);
     L.push(`${n.code}[${n.ip}]=${n.bBxor}(${n.code}[${n.ip}],${xkVar})`);
     L.push(`${mtVar}[${n.ip}]=${nkVar}`);
+    L.push(`${n.kk}=${n.kk}+1;${n.ip}=${n.poff}[${n.kk}] or (#${n.code}+1)`);
   } else {
 
     if (useRot) {
       const rkVar = randomName(3);
       L.push(`local ${rkVar}=${n.bBand}(${ctx.rotSeed}+${n.ip}*${ctx.rotStep}+${n.ip}*${n.ip}*${ctx.rotStep2},0xFF)`);
-      L.push(`local ${opVar}=${n.bBxor}(${n.code}[${n.ip}],${rkVar})`);
+      L.push(`local ${hVar}=${n.bBxor}(${n.code}[${n.ip}],${rkVar})`);
     } else {
-      L.push(`local ${opVar}=${n.code}[${n.ip}]`);
+      L.push(`local ${hVar}=${n.code}[${n.ip}]`);
     }
+    L.push(`local ${opVar}=${n.bMfloor}(${hVar}/16)`);
     L.push(`local ${n.s1}=${n.code}[${n.ip}+1]`);
     L.push(`local ${n.s2}=${n.code}[${n.ip}+2]`);
     L.push(`local ${n.s3}=${n.code}[${n.ip}+3]`);
+    L.push(`${n.kk}=${n.kk}+1;${n.ip}=${n.poff}[${n.kk}] or (#${n.code}+1)`);
   }
-
-  L.push(`${n.ip}=${n.ip}+4`);
 
   if (doMut) {
     L.push(`if ${n.ip}%${60000 + Math.floor(rng() * 40001)}<4 and ${nTwVm} then ${nTwVm}() end`);
@@ -1625,16 +2066,19 @@ function buildVMRuntime(ctx: BuildCtx, assignStyle: boolean = false): string {
     const secCheckVariant = Math.floor(rng() * 3);
 
     if (secCheckVariant === 0 || secCheckVariant === 1) {
-
-      L.push(`if ${n.ip}%${secInterval * 4}<4 then local ${secVar}=${n.bPcall}(function() return ${n.env}["game"] end);if ${secVar} and ${n.bType}(${n.env}["game"])~="userdata" then ${n.R}=${n.bTcreate}(0);${n.ip}=#${n.code}+1 end end`);
+      // Warmup gate (kk>128): h%interval<4 is true for the first few words
+      // (1%N==1), so without this the check fires on instruction ~1 and kills
+      // every non-Roblox host 2/3 of builds — a clean-host false positive.
+      // Periodic intent preserved: long-running programs still checked.
+      L.push(`if ${n.kk}>128 and ${n.ip}%${secInterval * 4}<4 then local ${secVar}=${n.bPcall}(function() return ${n.env}["game"] end);if ${secVar} and ${n.bType}(${n.env}["game"])~="userdata" then ${n.R}=${n.bTcreate}(0);${n.ip}=#${n.code}+1;${n.kk}=#${n.poff}+1 end end`);
     } else {
 
-      L.push(`if ${n.ip}%${secInterval * 4}<4 then local ${secVar},_sv=${n.bPcall}(function() return ${n.env}["game"]["Workspace"] end);if not ${secVar} then ${n.R}=${n.bTcreate}(0);${n.ip}=#${n.code}+1 end end`);
+      L.push(`if ${n.kk}>128 and ${n.ip}%${secInterval * 4}<4 then local ${secVar},_sv=${n.bPcall}(function() return ${n.env}["game"]["Workspace"] end);if not ${secVar} then ${n.R}=${n.bTcreate}(0);${n.ip}=#${n.code}+1;${n.kk}=#${n.poff}+1 end end`);
     }
   }
 
   if (ctx.debugTrace) {
-    L.push(`print("[VM] ip="..(${n.ip}-4).." "..((_opNames and _opNames[${opVar}]) or "OP"..${opVar}).." s1="..tostring(${n.s1}).." s2="..tostring(${n.s2}).." s3="..tostring(${n.s3}))`);
+    L.push(`print("[VM] k="..(${n.kk}-1).." "..((_opNames and _opNames[${opVar}]) or "OP"..${opVar}).." s1="..tostring(${n.s1}).." s2="..tostring(${n.s2}).." s3="..tostring(${n.s3}))`);
   }
 
   const sortedOps = Array.from(bodies.keys()).sort((a, b) => a - b);
@@ -1645,182 +2089,52 @@ function buildVMRuntime(ctx: BuildCtx, assignStyle: boolean = false): string {
 
   const dv = ctx.dispatchVariant;
 
-  if (dv === 0) {
-
-    let isFirst = true;
-    for (const sOp of validOps) {
-      const body = bodies.get(sOp)!;
-      const prefix = isFirst ? 'if' : 'elseif';
-      L.push(`${prefix} ${opVar}==${sOp} then ${body}`);
-      isFirst = false;
-    }
-    if (!isFirst) L.push(`end`);
-
-  } else if (dv === 1) {
-
-    const mask = ctx.dispatchMask;
-    const mVar = randomName(3);
-    L.push(`local ${mVar}=${n.bBxor}(${opVar},${mask})`);
-
-    const shuffled = [...validOps];
-    for (let i = shuffled.length - 1; i > 0; i--) {
+  // v2 closure-table dispatch (Phase 1.1 / R-4): no if/elseif opcode chains
+  // anywhere. Handlers are closures in a table; each returns nil normally,
+  // or a packed result (TAILCALL/RETURN/FUSED_*_RET) that the dispatcher
+  // unpacks into run()'s return values. `_dh`/`_dr` avoid body locals.
+  const wrapBody = (body: string): string => `function() ${body} end`;
+  const shuffledEntries = (): Array<[number, string]> => {
+    const ordered = [...validOps];
+    for (let i = ordered.length - 1; i > 0; i--) {
       const j = Math.floor(rng() * (i + 1));
-      [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+      [ordered[i], ordered[j]] = [ordered[j], ordered[i]];
     }
-    let isFirst = true;
-    for (const sOp of shuffled) {
-      const body = bodies.get(sOp)!;
-      const maskedOp = sOp ^ mask;
-      const prefix = isFirst ? 'if' : 'elseif';
-      L.push(`${prefix} ${mVar}==${maskedOp} then ${body}`);
-      isFirst = false;
-    }
-    if (!isFirst) L.push(`end`);
+    return ordered.map(sOp => [sOp, bodies.get(sOp)!] as [number, string]);
+  };
+  const dispProto = `local _dr=_dh();if _dr~=nil then return ${n.tUnpack}(_dr,1,_dr.n) end`;
+
+  if (dv === 0 || dv === 1) {
+
+    // Shape A: direct table (dv 0 = debug with real op numbers).
+    const entries = shuffledEntries().map(([sOp, body]) => `[${sOp}]=${wrapBody(body)}`);
+    L.push(`local ${n.handlers}={${entries.join(",")}};`);
+    L.push(`local _dh=${n.handlers}[${opVar}];if _dh then ${dispProto} end`);
 
   } else if (dv === 2) {
 
-    const emitBinaryTree = (ops: number[], depth: number) => {
-      if (ops.length === 0) return;
-      if (ops.length <= 3 || depth >= 4) {
-
-        let isF = true;
-        for (const sOp of ops) {
-          const body = bodies.get(sOp)!;
-          const pre = isF ? 'if' : 'elseif';
-          L.push(`${pre} ${opVar}==${sOp} then ${body}`);
-          isF = false;
-        }
-        if (!isF) L.push(`end`);
-        return;
-      }
-
-      const splitIdx = Math.max(1, Math.min(ops.length - 1,
-        Math.floor(ops.length * (0.3 + rng() * 0.4))));
-      const left = ops.slice(0, splitIdx);
-      const right = ops.slice(splitIdx);
-      const pivot = right[0];
-      L.push(`if ${opVar}<${pivot} then`);
-      emitBinaryTree(left, depth + 1);
-      L.push(`else`);
-      emitBinaryTree(right, depth + 1);
-      L.push(`end`);
-    };
-    emitBinaryTree(validOps, 0);
+    // Shape B: masked keys (lookup key differs from stored key).
+    const mask = ctx.dispatchMask;
+    const entries = shuffledEntries().map(([sOp, body]) => `[${sOp ^ mask}]=${wrapBody(body)}`);
+    L.push(`local ${n.handlers}={${entries.join(",")}};`);
+    L.push(`local _dh=${n.handlers}[${n.bBxor}(${opVar},${mask})];if _dh then ${dispProto} end`);
 
   } else if (dv === 3) {
 
-    const nGroups = 3 + Math.floor(rng() * 3);
-    const mask = ctx.dispatchMask;
-
-    const groups: Map<number, number[]> = new Map();
-    for (const sOp of validOps) {
-      const g = (sOp ^ mask) % nGroups;
-      if (!groups.has(g)) groups.set(g, []);
-      groups.get(g)!.push(sOp);
+    // Shape C: split tables with branchless probe (parity of shuffled op
+    // decides the home table; `or` short-circuits to a single lookup).
+    const tB = randomName(3);
+    const inA: Array<[number, string]> = [];
+    const inB: Array<[number, string]> = [];
+    for (const [sOp, body] of shuffledEntries()) {
+      ((sOp & 1) === 0 ? inA : inB).push([sOp, body]);
     }
-    const gVar = randomName(3);
-    L.push(`local ${gVar}=${n.bBxor}(${opVar},${mask})%${nGroups}`);
+    const mkTbl = (es: Array<[number, string]>): string =>
+      `{${es.map(([sOp, body]) => `[${sOp}]=${wrapBody(body)}`).join(",")}}`;
+    L.push(`local ${n.handlers}=${mkTbl(inA)};`);
+    L.push(`local ${tB}=${mkTbl(inB)};`);
+    L.push(`local _dh=${n.handlers}[${opVar}] or ${tB}[${opVar}];if _dh then ${dispProto} end`);
 
-    const gKeys = [...groups.keys()];
-    for (let i = gKeys.length - 1; i > 0; i--) {
-      const j = Math.floor(rng() * (i + 1));
-      [gKeys[i], gKeys[j]] = [gKeys[j], gKeys[i]];
-    }
-    let isFirstG = true;
-    for (const gIdx of gKeys) {
-      const gOps = groups.get(gIdx)!;
-      const prefG = isFirstG ? 'if' : 'elseif';
-      L.push(`${prefG} ${gVar}==${gIdx} then`);
-
-      const innerOps = [...gOps];
-      for (let i = innerOps.length - 1; i > 0; i--) {
-        const j = Math.floor(rng() * (i + 1));
-        [innerOps[i], innerOps[j]] = [innerOps[j], innerOps[i]];
-      }
-      let isF = true;
-      for (const sOp of innerOps) {
-        const body = bodies.get(sOp)!;
-        const pre = isF ? 'if' : 'elseif';
-        L.push(`${pre} ${opVar}==${sOp} then ${body}`);
-        isF = false;
-      }
-      if (!isF) L.push(`end`);
-      isFirstG = false;
-    }
-    if (!isFirstG) L.push(`end`);
-
-  } else if (dv === 4 || dv === 5) {
-
-    const hTbl = n.handlers;
-    const retOp = ctx.opcodeEncode[RegOp.RETURN as number];
-    const tcOp = ctx.opcodeEncode[RegOp.TAILCALL as number];
-
-    const mandatoryFast = [
-      RegOp.JMP as number, RegOp.FORLOOP as number, RegOp.CALL as number,
-      RegOp.MOVE as number, RegOp.FORPREP as number,
-    ].map(op => ctx.opcodeEncode[op]);
-
-    const optCandidates = [
-      RegOp.LOADK as number, RegOp.GETGLOBAL as number,
-      RegOp.GETTABLE as number, RegOp.LOADBOOL as number,
-      RegOp.SETTABLE as number, RegOp.LOADNIL as number,
-    ];
-    const shuffledCands = [...optCandidates];
-    for (let i = shuffledCands.length - 1; i > 0; i--) {
-      const j = Math.floor(rng() * (i + 1));
-      [shuffledCands[i], shuffledCands[j]] = [shuffledCands[j], shuffledCands[i]];
-    }
-    const nFast = 2 + Math.floor(rng() * 2);
-    const fastSet = new Set([
-      ...mandatoryFast,
-      ...shuffledCands.slice(0, nFast).map(op => ctx.opcodeEncode[op]),
-    ]);
-
-    const inlineOps = new Set([retOp, tcOp, ...fastSet]);
-    const tableOps = validOps.filter(sOp => !inlineOps.has(sOp));
-
-    for (let i = tableOps.length - 1; i > 0; i--) {
-      const j = Math.floor(rng() * (i + 1));
-      [tableOps[i], tableOps[j]] = [tableOps[j], tableOps[i]];
-    }
-
-    const tblMask = dv === 5 ? ctx.dispatchMask : 0;
-
-    void tblMask;
-
-    const fastArr = [...fastSet];
-    for (let i = fastArr.length - 1; i > 0; i--) {
-      const j = Math.floor(rng() * (i + 1));
-      [fastArr[i], fastArr[j]] = [fastArr[j], fastArr[i]];
-    }
-
-    let isFirst = true;
-    for (const fOp of fastArr) {
-      const body = bodies.get(fOp);
-      if (!body || body.trim() === '') continue;
-      const prefix = isFirst ? 'if' : 'elseif';
-      L.push(`${prefix} ${opVar}==${fOp} then ${body}`);
-      isFirst = false;
-    }
-
-    const hVar = randomName(2);
-    void hVar;
-
-    for (const sOp of tableOps) {
-      const body = bodies.get(sOp)!;
-      if (body.trim() === '') continue;
-      const cmpVal = sOp ^ tblMask;
-      const cmpExpr = tblMask
-        ? `${n.bBxor}(${opVar},${tblMask})==${cmpVal}`
-        : `${opVar}==${sOp}`;
-      const prefix = isFirst ? 'if' : 'elseif';
-      L.push(`${prefix} ${cmpExpr} then ${body}`);
-      isFirst = false;
-    }
-
-    L.push(`elseif ${opVar}==${retOp} then ${bodies.get(retOp) || ''}`);
-    L.push(`elseif ${opVar}==${tcOp} then ${bodies.get(tcOp) || ''}`);
-    L.push(`end`);
   }
 
   L.push(`end`);
@@ -2487,7 +2801,7 @@ function wrapCustomCipher(source: string, layerOpts?: CipherLayerOpts): string {
   const bytes = useCompression ? [1, ...compBytes] : [0, ...rawBytes];
   const compRatio = ((1 - bytes.length / rawBytes.length) * 100).toFixed(1);
   const expectedDecompLen = rawBytes.length;
-  console.log(`[cipher] LZSS+RLE: ${rawBytes.length} → ${bytes.length} (${compRatio}% ${useCompression ? 'compressed' : 'raw-passthrough'})`);
+  if (_tel()) console.log(`[cipher] LZSS+RLE: ${rawBytes.length} → ${bytes.length} (${compRatio}% ${useCompression ? 'compressed' : 'raw-passthrough'})`);
 
   const { sbox: cSbox, inverse: cInv } = generateSBox();
 
@@ -3412,9 +3726,33 @@ function serializeBytecodeAsBinary(chunk: RegBytecodeChunk, ctx: BuildCtx): Uint
 export function generateRegVM(chunk: RegBytecodeChunk, options: RegVMGenOptions = {}): string {
   const level = options.level ?? "normal";
   // `??` (not `||`) so an explicit seed of 0 is honored as deterministic.
-  const seed = options.polymorphicSeed ?? generateDynamicSeed(chunk);
-  seedRandom(seed);
+  // Phase 1.2(b): string seeds take the 128-bit path; numeric seeds keep
+  // the legacy stream bit-for-bit.
+  const seed: number | string = options.polymorphicSeed ?? generateDynamicSeed(chunk);
+  if (typeof seed === "string") seedRandom128(seed); else seedRandom(seed);
   resetNames();
+
+  // Phase 1.2(g): per-build RK_OFFSET. Threaded from regCompile/chunk;
+  // falls back to the domain default RK_OFFSET (2049) when unset.
+  const rkOffset = options.rkOffset ?? chunk.rkOffset ?? RK_OFFSET;
+  chunk.rkOffset = rkOffset;
+  // Hard generation-time error if any K length aliases into register space.
+  const _maxK = (() => {
+    let m = chunk.K.length;
+    const walk = (c: RegBytecodeChunk) => { m = Math.max(m, c.K.length); for (const p of c.protos || []) walk(p); };
+    walk(chunk);
+    return m;
+  })();
+  if (_maxK >= rkOffset) {
+    throw new Error(`[RegVM] K length ${_maxK} >= rkOffset ${rkOffset}; widen the offset domain`);
+  }
+
+  // Operational footgun guard: these generation-time flags silently weaken
+  // output (skipped guards, plaintext envelope). They are never consulted
+  // at runtime by generated code; warn loudly when active.
+  if (process.env.NO_SEC === '1' || process.env.NO_CIPHER === '1') {
+    console.warn("[RegVM] WARNING: weakening flags set (NO_SEC/NO_CIPHER) — generated output has reduced protections; unset for production builds.");
+  }
 
   const doShuffle = level !== "debug" && featureEnabled(options, "opcodeShuffle", true);
   const encodeStrings = level !== "debug" && featureEnabled(options, "stringEncoding", true);
@@ -3459,11 +3797,20 @@ export function generateRegVM(chunk: RegBytecodeChunk, options: RegVMGenOptions 
   ];
 
   const isObf = level !== "debug";
-  const dispatchVariant = isObf ? (1 + Math.floor(rng() * 5)) : 0;
+  // v2 closure-table dispatch shapes: 1 = direct table, 2 = masked keys,
+  // 3 = split tables with branchless probe. (dv 0 = debug, direct table
+  // with real op numbers.) Replaces the legacy if/elseif-chain variants.
+  const dispatchVariant = isObf ? (1 + Math.floor(rng() * 3)) : 0;
   const dispatchMask = isObf ? (1 + Math.floor(rng() * 254)) : 0;
   const rotSeed = isObf ? (1 + Math.floor(rng() * 254)) : 0;
   const rotStep = isObf ? (1 + Math.floor(rng() * 254)) : 0;
   const rotStep2 = isObf ? (1 + Math.floor(rng() * 254)) : 0;
+  // v2 packed-wire jump bias: blinds instruction deltas on the wire.
+  // Uniform across levels (bodies always use k-form); seeded => deterministic.
+  const jumpBias = 128 + Math.floor(rng() * 896);
+  // v2 computed-index K salt: artifact-wide odd seed; effective per-table
+  // salt is S % #K (nonzero for #K>=2 since S is odd). Seeded => deterministic.
+  const constSalt = 1 + 2 * Math.floor(rng() * 32768);
 
   const ctx: BuildCtx = {
     level, seed, names, opcodeEncode: encode, opcodeDecode: decode,
@@ -3473,8 +3820,9 @@ export function generateRegVM(chunk: RegBytecodeChunk, options: RegVMGenOptions 
     checkKeyA, checkKeyB, checkStepA, checkStepB,
     spiralPrime, spiralOffset, layerVariants,
     dispatchVariant, dispatchMask, rotSeed, rotStep, rotStep2,
-    argPerm: generateArgPerms(isObf),
-  };
+    argPerm: generateArgPerms(isObf), jumpBias, constSalt,
+    leadSalt: isObf ? REG_LEAD_SALT : new Map(),
+  rkOffset,  };
 
   const doFusion = featureEnabled(options, "opcodeFusion", level !== "debug");
   if (doFusion) {
@@ -3485,6 +3833,7 @@ export function generateRegVM(chunk: RegBytecodeChunk, options: RegVMGenOptions 
       RegOp.FUSED_LOADKK as number, RegOp.FUSED_MOVE_MOVE as number,
       RegOp.FUSED_SELF_CALL as number, RegOp.FUSED_GGET_CALL as number,
       RegOp.FUSED_LOADK_RET as number, RegOp.FUSED_MOVE_RET as number,
+      RegOp.FUSED_ADD_MOVE as number, RegOp.FUSED_MUL_ADD as number,
     ];
 
     for (let si = allFusionOps.length - 1; si > 0; si--) {
@@ -3496,7 +3845,7 @@ export function generateRegVM(chunk: RegBytecodeChunk, options: RegVMGenOptions 
     const fusionRate = 0.6 + rng() * 0.25;
     const fusionCount = applyFusionPass(chunk, enabledSet, fusionRate);
     if (fusionCount > 0) {
-      console.log(`[RegVM] Fused ${fusionCount} instruction sequences (${nEnabled}/12 patterns, ${Math.round(fusionRate*100)}% rate)`);
+      if (_tel()) console.log(`[RegVM] Fused ${fusionCount} instruction sequences (${nEnabled}/12 patterns, ${Math.round(fusionRate*100)}% rate)`);
     }
   }
 
@@ -3504,7 +3853,7 @@ export function generateRegVM(chunk: RegBytecodeChunk, options: RegVMGenOptions 
   if (doCFF) {
     const cffBlocks = flattenControlFlow(chunk);
     if (cffBlocks > 0) {
-      console.log(`[RegVM] CFF: ${cffBlocks} blocks shuffled (main + protos)`);
+      if (_tel()) console.log(`[RegVM] CFF: ${cffBlocks} blocks shuffled (main + protos)`);
     }
   }
 
@@ -3514,21 +3863,23 @@ export function generateRegVM(chunk: RegBytecodeChunk, options: RegVMGenOptions 
     used.add(RegOp.NOP as number);
     used.add(RegOp.EXTRAARG as number);
     ctx.usedOps = used;
-    console.log(`[RegVM] Dead handler elimination: ${used.size}/${handlerRegistry.size} opcodes used`);
+    if (_tel()) console.log(`[RegVM] Dead handler elimination: ${used.size}/${handlerRegistry.size} opcodes used`);
   }
 
-  const dvNames = ["flat","xor-masked","binary-tree","grouped","table-dispatch","table-xor"];
-  if (level !== "debug") console.log(`[RegVM] Dispatch: variant ${dispatchVariant} (${dvNames[dispatchVariant] || "unknown"})`);
+  const dvNames = ["closure-direct(debug)","closure-direct","closure-masked","closure-split"];
+  if (level !== "debug" && _tel()) console.log(`[RegVM] Dispatch: variant ${dispatchVariant} (${dvNames[dispatchVariant] || "unknown"})`);
 
-  const mappedCode = doShuffle ? mapRegBytecode(chunk.code, encode, ctx.argPerm) : chunk.code;
+  const packedMain = packRegStream(chunk.code, ctx);
 
   const dataK = serializeConstants(chunk.K, ctx);
-  const dataC = serializeRegCode(mappedCode, ctx);
+  const dataC = `{${packedMain.stream.join(",")}}`;
+  const dataW = `{${packedMain.P.join(",")}}`;
   const dataP = serializeRegProtos(chunk.protos, ctx);
 
   const dK = level === "debug" ? "_dK" : randomName(3);
   const dC = level === "debug" ? "_dC" : randomName(3);
   const dP = level === "debug" ? "_dP" : randomName(3);
+  const dW = level === "debug" ? "_dW" : randomName(3);
 
   const nP = chunk.nParams ?? 0;
   const mR = chunk.maxRegs ?? 0;
@@ -3547,8 +3898,9 @@ export function generateRegVM(chunk: RegBytecodeChunk, options: RegVMGenOptions 
     parts.push(vmRuntime);
     parts.push(`local ${dK}=${dataK}`);
     parts.push(`local ${dC}=${dataC}`);
+    parts.push(`local ${dW}=${dataW}`);
     parts.push(`local ${dP}=${dataP}`);
-    parts.push(`return ${names.run}(${dK},${dC},${dP},{},${nP},${mR},${isVA},${names.env})`);
+    parts.push(`return ${names.run}(${dK},${dC},${dW},${dP},{},${nP},${mR},${isVA},${names.env})`);
     output = parts.join("\n");
   } else {
 
@@ -3575,9 +3927,10 @@ export function generateRegVM(chunk: RegBytecodeChunk, options: RegVMGenOptions 
     const vmCode = buildVMRuntime(ctx, true);
     allFragments.push({ code: vmCode, layer: Math.floor(rng() * 3) });
 
-    forwardDecls.push(dK, dC, dP);
+    forwardDecls.push(dK, dC, dW, dP);
     allFragments.push({ code: `${dK}=${dataK}`, layer: Math.floor(rng() * 3) });
     allFragments.push({ code: `${dC}=${dataC}`, layer: Math.floor(rng() * 3) });
+    allFragments.push({ code: `${dW}=${dataW}`, layer: Math.floor(rng() * 3) });
     allFragments.push({ code: `${dP}=${dataP}`, layer: Math.floor(rng() * 3) });
 
     let chainCalls = "";
@@ -3736,12 +4089,12 @@ export function generateRegVM(chunk: RegBytecodeChunk, options: RegVMGenOptions 
           ['bxor', names.bBxor], ['band', names.bBand], ['type', names.bType],
           ['select', names.bSelect], ['tpack', names.tPack], ['tunpack', names.tUnpack],
           ['mfloor', names.bMfloor], ['setmeta', names.bSetmeta], ['tostring', names.bTostring],
-          ['dK', dK], ['dC', dC], ['dP', dP],
+          ['dK', dK], ['dC', dC], ['dW', dW], ['dP', dP],
         ];
         const wParts = chkVars.map(([l,v]) => `"${l}="..tostring(${v})`);
         parts.push(`warn("[ENV_CHECK] "..${wParts.join('.." "..') })`);
       }
-      parts.push(`return ${names.run}(${dK},${dC},${dP},{},${nP},${mR},${isVA},${names.env})`);
+      parts.push(`return ${names.run}(${dK},${dC},${dW},${dP},{},${nP},${mR},${isVA},${names.env})`);
     } else {
 
       for (const frag of sorted) {
@@ -3754,27 +4107,41 @@ export function generateRegVM(chunk: RegBytecodeChunk, options: RegVMGenOptions 
           ['bxor', names.bBxor], ['band', names.bBand], ['type', names.bType],
           ['select', names.bSelect], ['tpack', names.tPack], ['tunpack', names.tUnpack],
           ['mfloor', names.bMfloor], ['setmeta', names.bSetmeta], ['tostring', names.bTostring],
-          ['dK', dK], ['dC', dC], ['dP', dP],
+          ['dK', dK], ['dC', dC], ['dW', dW], ['dP', dP],
         ];
         const wParts = chkVars.map(([l,v]) => `"${l}="..tostring(${v})`);
         parts.push(`warn("[ENV_CHECK] "..${wParts.join('.." "..') })`);
       }
-      parts.push(`return ${names.run}(${dK},${dC},${dP},{},${nP},${mR},${isVA},${names.env})`);
+      parts.push(`return ${names.run}(${dK},${dC},${dW},${dP},{},${nP},${mR},${isVA},${names.env})`);
     }
 
     output = parts.join("\n");
   }
 
+  // DUMP_RAW: debug-only escape hatch. Writes the PRE-CIPHER VM runtime
+  // (generated code with the user's program embedded as encoded bytecode —
+  // still obfuscated, but WITHOUT the blob-encryption envelope) to disk, so
+  // it must only be enabled in a secure debug environment, never in
+  // production or on shared machines. Hardening, all enforced and tested:
+  //  (1) location: OS temp dir, never CWD (no repo/worktree pollution);
+  //  (2) overwrite protection: unique per-process name + exclusive 'wx'
+  //      creation — never truncates an existing file;
+  //  (3) cleanup: files are caller-owned debug artifacts; the path is always
+  //      logged so the operator can inspect and delete it (tests assert this
+  //      contract and remove their own dumps).
   if (process.env.DUMP_RAW === '1' && level !== 'debug') {
-    _dumpWrite('debug-vm-raw.lua', output, 'utf-8');
-    console.log(`[RegVM] DUMP_RAW: saved ${output.length} chars to debug-vm-raw.lua`);
+    _dumpCounter += 1;
+    const dumpName = `quantum-vm-raw-p${process.pid}-${Date.now()}-${_dumpCounter}.lua`;
+    const dumpPath = _dumpJoin(_dumpTmpdir(), dumpName);
+    _dumpWrite(dumpPath, output, { encoding: 'utf-8', flag: 'wx' });
+    console.log(`[RegVM] DUMP_RAW: saved ${output.length} chars to ${dumpPath} (pre-cipher debug artifact — inspect and delete; see source comment)`);
   }
 
   if (level !== "debug" && process.env.NO_CIPHER !== '1') {
     const vmRawLen = Buffer.byteLength(output, 'utf-8');
-    console.log(`[RegVM] Blob: encrypting VM runtime (${vmRawLen} bytes)...`);
+    if (_tel()) console.log(`[RegVM] Blob: encrypting VM runtime (${vmRawLen} bytes)...`);
     const { blob: vmBlob, xorKey, invSbox, checksum, origLen: vmOrigLen } = encryptAndEncode(output, rng);
-    console.log(`[RegVM] Blob: VM blob = ${vmBlob.length} chars (SBox+CBC+Base85), key=${xorKey.length}B, checksum=${checksum}`);
+    if (_tel()) console.log(`[RegVM] Blob: VM blob = ${vmBlob.length} chars (SBox+CBC+Base85), key=${xorKey.length}B, checksum=${checksum}`);
 
     output = generateBootstrap({
       vmBlob,
@@ -3782,25 +4149,25 @@ export function generateRegVM(chunk: RegBytecodeChunk, options: RegVMGenOptions 
       xorKey,
       invSbox,
       checksum,
-      chunkName: "Clyde",
+      chunkName: "Quantum",
       rng,
       // Environment-specific anti-tamper is strictly opt-in.
       // Generic output stays generic; only target === "roblox" emits it.
       robloxAntiTamper: options.target === "roblox",
     });
-    console.log(`[RegVM] Blob: final output = ${output.length} chars`);
+    if (_tel()) console.log(`[RegVM] Blob: final output = ${output.length} chars`);
   }
 
   if (!options._noWatermark) {
     const art = [
-      `_________ .__            .___       __________                __                 __  .__                ____   ____________  `,
-      `\\_   ___ \\|  | ___.__. __| _/____   \\______   \\_______  _____/  |_  ____   _____/  |_|__| ____   ____   \\   \\ /   /\\_____  \\ `,
-      `/    \\  \\/|  |<   |  |/ __ |/ __ \\   |     ___/\\_  __ \\/  _ \\   __\\/ __ \\_/ ___\\   __\\  |/  _ \\ /    \\   \\   Y   /  /  ____/ `,
-      `\\     \\___|  |_\\___  / /_/ \\  ___/   |    |     |  | \\(  <_> )  | \\  ___/\\  \\___|  | |  (  <_> )   |  \\   \\     /  /       \\ `,
-      ` \\______  /____/ ____\\____ |\\___  >  |____|     |__|   \\____/|__|  \\___  >\\___  >__| |__|\\____/|___|  /    \\___/   \\_______ \\`,
+      `__________                __                 __  .__                ____   ____________  `,
+      `\\______   \\_______  _____/  |_  ____   _____/  |_|__| ____   ____   \\   \\ /   /\\_____  \\ `,
+      ` |     ___/\\_  __ \\/  _ \\   __\\/ __ \\_/ ___\\   __\\  |/  _ \\ /    \\   \\   Y   /  /  ____/ `,
+      ` |    |     |  | \\(  <_> )  | \\  ___/\\  \\___|  | |  (  <_> )   |  \\   \\     /  /       \\ `,
+      ` |____|     |__|   \\____/|__|  \\___  >\\___  >__| |__|\\____/|___|  /    \\___/   \\_______ \\`,
       `        \\/     \\/         \\/    \\/                                     \\/     \\/                    \\/                     \\/`,
       ``,
-      `https://clydeprotectionde.cloud | ClydeProtection Just like VMProtect, but for Lua.`,
+      `https://discord.gg/DvjFNyyjuH | Protected By Quantum Obfuscator`,
     ];
     output = `--[[\n${art.join('\n')}\n]]\n` + output;
   }

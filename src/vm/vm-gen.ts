@@ -1,9 +1,16 @@
 import type { BytecodeChunk, Constant } from "./bytecode.js";
+import { SPARSE_OPCODE_RANGE, STACK_OPCODE_COUNT } from "./bytecode.js";
 import { Lexer } from "../lexer/Lexer.js";
 import { Parser } from "../parser/Parser.js";
 import { compile as compileAST } from "./Compiler.js";
 
 let _rng: () => number = Math.random;
+
+// Routine progress telemetry gate: console.log progress lines in generation
+// paths emit ONLY under QUANTUM_TELEMETRY=1 (library-quiet by default).
+// Warnings, errors, and fallback notices always stay loud — they are
+// operational, not progress.
+function _tel(): boolean { return process.env.QUANTUM_TELEMETRY === '1'; }
 
 function seedRandom(seed: number): void {
   let s = seed | 0;
@@ -12,6 +19,36 @@ function seedRandom(seed: number): void {
     let t = Math.imul(s ^ (s >>> 15), 1 | s);
     t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+// Phase 1.2(b): string-seed path. Two cyrb128-class passes (distinct domain
+// separators) expand any UTF-16 string to 128-bit sfc32 state (closure-held,
+// same call shape as the legacy stream). Claimed space 2^128, below the 71!
+// opcode-permutation bound. Numeric seeds never touch this path.
+function seedRandom128(str: string): void {
+  const half = (dom: number): [number, number] => {
+    let h1 = 0xdeadbeef ^ dom, h2 = 0x41c6ce57 ^ dom;
+    for (let i = 0; i < str.length; i++) {
+      const ch = str.charCodeAt(i);
+      h1 = Math.imul(h1 ^ ch, 2654435761);
+      h2 = Math.imul(h2 ^ ch, 1597334677);
+    }
+    h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+    h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+    return [h1 >>> 0, h2 >>> 0];
+  };
+  const [a0, b0] = half(0);
+  const [c0, d0] = half(0x9e3779b9);
+  let a = a0, b = b0, c = c0, d = d0;
+  _rng = () => {
+    const t = (a + b | 0) + d | 0;
+    d = d + 1 | 0;
+    a = b ^ b >>> 9;
+    b = c + (c << 3) | 0;
+    c = c << 21 | c >>> 11;
+    c = c + t | 0;
+    return (t >>> 0) / 4294967296;
   };
 }
 
@@ -32,32 +69,112 @@ function compileString(luaSource: string): BytecodeChunk {
   return compileAST(ast);
 }
 
+// Phase 1.2(c): test seam — records the wire map every shuffled generation
+// actually used, in draw order (nested builds record inner then outer).
+// Module-local; never emitted into artifacts.
+const _recordedOpcodeMaps: number[][] = [];
+export function takeRecordedOpcodeMaps(): number[][] {
+  return _recordedOpcodeMaps.splice(0);
+}
+
+/**
+ * Sparse per-build opcode map (Phase 1.2(c)).
+ *
+ * Real ops 0..STACK_OPCODE_COUNT-1 map to a uniform random injection over
+ * the sparse wire space 0..SPARSE_OPCODE_RANGE-1 (71 ops => 57 gaps), never
+ * a contiguous 0..70 image. Single-byte VLE for every wire op (v < 128)
+ * keeps the packed code stream length-class uniform; the max-level 0..127
+ * key scan and the split-table probe stay complete. Draw is a full
+ * Fisher-Yates over the range, first `count` entries taken; the guard
+ * throws if count ever exceeds the range ((e) fused additions).
+ *
+ * Debug level (doShuffle=false) is the documented plaintext bypass:
+ * identity map, consistent with all other features being off at debug.
+ */
 function shuffleOpcodes(doShuffle: boolean): { encode: number[]; decode: number[] } {
-  const n = 71;
-  const arr = Array.from({ length: n }, (_, i) => i);
-  if (doShuffle) {
-    for (let i = n - 1; i > 0; i--) {
-      const j = Math.floor(rng() * (i + 1));
-      [arr[i], arr[j]] = [arr[j], arr[i]];
-    }
+  if (STACK_OPCODE_COUNT > SPARSE_OPCODE_RANGE) {
+    throw new Error(`[VMGen] opcode count ${STACK_OPCODE_COUNT} exceeds sparse range ${SPARSE_OPCODE_RANGE} — widen the range before adding ops`);
   }
-  const encode = new Array(n);
-  const decode = new Array(n);
-  for (let i = 0; i < n; i++) {
-    encode[i] = arr[i];
-    decode[arr[i]] = i;
+  const n = STACK_OPCODE_COUNT;
+  const encode = new Array<number>(n);
+  const decode = new Array<number>(SPARSE_OPCODE_RANGE).fill(-1);
+  if (!doShuffle) {
+    for (let i = 0; i < n; i++) { encode[i] = i; decode[i] = i; }
+    return { encode, decode };
   }
+  const arr = Array.from({ length: SPARSE_OPCODE_RANGE }, (_, i) => i);
+  for (let i = SPARSE_OPCODE_RANGE - 1; i > 0; i--) {
+    const j = Math.floor(rng() * (i + 1));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+  for (let i = 0; i < n; i++) { encode[i] = arr[i]; decode[arr[i]] = i; }
+  _recordedOpcodeMaps.push([...encode]);
   return { encode, decode };
 }
 
 const OPCODES_1ARG = new Set([
   4, 5, 6, 7, 8, 30, 31, 32, 33, 34, 35, 37, 38, 40, 41, 42, 43,
-  44, 45, 47, 49, 50, 52, 54, 55, 65, 67
+  44, 45, 47, 49, 50, 52, 54, 55, 65, 67, 74
 ]);
 
-const OPCODES_2ARG = new Set([39, 53, 60, 61, 66]);
+const OPCODES_2ARG = new Set([39, 53, 60, 61, 66, 72, 75]);
 
-const OPCODES_3ARG = new Set([56, 57, 58, 59, 62, 63, 68, 69, 70]);
+const OPCODES_3ARG = new Set([56, 57, 58, 59, 62, 63, 68, 69, 70, 71, 76]);
+
+/**
+ * Phase 1.2(d): stack-vm wire-arity decoys. Selected normal ops carry one
+ * leading decoy word between the op word and their real argument words. The
+ * matching handler consumes the decoy first (baked at generation time), so
+ * every downstream word index shifts and the wire no longer admits a
+ * universal op -> operand-count table. Applied by applyArityDecoysChunk
+ * (after flatten, before contextTransform) whenever generation is
+ * obfuscating (doShuffle); empty at debug level = plaintext bypass.
+ *
+ * Constraints (validated loudly when the pass runs): no jump ops (target
+ * rewriting assumes their arg layout), no terminators, no camouflage ops
+ * (64-66, random arg counts) and not the context op (67).
+ */
+export const STACK_LEAD_DECOY = new Map<number, number>([
+  [7, 1],
+  [8, 1],
+  [25, 1],
+  [26, 1],
+]);
+
+let _stackArityDecoysActive = false;
+
+function baseStackArgc(op: number): number {
+  if (OPCODES_3ARG.has(op)) return 3;
+  if (OPCODES_2ARG.has(op)) return 2;
+  if (OPCODES_1ARG.has(op)) return 1;
+  return 0;
+}
+
+function stackArgc(op: number): number {
+  return _stackArityDecoysActive ? baseStackArgc(op) + (STACK_LEAD_DECOY.get(op) ?? 0) : baseStackArgc(op);
+}
+
+/** Wire arity of an op once arity decoys are applied (test seam). */
+export function stackWireArgc(op: number): number {
+  return baseStackArgc(op) + (STACK_LEAD_DECOY.get(op) ?? 0);
+}
+
+function validateStackLeadDecoy(): void {
+  for (const [op, decoy] of STACK_LEAD_DECOY) {
+    if (!Number.isInteger(decoy) || decoy < 1) {
+      throw new Error(`[StackVM] arity decoy count for op ${op} must be a positive integer`);
+    }
+    if (isJumpOp(op) !== null) {
+      throw new Error(`[StackVM] arity decoys must not target jump op ${op}`);
+    }
+    if (isTerminator(op)) {
+      throw new Error(`[StackVM] arity decoys must not target terminator op ${op}`);
+    }
+    if (op >= 64 && op <= 67) {
+      throw new Error(`[StackVM] arity decoys must not target camouflage/context op ${op}`);
+    }
+  }
+}
 
 // Stage 18: dynamic hot-subset dispatch (hybrid rule). Smallest opcode set
 // covering SELECTION_TARGET of measured dispatches, capped at SELECTION_KMAX
@@ -90,7 +207,7 @@ function countOpcodes(code: number[], hist: Map<number, number>): void {
   while (i < code.length) {
     const op = code[i];
     hist.set(op, (hist.get(op) ?? 0) + 1);
-    i += 1 + (OPCODES_3ARG.has(op) ? 3 : OPCODES_2ARG.has(op) ? 2 : OPCODES_1ARG.has(op) ? 1 : 0);
+    i += 1 + stackArgc(op);
   }
 }
 
@@ -103,7 +220,7 @@ function mapBytecode(code: number[], opcodeEncode: number[]): number[] {
       result[i] = opcodeEncode[op];
     }
     i++;
-    const argCount = OPCODES_3ARG.has(op) ? 3 : OPCODES_2ARG.has(op) ? 2 : OPCODES_1ARG.has(op) ? 1 : 0;
+    const argCount = stackArgc(op);
     i += argCount;
   }
   return result;
@@ -125,7 +242,7 @@ function collectJumpTargets(code: number[]): Set<number> {
       targets.add(code[i]);
       i++;
     } else {
-      const ac = OPCODES_3ARG.has(op) ? 3 : OPCODES_2ARG.has(op) ? 2 : OPCODES_1ARG.has(op) ? 1 : 0;
+      const ac = stackArgc(op);
       i += ac;
     }
   }
@@ -153,7 +270,7 @@ function fuseOpcodes(code: number[]): number[] {
         const b = result[i + 3];
         const arith = result[i + 4];
         const c = result[i + 6];
-        const superOp = arith === 9 ? 57 : arith === 10 ? 58 : arith === 11 ? 59 : arith === 12 ? 68 : arith === 13 ? 69 : arith === 48 ? 70 : arith === 15 ? 63 : -1;
+        const superOp = arith === 9 ? 57 : arith === 10 ? 58 : arith === 11 ? 59 : arith === 12 ? 68 : arith === 13 ? 69 : arith === 14 ? 71 : arith === 48 ? 70 : arith === 15 ? 63 : -1;
         if (superOp !== -1 && canFuse(i, 7, jt) && rng() > 0.25) {
           result[i] = superOp; result[i+1] = a; result[i+2] = b; result[i+3] = c;
           result[i+4] = 0; result[i+5] = 0; result[i+6] = 0;
@@ -178,6 +295,14 @@ function fuseOpcodes(code: number[]): number[] {
           i += 4; continue;
         }
       }
+
+      if (result[i + 2] === 25 && i + 4 < result.length && result[i + 3] === 6) {
+        const c = result[i + 4];
+        if (canFuse(i, 5, jt) && rng() > 0.25) {
+          result[i] = 72; result[i+1] = a; result[i+2] = c; result[i+3] = 0; result[i+4] = 0;
+          i += 5; continue;
+        }
+      }
     }
 
     if (op === 4 && i + 3 < result.length && result[i + 2] === 6) {
@@ -190,7 +315,7 @@ function fuseOpcodes(code: number[]): number[] {
     }
 
     i++;
-    const ac = OPCODES_3ARG.has(op) ? 3 : OPCODES_2ARG.has(op) ? 2 : OPCODES_1ARG.has(op) ? 1 : 0;
+    const ac = stackArgc(op);
     i += ac;
   }
   return result;
@@ -211,7 +336,7 @@ function injectCamouflage(code: number[]): number[] {
     boundaries.push(i);
     const op = code[i];
     i++;
-    const ac = OPCODES_3ARG.has(op) ? 3 : OPCODES_2ARG.has(op) ? 2 : OPCODES_1ARG.has(op) ? 1 : 0;
+    const ac = stackArgc(op);
     i += ac;
   }
   boundaries.push(code.length);
@@ -264,7 +389,7 @@ function injectCamouflage(code: number[]): number[] {
       result[newI + 2] = safeTarget + offsets[safeTarget];
     }
     i++;
-    const ac = OPCODES_3ARG.has(op) ? 3 : OPCODES_2ARG.has(op) ? 2 : OPCODES_1ARG.has(op) ? 1 : 0;
+    const ac = stackArgc(op);
     i += ac;
   }
 
@@ -279,7 +404,7 @@ function injectCamouflageChunk(chunk: BytecodeChunk): void {
 }
 
 function instrSize(op: number): number {
-  return 1 + (OPCODES_3ARG.has(op) ? 3 : OPCODES_2ARG.has(op) ? 2 : OPCODES_1ARG.has(op) ? 1 : 0);
+  return 1 + stackArgc(op);
 }
 
 function isTerminator(op: number): boolean {
@@ -408,6 +533,47 @@ function flattenChunk(chunk: BytecodeChunk): void {
   }
 }
 
+function applyArityDecoys(code: number[], decoySalt: number): number[] {
+  validateStackLeadDecoy();
+  if (STACK_LEAD_DECOY.size === 0) return code;
+
+  const insertedBefore = new Array<number>(code.length + 1).fill(0);
+  const out: number[] = [];
+  let i = 0;
+  while (i < code.length) {
+    const op = code[i];
+    const argc = baseStackArgc(op);
+    insertedBefore[i] = out.length - i;
+    out.push(op);
+    const decoy = STACK_LEAD_DECOY.get(op) ?? 0;
+    for (let d = 0; d < decoy; d++) {
+      out.push(((decoySalt + (i + 1) * 0x9E37) >>> 3) & 0xFFFF);
+    }
+    for (let a = 0; a < argc; a++) out.push(code[i + 1 + a]);
+    i += 1 + argc;
+  }
+  insertedBefore[code.length] = out.length - code.length;
+
+  let j = 0;
+  while (j < code.length) {
+    const op = code[j];
+    const jmp = isJumpOp(op);
+    if (jmp) {
+      const t = Math.min(code[j + 1 + jmp.argIdx], code.length);
+      out[insertedBefore[j] + j + 1 + jmp.argIdx] = t + insertedBefore[t];
+    }
+    j += 1 + baseStackArgc(op);
+  }
+  return out;
+}
+
+function applyArityDecoysChunk(chunk: BytecodeChunk, decoySalt: number): void {
+  chunk.code = applyArityDecoys(chunk.code, decoySalt);
+  if (chunk.protos) {
+    for (const p of chunk.protos) applyArityDecoysChunk(p, decoySalt);
+  }
+}
+
 function computeCtxBit(ctxInit: number, ctxPrime: number, pos: number): number {
 
   const luaIp = pos + 1;
@@ -428,7 +594,7 @@ function contextOpcodeTransform(code: number[], ctxInit: number, ctxPrime: numbe
     }
 
     i++;
-    const ac = OPCODES_3ARG.has(op) ? 3 : OPCODES_2ARG.has(op) ? 2 : OPCODES_1ARG.has(op) ? 1 : 0;
+    const ac = stackArgc(op);
     i += ac;
   }
   return result;
@@ -442,6 +608,11 @@ function contextTransformChunk(chunk: BytecodeChunk, ctxInit: number, ctxPrime: 
 }
 
 function encodeJumpTargets(code: number[], jumpKey: number): number[] {
+  // R-3 (Phase 1.1): additive keying instead of XOR. Static matchers look
+  // for `XOR(value, literalKey)`; an additive `(value+key) mod 2^32` at rest
+  // defeats them. Operands here are absolute code positions (>= 0), so the
+  // modular sum stays in uint32 range with exact double precision.
+  const M = 4294967296;
   const result = [...code];
   let i = 0;
   while (i < result.length) {
@@ -449,15 +620,15 @@ function encodeJumpTargets(code: number[], jumpKey: number): number[] {
     i++;
     if (op === 32 || op === 33 || op === 42 || op === 43) {
 
-      result[i] = (result[i] ^ jumpKey) >>> 0;
+      result[i] = (result[i] + jumpKey) % M;
       i++;
     } else if (op === 53) {
 
       i++;
-      result[i] = (result[i] ^ jumpKey) >>> 0;
+      result[i] = (result[i] + jumpKey) % M;
       i++;
     } else {
-      const ac = OPCODES_3ARG.has(op) ? 3 : OPCODES_2ARG.has(op) ? 2 : OPCODES_1ARG.has(op) ? 1 : 0;
+      const ac = stackArgc(op);
       i += ac;
     }
   }
@@ -771,8 +942,51 @@ function serializeConstant(v: Constant, encodeStrings: boolean, xorKey: number =
   return "nil";
 }
 
-function serializeConstants(K: Constant[], encodeStrings: boolean, xorKey: number = 0, doFragment: boolean = false, xorStep: number = 0, doConstantFold: boolean = false, lazyBaseKey: number = 0, lazyKeyPrime: number = 0, doMutation: boolean = false): string {
-  return `{${K.map((v, idx) => serializeConstant(v, encodeStrings, xorKey, doFragment, xorStep, idx, doConstantFold, lazyBaseKey, lazyKeyPrime, doMutation)).join(",")}}`;
+function serializeConstants(K: Constant[], encodeStrings: boolean, xorKey: number = 0, doFragment: boolean = false, xorStep: number = 0, doConstantFold: boolean = false, lazyBaseKey: number = 0, lazyKeyPrime: number = 0, doMutation: boolean = false, constSalt: number = 1): string {
+  if (K.length === 0) {
+    return `{${K.map((v, idx) => serializeConstant(v, encodeStrings, xorKey, doFragment, xorStep, idx, doConstantFold, lazyBaseKey, lazyKeyPrime, doMutation)).join(",")}}`;
+  }
+  // v2 computed-index layout (Phase 1.1 / R-2, stack side): pad to a power
+  // of two with never-referenced decoys, then place real entry j at
+  // bxor(j, eff)+1 with eff = S % n2 (S odd artifact salt). resolveK reads
+  // K[bxor(_idx-1, S%#K)+1], so no literal index addresses a real constant.
+  // Salt passed with final positions (matches runtime decode). Honeypot and
+  // recipe entries move opaquely; pools are a separate table (unaffected).
+  const n2 = nextPow2Const(K.length);
+  const eff = constSalt % n2;
+  const placed: (Constant | undefined)[] = new Array(n2).fill(undefined);
+  for (let j = 0; j < K.length; j++) placed[(j ^ eff)] = K[j];
+  const decoys = makeStackDecoys(n2 - K.length);
+  let di = 0;
+  const occupied = new Array<boolean>(n2).fill(false);
+  for (let j = 0; j < K.length; j++) occupied[(j ^ eff)] = true;
+  for (let s = 0; s < n2; s++) {
+    if (!occupied[s]) placed[s] = decoys[di++];
+  }
+  return `{${placed.map((v, idx) => serializeConstant(v as Constant, encodeStrings, xorKey, doFragment, xorStep, idx, doConstantFold, lazyBaseKey, lazyKeyPrime, doMutation)).join(",")}}`;
+}
+
+function nextPow2Const(n: number): number {
+  let p = 1;
+  while (p < n) p *= 2;
+  return p;
+}
+
+/** Cheap never-referenced filler for stack K padding. */
+function makeStackDecoys(count: number): Constant[] {
+  const out: Constant[] = [];
+  for (let i = 0; i < count; i++) {
+    const v = rng();
+    if (v < 0.8) out.push(Math.floor(rng() * 100000));
+    else if (v < 0.9) out.push(rng() < 0.5);
+    else {
+      const len = 3 + Math.floor(rng() * 8);
+      let s = "";
+      for (let k = 0; k < len; k++) s += String.fromCharCode(97 + Math.floor(rng() * 26));
+      out.push(s);
+    }
+  }
+  return out;
 }
 
 function lzssCompress(input: number[]): number[] {
@@ -870,6 +1084,37 @@ function b64Encode(bytes: number[]): string {
   return out;
 }
 
+// R-1 detection hygiene (Phase 1.1): the boot idiom ("")[("\99...")]
+// is exact-matched by static signatures (escape digits + member names).
+// Emit parse-identical spellings, drawn per site: legacy decimals,
+// zero-padded decimals, or brace escapes (\u{63} — hex digits: decimal 99
+// renders as \u{63}). All forms evaluate to
+// the same string on Luau and PUC-Lua (ASCII-only names; \u{} needs 5.3+,
+// and our lexer supports it). Single-literal forms only, so call sites keep
+// their ("")[(...)] wrapper unchanged.
+function bootEscape(s: string): string {
+  const codes = Array.from(s).map(c => c.charCodeAt(0));
+  const v = Math.floor(rng() * 3);
+  if (v === 0) return codes.map(n => `\\${n}`).join("");
+  if (v === 1) return codes.map(n => `\\${String(n).padStart(3, "0")}`).join("");
+  return codes.map(n => `\\u{${n.toString(16)}}`).join("");
+}
+
+// R-6 envelope rotation (Phase 1.1): static peelers gate on the alphabet
+// sorting to standard base64. Half the builds use a custom 64-char set
+// instead: the encode/decode machinery is content-agnostic (explicit table),
+// so output stays correct while any sort==std check fails outright.
+// Safe pool excludes Lua string hazards (" and \) and the "=" pad char.
+function buildAlphabet(): string {
+  const std = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  if (rng() < 0.5) return std;
+  const pool = "-_~.!@#$%^*(){}[]|:;<>,?";
+  const picks = new Set<number>();
+  while (picks.size < 2) picks.add(Math.floor(rng() * pool.length));
+  const rep = [...picks].map(i => pool[i]);
+  return std.slice(0, 62) + rep.join("");
+}
+
 function wrapCustomCipher(source: string): string {
 
   const srcBytes: number[] = [];
@@ -900,7 +1145,7 @@ function wrapCustomCipher(source: string): string {
     pk = (pk + posStep) & 0xFF;
   }
 
-  const stdAlpha = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  const stdAlpha = buildAlphabet();
   const alphaArr = stdAlpha.split('');
   for (let i = alphaArr.length - 1; i > 0; i--) {
     const j = Math.floor(rng() * (i + 1));
@@ -969,18 +1214,18 @@ function wrapCustomCipher(source: string): string {
   const bootVariant = Math.floor(rng() * 3);
   if (bootVariant === 0) {
 
-    lines.push(`local ${vSc}=("")[("\\99\\104\\97\\114")]`);
-    lines.push(`local ${vSb}=("")[("\\98\\121\\116\\101")]`);
+    lines.push(`local ${vSc}=("")[("${bootEscape("char")}")]`);
+    lines.push(`local ${vSb}=("")[("${bootEscape("byte")}")]`);
   } else if (bootVariant === 1) {
 
     const _mt = randomName(2);
-    lines.push(`local ${_mt}=("")[("\\114\\101\\112")]`);
-    lines.push(`local ${vSc}=("")[("\\99\\104\\97\\114")]`);
-    lines.push(`local ${vSb}=("")[("\\98\\121\\116\\101")]`);
+    lines.push(`local ${_mt}=("")[("${bootEscape("rep")}")]`);
+    lines.push(`local ${vSc}=("")[("${bootEscape("char")}")]`);
+    lines.push(`local ${vSb}=("")[("${bootEscape("byte")}")]`);
   } else {
 
-    lines.push(`local ${vSb}=("")[("\\98\\121\\116\\101")]`);
-    lines.push(`local ${vSc}=("")[("\\99\\104\\97\\114")]`);
+    lines.push(`local ${vSb}=("")[("${bootEscape("byte")}")]`);
+    lines.push(`local ${vSc}=("")[("${bootEscape("char")}")]`);
   }
   maybeJunk(lines);
 
@@ -1081,7 +1326,14 @@ function wrapCustomCipher(source: string): string {
         l.push(`local ${fv}="${frags[idx]}"`);
         if (rng() > 0.8) l.push(junkLine());
       }
-      l.push(`local ${vData}=${fragVars.join("..")}`);
+      // R-6 frag-idiom rotation: `..` chain vs inline table.concat (a third
+      // shape besides the table-var form above; static frag matchers that
+      // know exactly two shapes miss this one).
+      if (rng() < 0.5) {
+        l.push(`local ${vData}=${fragVars.join("..")}`);
+      } else {
+        l.push(`local ${vData}=${vTc}({${fragVars.join(",")}})`);
+      }
     }
     return l;
   };
@@ -1157,7 +1409,10 @@ function wrapCustomCipher(source: string): string {
   maybeJunk(lines);
   const execVariant = Math.floor(rng() * 3);
   if (execVariant === 0) {
-    lines.push(`(${vLd}(${vTc}(${vReal})))()`);
+    // Same `do...end` rationale as wrapNestedVM execV0: never emit a
+    // `(`-leading line (ambiguous-syntax call continuation with the
+    // preceding line; `;` is not a Luau-legal separator after openers).
+    lines.push(`do (${vLd}(${vTc}(${vReal})))() end`);
   } else if (execVariant === 1) {
     const _fn = randomName(3);
     lines.push(`local ${_fn}=${vLd}(${vTc}(${vReal}))`);
@@ -1170,7 +1425,7 @@ function wrapCustomCipher(source: string): string {
     lines.push(`${_fn}()`);
   }
 
-  console.log(`[cipher] S-Box layer: ${srcBytes.length}+${prefixLen}pfx → ${encoded.length} chars (${nFrags} frags, boot:v${bootVariant} env:v${envVariant} b64:v${b64Variant} dec:v${decryptVariant} exec:v${execVariant})`);
+  if (_tel()) console.log(`[cipher] S-Box layer: ${srcBytes.length}+${prefixLen}pfx → ${encoded.length} chars (${nFrags} frags, boot:v${bootVariant} env:v${envVariant} b64:v${b64Variant} dec:v${decryptVariant} exec:v${execVariant})`);
   return lines.join("\n");
 }
 
@@ -1203,7 +1458,7 @@ function wrapNestedVM(source: string): string {
   const rotKey = (Math.floor(rng() * 200) + 10) & 0xFF;
   const encBytes: number[] = afterXor.map(b => (b + rotKey) & 0xFF);
 
-  const stdAlpha = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  const stdAlpha = buildAlphabet();
   const alphaArr = stdAlpha.split('');
   for (let i = alphaArr.length - 1; i > 0; i--) {
     const j = Math.floor(rng() * (i + 1));
@@ -1248,9 +1503,11 @@ function wrapNestedVM(source: string): string {
   const rInt = (): string => {
     const v = Math.floor(rng() * 0xFFFF);
     const fmt = Math.floor(rng() * 4);
-    if (fmt === 0) return `0x${v.toString(16).toUpperCase()}`;
-    if (fmt === 1) return `0b${v.toString(2)}`;
-    if (fmt === 2) return `${Math.floor(v/1000)}_${String(v%1000).padStart(3,'0')}`;
+    // Portable numeral formats only: fmt 1/2 historically emitted `0b...`
+    // binary and `1_000`-style underscore literals, which PUC-Lua cannot
+    // parse (verified) while Luau accepts them. Mapping both to hex/decimal
+    // keeps the value AND all RNG draws identical — only the text changes.
+    if (fmt === 0 || fmt === 1) return `0x${v.toString(16).toUpperCase()}`;
     return `${v}`;
   };
 
@@ -1303,18 +1560,23 @@ function wrapNestedVM(source: string): string {
 
   const bootV = Math.floor(rng() * 3);
   if (bootV === 0) {
-    L.push(`local ${vSc}=("")[("\\99\\104\\97\\114")]`);
-    L.push(`local ${vSb}=("")[("\\98\\121\\116\\101")]`);
+    L.push(`local ${vSc}=("")[("${bootEscape("char")}")]`);
+    L.push(`local ${vSb}=("")[("${bootEscape("byte")}")]`);
   } else if (bootV === 1) {
-    L.push(`local ${vSb}=("")[("\\98\\121\\116\\101")]`);
-    L.push(`local ${vSc}=("")[("\\99\\104\\97\\114")]`);
+    L.push(`local ${vSb}=("")[("${bootEscape("byte")}")]`);
+    L.push(`local ${vSc}=("")[("${bootEscape("char")}")]`);
   } else {
     const mt = nn(2);
-    L.push(`local ${mt}=("")[("\\115\\117\\98")]`);
-    L.push(`local ${vSc}=("")[("\\99\\104\\97\\114")]`);
-    L.push(`local ${vSb}=("")[("\\98\\121\\116\\101")]`);
+    L.push(`local ${mt}=("")[("${bootEscape("sub")}")]`);
+    L.push(`local ${vSc}=("")[("${bootEscape("char")}")]`);
+    L.push(`local ${vSb}=("")[("${bootEscape("byte")}")]`);
   }
-  L.push(emitHoneypot());
+  // RNG ballast: this honeypot runs BEFORE the bit32 method aliases below
+  // are declared, so its output is intentionally discarded — 7 of 14
+  // variants reference those aliases and would otherwise emit
+  // use-before-declaration crashes. Calling (not pushing) preserves the
+  // exact RNG/name-counter stream for all downstream generation.
+  emitHoneypot();
 
   L.push(`local ${vEnv}=(type(getfenv)=="function" and getfenv(0) or _G)`);
   const builtins = [
@@ -1328,7 +1590,9 @@ function wrapNestedVM(source: string): string {
   }
   for (const bl of builtins) {
     L.push(bl);
-    if (rng() > 0.6) L.push(emitHoneypot());
+    // Same ballast rationale as above: bit32 method aliases are declared
+    // later, so discard (do not emit) any honeypot drawn here.
+    if (rng() > 0.6) emitHoneypot();
   }
   const b32methods: [string, string][] = [
     [vBxor, 'bxor'], [vBand, 'band'], [vBor, 'bor'], [vLsh, 'lshift'], [vRsh, 'rshift']
@@ -1382,13 +1646,17 @@ function wrapNestedVM(source: string): string {
     if (rng() > 0.65) L.push(emitHoneypot());
   }
 
-  const concatV = Math.floor(rng() * 2);
+  const concatV = Math.floor(rng() * 3);
   if (concatV === 0) {
     L.push(`local ${vData}=${dataFragVars.join('..')}`);
-  } else {
+  } else if (concatV === 1) {
     const tbl = nn(3);
     L.push(`local ${tbl}={${dataFragVars.join(',')}}`);
     L.push(`local ${vData}=${vTc}(${tbl})`);
+  } else {
+    // R-6 third frag shape: inline table.concat (no separate table decl,
+    // no `..` chain — matches neither known static frag pattern).
+    L.push(`local ${vData}=${vTc}({${dataFragVars.join(',')}})`);
   }
   L.push(emitHoneypot());
 
@@ -1458,7 +1726,13 @@ function wrapNestedVM(source: string): string {
 
   const execV = Math.floor(rng() * 3);
   if (execV === 0) {
-    L.push(`(${vLd}(${vTc}(${vOut})))()`);
+    // Wrapped in `do...end` (never `(`-leading): a bare `(${vLd}...)()` line
+    // merges with a preceding expression-ending line (e.g. a `...end)()`
+    // honeypot tail) into an "ambiguous syntax" call continuation — newlines
+    // do NOT separate statements before `(`. Demonstrated by seed 2024
+    // (nested layer failed to parse on every host). `;`-separation is NOT an
+    // alternative: Luau rejects `;` after `do`/`then`/`else`/`repeat`.
+    L.push(`do (${vLd}(${vTc}(${vOut})))() end`);
   } else if (execV === 1) {
     const fn = nn(3);
     L.push(`local ${fn}=${vLd}(${vTc}(${vOut}))`);
@@ -1470,7 +1744,10 @@ function wrapNestedVM(source: string): string {
     L.push(`${fn}()`);
   }
 
-  console.log(`[nested] Multi-key(${nKeys}) + rot(${rotKey}) layer: ${srcBytes.length}+${prefixLen}pfx → ${encoded.length} chars (${nAlphaFrags} alpha frags, ${nDataFrags} data frags)`);
+  if (_tel()) console.log(`[nested] Multi-key(${nKeys}) + rot(${rotKey}) layer: ${srcBytes.length}+${prefixLen}pfx → ${encoded.length} chars (${nAlphaFrags} alpha frags, ${nDataFrags} data frags)`);
+  // NOTE: `;`-joins were tried here and reverted — Luau rejects `;` after
+  // `do`/`then`/`else`/`repeat` openers, so separation is handled at the
+  // emitter (exec variant 0 is wrapped in `do...end`, never `(`-leading).
   return L.join("\n");
 }
 
@@ -1481,7 +1758,7 @@ function wrapStubVM(source: string): string {
   const compressed = lzssCompress(srcBytes);
   const ratio = ((1 - compressed.length / srcBytes.length) * 100).toFixed(1);
 
-  const stdAlpha = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  const stdAlpha = buildAlphabet();
   const aa = stdAlpha.split('');
   for (let i = aa.length - 1; i > 0; i--) {
     const j = Math.floor(rng() * (i + 1));
@@ -1527,8 +1804,8 @@ function wrapStubVM(source: string): string {
 
   const expectedLen = srcBytes.length;
 
-  console.log(`[stub] LZSS: ${srcBytes.length} → ${compressed.length} (${ratio}%) | enc:v${encVariant} | frags:${nFrags}`);
-  console.log(`[stub] Encoded: ${encoded.length} chars | ~${((encoded.length + 2500) / 1024).toFixed(0)}KB`);
+  if (_tel()) console.log(`[stub] LZSS: ${srcBytes.length} → ${compressed.length} (${ratio}%) | enc:v${encVariant} | frags:${nFrags}`);
+  if (_tel()) console.log(`[stub] Encoded: ${encoded.length} chars | ~${((encoded.length + 2500) / 1024).toFixed(0)}KB`);
 
   const n = (len = 4) => randomName(len);
   const a_sc = n(), a_sb = n(), a_bx = n(), a_ba = n(), a_bo = n(), a_bl = n(), a_br = n();
@@ -1542,7 +1819,7 @@ function wrapStubVM(source: string): string {
   const bootVariant = [0, 2, 3][Math.floor(rng() * 3)];
   const combineVariant = Math.floor(rng() * 3);
   const shiftVariant = Math.floor(rng() * 2);
-  console.log(`[stub] polymorphism: boot:${bootVariant} combine:${combineVariant} shift:${shiftVariant} keyDeriv:${keyDerivVariant}`);
+  if (_tel()) console.log(`[stub] polymorphism: boot:${bootVariant} combine:${combineVariant} shift:${shiftVariant} keyDeriv:${keyDerivVariant}`);
 
   const encStr = (s: string): string =>
     Array.from(s).map(c => { const v = c.charCodeAt(0); return rng() > 0.5 ? `\\${v.toString().padStart(3,'0')}` : `\\${v}`; }).join('');
@@ -1612,7 +1889,12 @@ function wrapStubVM(source: string): string {
   L.push(`for _i=1,#${fragVars[0]} do ${fk4}=${a_bx}(${fk4},${a_sb}(${fragVars[0]},_i)) end`);
   L.push(`if ${fk4}==0x${fakeCheck2.toString(16)} then local _z={} for _i=1,#${fragVars[0]} do _z[_i]=${a_sc}(${a_ba}(${a_sb}(${fragVars[0]},_i),0x7F)) end ${a_ls}(${a_tc}(_z))() return end`);
 
-  L.push(`local ${a_s}=${fragVars.join('..')}`);
+  // R-6 third frag shape (see cipher/nested): inline table.concat.
+  if (rng() < 0.5) {
+    L.push(`local ${a_s}=${fragVars.join('..')}`);
+  } else {
+    L.push(`local ${a_s}=${a_tc}({${fragVars.join(',')}})`);
+  }
 
   const alphaXorKey = 1 + Math.floor(rng() * 254);
   const nAlphaPieces = 3 + Math.floor(rng() * 3);
@@ -1779,7 +2061,7 @@ function wrapStubVM(source: string): string {
     L.push(`until ${_lb}>=8`);
     L.push(`end`);
   }
-  console.log(`[stub] lzss_decoder: loop:v${lzssVariant} enc:v${encVariant2} counter:${useCounter}`);
+  if (_tel()) console.log(`[stub] lzss_decoder: loop:v${lzssVariant} enc:v${encVariant2} counter:${useCounter}`);
 
   const fakeCheck3 = Math.floor(rng() * 0x7FFFFFFF);
   L.push(`if #${a_o}~=${expectedLen} then local ${fk5}={} for _i=1,#${a_o} do ${fk5}[_i]=${a_sc}(${a_ba}(${a_bx}(${a_o}[_i],_i),0x7F)+1) end ${a_ls}(${a_tc}(${fk5}))() return end`);
@@ -1895,7 +2177,8 @@ function serializeProtos(
   addFakeProtos: boolean = false,
   protoKeys: { pK: string; pC: string; pP: string; pU: string; pN: string } = { pK: "K", pC: "C", pP: "P", pU: "U", pN: "nParams" },
   cipherSeeds?: [number, number, number],
-  doMutation: boolean = false
+  doMutation: boolean = false,
+  constSalt: number = 1
 ): string {
   if (!protos || protos.length === 0) {
     if (!addFakeProtos) return "{}";
@@ -1904,12 +2187,12 @@ function serializeProtos(
   if (protos) {
     for (const p of protos) {
       const mappedCode = doShuffle ? mapBytecode(p.code, opcodeEncode) : p.code;
-      const K = serializeConstants(p.K, encodeStrings, xorKey, doFragment, xorStep, doConstantFold, lazyBaseKey, lazyKeyPrime, doMutation);
+      const K = serializeConstants(p.K, encodeStrings, xorKey, doFragment, xorStep, doConstantFold, lazyBaseKey, lazyKeyPrime, doMutation, constSalt);
 
       const C = cipherSeeds
         ? packCodeToTable(mappedCode, cipherSeeds[0], cipherSeeds[1], cipherSeeds[2])
         : serializeCode(mappedCode, codeXorKey);
-      const P = serializeProtos(p.protos, opcodeEncode, encodeStrings, doShuffle, xorKey, doFragment, xorStep, codeXorKey, doConstantFold, lazyBaseKey, lazyKeyPrime, false, protoKeys, cipherSeeds, doMutation);
+      const P = serializeProtos(p.protos, opcodeEncode, encodeStrings, doShuffle, xorKey, doFragment, xorStep, codeXorKey, doConstantFold, lazyBaseKey, lazyKeyPrime, false, protoKeys, cipherSeeds, doMutation, constSalt);
       let U = "nil";
       if (p.upvalues && p.upvalues.length > 0) {
         U = `{${p.upvalues.map(uv => `{${uv[0]},${uv[1]}}`).join(",")}}`;
@@ -2165,17 +2448,19 @@ function buildEnvSetup(
 
     lines.push(`do local ${dbV}=${bRG}(${genv},${encLookup("debug")})`);
     lines.push(`if ${bTY}(${dbV})==${tblEsc} then`);
+    lines.push(`pcall(function()`);
     for (const fn of dangerousFns) {
       lines.push(`${dbV}[${encLookup(fn)}]=${fn === "getinfo" ? "function() return {} end" : "nil"}`);
     }
-    lines.push(`end`);
+    lines.push(`end) end`);
 
     lines.push(`local ${dbEnvV}=${bRG}(${env},${encLookup("debug")})`);
     lines.push(`if ${bTY}(${dbEnvV})==${tblEsc} then`);
+    lines.push(`pcall(function()`);
     for (const fn of dangerousFns) {
       lines.push(`${dbEnvV}[${encLookup(fn)}]=${fn === "getinfo" ? "function() return {} end" : "nil"}`);
     }
-    lines.push(`end end`);
+    lines.push(`end) end end`);
   }
 
   return lines.join("\n") + "\n";
@@ -2339,11 +2624,11 @@ function buildHandlerTemplates(n: NameMap, doNonLinearJumps: boolean = false, pr
   h[31] = `function() local n=${code}[${ip}];${ip}=${ip}+1;${doReturn}=true;if n==0 then ${retN}=0 elseif n>0 then if n>${stackTop} then n=${stackTop} end;${retN}=n;${retFromStack}=true;${retTop}=${stackTop};${retBase}=${stackTop}-n else ${retN}=${stackTop};${retFromStack}=true;${retTop}=${stackTop};${retBase}=0 end end`;
 
   h[32] = doNonLinearJumps
-    ? `function() ${ip}=bit32.bxor(${code}[${ip}],${n.jumpKey})+1 end`
+    ? `function() ${ip}=((${code}[${ip}]-${n.jumpKey})%4294967296+4294967296)%4294967296+1 end`
     : `function() ${ip}=${code}[${ip}]+1 end`;
 
   h[33] = doNonLinearJumps
-    ? `function() local target=bit32.bxor(${code}[${ip}],${n.jumpKey});${ip}=${ip}+1;if not ${pop}() then ${ip}=target+1 end end`
+    ? `function() local target=((${code}[${ip}]-${n.jumpKey})%4294967296+4294967296)%4294967296;${ip}=${ip}+1;if not ${pop}() then ${ip}=target+1 end end`
     : `function() local target=${code}[${ip}];${ip}=${ip}+1;if not ${pop}() then ${ip}=target+1 end end`;
 
   h[34] = `function() local n=${code}[${ip}];${ip}=${ip}+1;for _=1,n do ${pop}() end end`;
@@ -2363,11 +2648,11 @@ function buildHandlerTemplates(n: NameMap, doNonLinearJumps: boolean = false, pr
   h[41] = `function() local n=${code}[${ip}];${ip}=${ip}+1;local args={};for j=n,1,-1 do args[j]=${pop}() end;local f=${pop}();if type(f)~="function" then local mm=${getMM}(f,"__call");if mm then table.insert(args,1,f);n=n+1;f=mm end end;${doReturn}=true;${retPack}=table.pack(f(table.unpack(args,1,n))) end`;
 
   h[42] = doNonLinearJumps
-    ? `function() local off=bit32.bxor(${code}[${ip}],${n.jumpKey});${ip}=${ip}+1;local step=${pop}();local limit=${pop}();local init=${pop}();${push}(init);${push}(limit);${push}(step);if step>=0 then if init>limit then ${ip}=off+1 end else if init<limit then ${ip}=off+1 end end end`
+    ? `function() local off=((${code}[${ip}]-${n.jumpKey})%4294967296+4294967296)%4294967296;${ip}=${ip}+1;local step=${pop}();local limit=${pop}();local init=${pop}();${push}(init);${push}(limit);${push}(step);if step>=0 then if init>limit then ${ip}=off+1 end else if init<limit then ${ip}=off+1 end end end`
     : `function() local off=${code}[${ip}];${ip}=${ip}+1;local step=${pop}();local limit=${pop}();local init=${pop}();${push}(init);${push}(limit);${push}(step);if step>=0 then if init>limit then ${ip}=off+1 end else if init<limit then ${ip}=off+1 end end end`;
 
   h[43] = doNonLinearJumps
-    ? `function() local off=bit32.bxor(${code}[${ip}],${n.jumpKey});${ip}=${ip}+1;local step=${stack}[${stackTop}];local i=${stack}[${stackTop}-2]+step;${stack}[${stackTop}-2]=i;local limit=${stack}[${stackTop}-1];if step>=0 then if i<=limit then ${ip}=off+1 end else if i>=limit then ${ip}=off+1 end end end`
+    ? `function() local off=((${code}[${ip}]-${n.jumpKey})%4294967296+4294967296)%4294967296;${ip}=${ip}+1;local step=${stack}[${stackTop}];local i=${stack}[${stackTop}-2]+step;${stack}[${stackTop}-2]=i;local limit=${stack}[${stackTop}-1];if step>=0 then if i<=limit then ${ip}=off+1 end else if i>=limit then ${ip}=off+1 end end end`
     : `function() local off=${code}[${ip}];${ip}=${ip}+1;local step=${stack}[${stackTop}];local i=${stack}[${stackTop}-2]+step;${stack}[${stackTop}-2]=i;local limit=${stack}[${stackTop}-1];if step>=0 then if i<=limit then ${ip}=off+1 end else if i>=limit then ${ip}=off+1 end end end`;
 
   h[44] = `function() local n=${code}[${ip}];${ip}=${ip}+1;local parts={};for i=1,n do parts[n-i+1]=tostring(${pop}()) end;${push}(table.concat(parts)) end`;
@@ -2389,7 +2674,7 @@ function buildHandlerTemplates(n: NameMap, doNonLinearJumps: boolean = false, pr
   h[52] = `function() local nameIdx=${code}[${ip}];${ip}=${ip}+1;local methodName=${resolveK}(nameIdx+1);local obj=${pop}();local method=obj[methodName];${push}(obj);${push}(method);local b,a=${pop}(),${pop}();${push}(b);${push}(a) end`;
 
   h[53] = doNonLinearJumps
-    ? `function() local nVars=${code}[${ip}];${ip}=${ip}+1;local target=bit32.bxor(${code}[${ip}],${n.jumpKey});${ip}=${ip}+1;local iter=${stack}[${stackTop}-2];local state=${stack}[${stackTop}-1];local ctl=${stack}[${stackTop}];local r={iter(state,ctl)};for i=1,nVars do ${push}(r[i]) end;if r[1]~=nil then ${stack}[${stackTop}-nVars]= r[1] else ${ip}=target+1 end end`
+    ? `function() local nVars=${code}[${ip}];${ip}=${ip}+1;local target=((${code}[${ip}]-${n.jumpKey})%4294967296+4294967296)%4294967296;${ip}=${ip}+1;local iter=${stack}[${stackTop}-2];local state=${stack}[${stackTop}-1];local ctl=${stack}[${stackTop}];local r={iter(state,ctl)};for i=1,nVars do ${push}(r[i]) end;if r[1]~=nil then ${stack}[${stackTop}-nVars]= r[1] else ${ip}=target+1 end end`
     : `function() local nVars=${code}[${ip}];${ip}=${ip}+1;local target=${code}[${ip}];${ip}=${ip}+1;local iter=${stack}[${stackTop}-2];local state=${stack}[${stackTop}-1];local ctl=${stack}[${stackTop}];local r={iter(state,ctl)};for i=1,nVars do ${push}(r[i]) end;if r[1]~=nil then ${stack}[${stackTop}-nVars]= r[1] else ${ip}=target+1 end end`;
 
   h[54] = `function() local n=${code}[${ip}];${ip}=${ip}+1;local args={};for i=1,n do args[n-i+1]=${pop}() end;local f=${pop}();local results;if n==0 then results=table.pack(pcall(f)) else results=table.pack(pcall(f,table.unpack(args,1,n))) end;local ok=results[1];${push}(ok);if ok then for i=2,results.n do ${push}(results[i]) end else ${push}(results[2]) end end`;
@@ -2429,6 +2714,13 @@ function buildHandlerTemplates(n: NameMap, doNonLinearJumps: boolean = false, pr
   // operator). Numbers fast-path, pcall coercion, __idiv lookup, and the
   // x//0 -> inf leniency are therefore identical to h[48] by construction.
   h[70] = `function() local a=${code}[${ip}];${ip}=${ip}+1;local b=${code}[${ip}];${ip}=${ip}+1;local c=${code}[${ip}];${ip}=${ip}+1;${setLocal}(c,${arithMM}(${getLocal}(a),${getLocal}(b),function(x,y) return math.floor(x/y) end,"__idiv")) end`;
+  h[71] = `function() local a=${code}[${ip}];${ip}=${ip}+1;local b=${code}[${ip}];${ip}=${ip}+1;local c=${code}[${ip}];${ip}=${ip}+1;${setLocal}(c,${getLocal}(a)^${getLocal}(b)) end`;
+  h[72] = `function() local a=${code}[${ip}];${ip}=${ip}+1;local c=${code}[${ip}];${ip}=${ip}+1;${setLocal}(c,-${getLocal}(a)) end`;
+  // Phase 1.2(f): decoy opcodes - plausible arity, no-op bodies.
+  h[73] = `function() end`;
+  h[74] = `function() local _a=${code}[${ip}];${ip}=${ip}+1 end`;
+  h[75] = `function() local _a=${code}[${ip}];${ip}=${ip}+1;local _b=${code}[${ip}];${ip}=${ip}+1 end`;
+  h[76] = `function() local _a=${code}[${ip}];${ip}=${ip}+1;local _b=${code}[${ip}];${ip}=${ip}+1;local _c=${code}[${ip}];${ip}=${ip}+1 end`;
 
   h[67] = `function() local _a=${code}[${ip}];${ip}=${ip}+1;if ${n.ctxBit}==0 then ${push}(${getLocal}(_a)) else ${push}(${resolveK}(_a+1)) end end`;
 
@@ -2601,7 +2893,7 @@ function randomOpaqueTrue(vmNames?: { ip?: string; stackTop?: string; handlers?:
   return `(${base} and ${extra})`;
 }
 
-function generateAntiDebugChecks(): string[] {
+export function generateAntiDebugChecks(detFlag: string): string[] {
   const checks: string[] = [];
   const flag = randomName(3);
   checks.push(`local ${flag}=false`);
@@ -2612,7 +2904,7 @@ function generateAntiDebugChecks(): string[] {
   allChecks.push(`if type(pcall)~="function" then ${flag}=true end`);
   allChecks.push(`if type(select)~="function" then ${flag}=true end`);
   allChecks.push(`if type(type)~="function" then ${flag}=true end`);
-  allChecks.push(`if select("#",pcall(function() end))~=2 then ${flag}=true end`);
+  allChecks.push(`if select("#",pcall(function() return 1 end))~=2 then ${flag}=true end`);
   allChecks.push(`if type(tostring)~="function" then ${flag}=true end`);
   allChecks.push(`if type(rawget)~="function" then ${flag}=true end`);
   allChecks.push(`do local ${t1}=(type(tick)=="function" and tick()) or 0;local _=0;for _i=1,${r1} do _=_+1 end;if ${t1}>0 and ((type(tick)=="function" and tick()) or 0)-${t1}>0.1 then ${flag}=true end end`);
@@ -2625,6 +2917,7 @@ function generateAntiDebugChecks(): string[] {
   for (let ci = 0; ci < pickCount && ci < allChecks.length; ci++) {
     checks.push(allChecks[ci]);
   }
+  checks.push(`if ${flag} then ${detFlag}=${detFlag}+1 end`);
   return checks;
 }
 
@@ -2658,6 +2951,7 @@ function buildVMFunction(
   doPooling: boolean = false,
   poolsVarName: string = "",
   hotRealOps: number[] = [],
+  constSalt: number = 1,
 ): string {
   const doLazyDecode = lazyBaseKey !== 0;
   const doStringPools = poolsVarName !== "";
@@ -2665,6 +2959,25 @@ function buildVMFunction(
   const doJumpEnc = jumpKeyVal !== 0;
   const doMultiLayer = !!cipherSeeds;
   const handlers = buildHandlerTemplates(n, doJumpEnc, protoKeys);
+
+  if (_stackArityDecoysActive) {
+    // Phase 1.2(d): decoy-ops read and discard their leading wire word before
+    // their real body runs. Matches applyArityDecoysChunk (decoy first, then
+    // args); bodies read consumed arguments through the shared ip counter.
+    for (const op of STACK_LEAD_DECOY.keys()) {
+      const body = handlers[op];
+      if (body === undefined) {
+        throw new Error(`[StackVM] no handler body for arity-decoy op ${op}`);
+      }
+      const tag = "function()";
+      const at = body.indexOf(tag);
+      if (at < 0) {
+        throw new Error(`[StackVM] handler body shape unexpected for arity-decoy op ${op}`);
+      }
+      const dv = randomName(2);
+      handlers[op] = body.slice(0, at + tag.length) + ` local ${dv}=${n.code}[${n.ip}];${n.ip}=${n.ip}+1;` + body.slice(at + tag.length);
+    }
+  }
   const lines: string[] = [];
 
   if (doStringPools) {
@@ -2698,11 +3011,14 @@ function buildVMFunction(
       lines.push(`local ${decFn}=function(_e,_dk,_s) if _s==0 then return bit32.bxor(_e,_dk) elseif _s==1 then return (_e-_dk+256)%256 elseif _s==2 then return bit32.bxor(_e,bit32.band(bit32.bor(bit32.lshift(_dk,3),bit32.rshift(_dk,5)),0xFF)) else return (_e-bit32.bxor(_dk,0xAA)+256)%256 end end`);
 
       lines.push(`local function ${n.resolveK}(_idx)`);
-      lines.push(`local _v=${n.K}[_idx]`);
+      // v2 computed-index K access (Phase 1.1 / R-2, stack side): real entry
+      // j (0-based) lives at bxor(j, eff)+1 with eff = S % #K. No literal
+      // index addresses a real constant; decoy slots are never addressed.
+      lines.push(`local _v=${n.K}[bit32.bxor(_idx-1,${constSalt}%#${n.K})+1]`);
       lines.push(`if type(_v)~="table" then return _v end`);
       lines.push(`if #_v==0 then return "" end`);
 
-      lines.push(`if _v[1]==-999 then local _r=bit32.bxor(_v[2],_v[3]);${n.K}[_idx]=_r;return _r end`);
+      lines.push(`if _v[1]==-999 then local _r=bit32.bxor(_v[2],_v[3]);${n.K}[bit32.bxor(_idx-1,${constSalt}%#${n.K})+1]=_r;return _r end`);
 
       lines.push(`local _k=bit32.bxor(${bk},_idx*${kp})`);
       lines.push(`local _st=bit32.band(bit32.rshift(_k,16),3)`);
@@ -2727,11 +3043,14 @@ function buildVMFunction(
     } else {
 
       lines.push(`local function ${n.resolveK}(_idx)`);
-      lines.push(`local _v=${n.K}[_idx]`);
+      // v2 computed-index K access (Phase 1.1 / R-2, stack side): real entry
+      // j (0-based) lives at bxor(j, eff)+1 with eff = S % #K. No literal
+      // index addresses a real constant; decoy slots are never addressed.
+      lines.push(`local _v=${n.K}[bit32.bxor(_idx-1,${constSalt}%#${n.K})+1]`);
       lines.push(`if type(_v)~="table" then return _v end`);
       lines.push(`if #_v==0 then return "" end`);
 
-      lines.push(`if _v[1]==-999 then local _r=bit32.bxor(_v[2],_v[3]);${n.K}[_idx]=_r;return _r end`);
+      lines.push(`if _v[1]==-999 then local _r=bit32.bxor(_v[2],_v[3]);${n.K}[bit32.bxor(_idx-1,${constSalt}%#${n.K})+1]=_r;return _r end`);
       lines.push(`local _k=bit32.bxor(${bk},_idx*${kp})`);
 
       if (doStringPools) {
@@ -2755,7 +3074,7 @@ function buildVMFunction(
 
   } else {
 
-    lines.push(`local function ${n.resolveK}(_idx) return ${n.K}[_idx] end`);
+    lines.push(`local function ${n.resolveK}(_idx) return ${n.K}[bit32.bxor(_idx-1,${constSalt}%#${n.K})+1] end`);
 
     if (encodeStrings) {
 
@@ -2811,10 +3130,20 @@ function buildVMFunction(
     lines.push(`${dcpName}(${n.protos})`);
   }
 
+  // R-4 split-table dispatch (Phase 1.1, max only): the handler table is
+  // divided into two tables post-assignment (even keys migrate), so no
+  // single `tab[N]=function()` table holds the opcode set. Dispatch probes
+  // both (`or` short-circuit). Non-max keeps the single table (tiering).
+  // Declared early: the codeHash tripwire below also wipes both tables.
+  const handlersB = level === "max" ? randomName(4) : "";
+  if (level === "max") lines.push(`local ${handlersB}={}`);
+  // Declared early: the R-4 snapshot below (pre-migration) needs the name.
+  const origVar = level === "max" ? randomName(4) : "";
+
   if (codeHash && level === "max") {
     const hv = randomName(3);
     lines.push(`if not ${n.initLocals} then do local ${hv}=0;for _i=1,#${n.code} do local _v=${n.code}[_i];if _v<0 then _v=_v+0x100000000 end;${hv}=bit32.bxor(${hv},_v);${hv}=bit32.lrotate(${hv},7) end`);
-    lines.push(`if ${hv}~=${codeHash} then for _k in pairs(${n.handlers}) do ${n.handlers}[_k]=nil end end end end`);
+    lines.push(`if ${hv}~=${codeHash} then for _k in pairs(${n.handlers}) do ${n.handlers}[_k]=nil end;for _k in pairs(${handlersB}) do ${handlersB}[_k]=nil end end end end`);
   }
 
   if (doPooling) {
@@ -2994,7 +3323,7 @@ function buildVMFunction(
 
   if (level === "max") {
 
-    lines.push(...generateAntiDebugChecks());
+    lines.push(...generateAntiDebugChecks(detFlag));
 
     const groupCount = 3 + Math.floor(rng() * 3);
     const shuffledAssignments = [...handlerAssignments].sort(() => rng() - 0.5);
@@ -3035,6 +3364,13 @@ function buildVMFunction(
       const key = handlerXorKey ? `bit32.bxor(${sOp},${hxk})` : `${sOp}`;
       lines.push(`local ${hotAlias.get(sOp)}=${n.handlers}[${key}]`);
     }
+    // R-4 migration: move even-keyed handlers to the split table. Aliases
+    // above already hold direct closure refs (immune to the move); fakes,
+    // shadows, and real entries all migrate uniformly via pairs-collect.
+    // Full origVar snapshot here (mutation rewrap below must see every op).
+    lines.push(`local ${origVar}={}`);
+    lines.push(`for _k,_v in pairs(${n.handlers}) do ${origVar}[_k]=_v end`);
+    lines.push(`do local _mg={};for _mk,_mv in pairs(${n.handlers}) do if bit32.band(_mk,1)==0 then _mg[#_mg+1]=_mk end end;for _,_mk in ipairs(_mg) do ${handlersB}[_mk]=${n.handlers}[_mk];${n.handlers}[_mk]=nil end end`);
 
     lines.push(`local ${detFlag}=0`);
     lines.push(`local ${punishDelay}=0`);
@@ -3078,6 +3414,8 @@ function buildVMFunction(
     lines.push(`if ${tV}>0 and _t2-${tV}>0.05 then ${detFlag}=${detFlag}+1 end end`);
 
     lines.push(`if ${detFlag}>1 then for _hk,_ in pairs(${n.handlers}) do ${n.handlers}[_hk]=function() end end end`);
+    // R-4 symmetric punishment: wipe the split table too (same guard).
+    lines.push(`if ${detFlag}>1 then for _hk,_ in pairs(${handlersB}) do ${handlersB}[_hk]=function() end end end`);
   } else {
 
     for (const assignment of handlerAssignments) {
@@ -3089,7 +3427,6 @@ function buildVMFunction(
 
     const stVar = randomName(3);
     const cycleVar = randomName(4);
-    const origVar = randomName(4);
     const dv1 = randomName(2);
     const dv2 = randomName(2);
     const dispMode = randomName(3);
@@ -3118,13 +3455,12 @@ function buildVMFunction(
 
     lines.push(`local ${stVar}=${S_RUN}`);
     lines.push(`local ${cycleVar}=0`);
-    lines.push(`local ${dv1},${dv2}=0,0`);
     lines.push(`local ${dispMode}=0`);
     lines.push(`local ${stateAcc}=${toHexInt(stateInit)}`);
     lines.push(`local ${lastOp}=0`);
     lines.push(`local ${ipMask}=${toHexInt(ipMaskInit)}`);
-    lines.push(`local ${origVar}={}`);
-    lines.push(`for _k,_v in pairs(${n.handlers}) do ${origVar}[_k]=_v end`);
+    // R-4: origVar snapshot moved above the split-table migration (it must
+    // see the complete handler set regardless of table residence).
 
     if (handlerXorKey) {
       const ahFlag = randomName(2);
@@ -3133,9 +3469,9 @@ function buildVMFunction(
 
     lines.push(`while ${stVar}~=${S_DEAD3} do`);
 
-    lines.push(`if ${stVar}==${S_DEAD1} then ${dv1}=${n.stackTop};${stVar}=${S_DEAD2}`);
+    lines.push(`if ${stVar}==${S_DEAD1} then ${stVar}=${S_DEAD2}`);
 
-    lines.push(`elseif ${stVar}==${S_DEAD2} then ${dv2}=${n.ip};${stVar}=${S_DEAD1}`);
+    lines.push(`elseif ${stVar}==${S_DEAD2} then ${stVar}=${S_DEAD1}`);
 
     lines.push(`else`);
 
@@ -3159,26 +3495,30 @@ function buildVMFunction(
     // that CALLS the aliased handler closure; every other opcode falls
     // through to the pre-existing table lookup below, so all opcodes stay
     // reachable through exactly one path. No handler body is duplicated.
+    // R-4 (Phase 1.1, max only): masked hot-chain comparisons (plain
+    // `op==N` chains are statically matched) + branchless split-table probe.
     for (let bi = 0; bi < hotShuffled.length; bi++) {
       const sOp = hotShuffled[bi];
       const hh = hotAlias.get(sOp)!;
+      const cmp = handlerXorKey ? `bit32.bxor(${opA},${hxk})==${sOp ^ handlerXorKey}` : `${opA}==${sOp}`;
       if (bi === 0) {
-        lines.push(`if ${opA}==${sOp} then ${hh}()`);
+        lines.push(`if ${cmp} then ${hh}()`);
       } else {
-        lines.push(`elseif ${opA}==${sOp} then ${hh}()`);
+        lines.push(`elseif ${cmp} then ${hh}()`);
       }
     }
 
     lines.push(`else`);
-    lines.push(handlerXorKey ? `local ${hA}=${n.handlers}[bit32.bxor(${opA},${hxk})]` : `local ${hA}=${n.handlers}[${opA}]`);
+    lines.push(handlerXorKey ? `local ${hA}=${n.handlers}[bit32.bxor(${opA},${hxk})] or ${handlersB}[bit32.bxor(${opA},${hxk})]` : `local ${hA}=${n.handlers}[${opA}] or ${handlersB}[${opA}]`);
     lines.push(`if ${hA} then ${hA}() end`);
     lines.push(`end`);
 
     lines.push(`else`);
     lines.push(`local ${opB}=${n.code}[${n.ip}]`);
     lines.push(`${n.ip}=${n.ip}+1`);
-    lines.push(handlerXorKey ? `local ${hB}=${n.handlers}[bit32.bxor(${opB},${hxk})]` : `local ${hB}=${n.handlers}[${opB}]`);
-    lines.push(`${dv1}=bit32.bxor(${dv1},${opB})`);
+    // R-4: split-table probe here too (dispMode==1 path dispatches the same
+    // migrated tables; single-table lookup would miss split residents).
+    lines.push(handlerXorKey ? `local ${hB}=${n.handlers}[bit32.bxor(${opB},${hxk})] or ${handlersB}[bit32.bxor(${opB},${hxk})]` : `local ${hB}=${n.handlers}[${opB}] or ${handlersB}[${opB}]`);
     lines.push(`${lastOp}=${opB}`);
     lines.push(`if type(${hB})=="function" then ${hB}() end`);
     lines.push(`end`);
@@ -3188,7 +3528,7 @@ function buildVMFunction(
     lines.push(`${ipMask}=bit32.lrotate(bit32.bxor(${ipMask},${lastOp}),${ipRotAmt})`);
     lines.push(`${n.ip}=bit32.bxor(${n.ip},${ipMask})`);
 
-    lines.push(`if bit32.band(${stateAcc},0xFFFFFFFF)==${toHexInt(decoyVal)} then ${n.ip}=1;${stateAcc}=0 end`);
+    lines.push(`if ${stateAcc}==${toHexInt(decoyVal)} then ${n.ip}=1;${stateAcc}=0 end`);
 
     lines.push(`${cycleVar}=${cycleVar}+1`);
     lines.push(`if bit32.band(${cycleVar},${toHexInt(switchMask)})==${switchThresh} then ${dispMode}=1-${dispMode} end`);
@@ -3196,6 +3536,11 @@ function buildVMFunction(
     lines.push(handlerXorKey
       ? `if bit32.band(${cycleVar},0xFFF)==0 then local _mi=bit32.band(${cycleVar},0x3F);local _xmi=bit32.bxor(_mi,${hxk});local _oh=${origVar}[_xmi];if _oh then ${n.handlers}[_xmi]=function() _oh() end;${n.handlers}[_xmi+128]=${n.handlers}[_xmi] end end`
       : `if bit32.band(${cycleVar},0xFFF)==0 then local _mi=bit32.band(${cycleVar},0x3F);local _oh=${origVar}[_mi];if _oh then ${n.handlers}[_mi]=function() _oh() end;${n.handlers}[_mi+128]=${n.handlers}[_mi] end end`);
+    // R-4 symmetric rewrap/punish for the split table (guarded; no-ops when
+    // the key lives in the other table).
+    lines.push(handlerXorKey
+      ? `if bit32.band(${cycleVar},0xFFF)==0 then local _mj=bit32.band(${cycleVar},0x3F);local _xj=bit32.bxor(_mj,${hxk});local _oj=${origVar}[_xj];if _oj then ${handlersB}[_xj]=function() _oj() end;${handlersB}[_xj+128]=${handlersB}[_xj] end end`
+      : `if bit32.band(${cycleVar},0xFFF)==0 then local _mj=bit32.band(${cycleVar},0x3F);local _oj=${origVar}[_mj];if _oj then ${handlersB}[_mj]=function() _oj() end;${handlersB}[_mj+128]=${handlersB}[_mj] end end`);
 
     const ahMask = [0x1FFF, 0x3FFF, 0x0FFF][Math.floor(rng() * 3)];
     lines.push(`if bit32.band(${cycleVar},${toHexInt(ahMask)})==0 and ${cycleVar}>0 then`);
@@ -3217,12 +3562,14 @@ function buildVMFunction(
     lines.push(handlerXorKey
       ? `local _xrk=bit32.bxor(_rk,${hxk});if ${n.handlers}[_xrk] then ${n.handlers}[_xrk]=function() end end`
       : `if ${n.handlers}[_rk] then ${n.handlers}[_rk]=function() end end`);
+    // R-4 symmetric punish for the split table.
+    lines.push(handlerXorKey
+      ? `local _yrk=bit32.bxor(_rk,${hxk});if ${handlersB}[_yrk] then ${handlersB}[_yrk]=function() end end`
+      : `if ${handlersB}[_rk] then ${handlersB}[_rk]=function() end end`);
     lines.push(`end`);
 
     const cfiExpect = (0xDEAD0000 | Math.floor(rng() * 0xFFFF)) >>> 0;
-    lines.push(`if bit32.band(${stateAcc},0xFFFFFFFF)==${toHexInt(cfiExpect)} then ${n.ip}=1;${detFlag}=${detFlag}+99 end`);
-
-    lines.push(`${dv2}=bit32.bxor(${n.stackTop},bit32.band(${stateAcc},0xFF))`);
+    lines.push(`if ${stateAcc}==${toHexInt(cfiExpect)} then ${n.ip}=1;${detFlag}=${detFlag}+99 end`);
 
     lines.push(`end`);
 
@@ -3431,7 +3778,21 @@ export interface VMGenOptions {
 
   vmId?: string;
 
-  polymorphicSeed?: number;
+  /**
+   * Phase 1.2(b) string-seed contract: number | string.
+   * - number: legacy 32-bit stream, bit-for-bit history preserved;
+   *   0 honored, negatives wrap (unchanged).
+   * - string: any UTF-16 string (empty valid, deterministic, distinct from
+   *   absent), hashed by code unit through two cyrb128 passes (distinct
+   *   domain separators) into 128-bit sfc32 state. Claimed space 2^128
+   *   (below the 71! opcode-permutation bound); >= 16 chars recommended
+   *   for full entropy — short/human seeds proportionally less.
+   * - absent: legacy nondeterministic fallback (unchanged).
+   * Nested builds derive domain-separated string sub-seeds (parent plus
+   * " inner"/" outer" suffixes — injective and mutually exclusive, see
+   * generateVM), so each layer takes the wide path.
+   */
+  polymorphicSeed?: number | string;
 
   disableFeatures?: FeatureFlag[];
 
@@ -3456,16 +3817,23 @@ export function generateVM(chunk: BytecodeChunk, options: VMGenOptions = {}): st
   const nesting = options.nesting ?? 0;
 
   // `??` (not `||`) so an explicit seed of 0 is honored as deterministic.
-  const seed = options.polymorphicSeed ?? (Date.now() ^ (Math.random() * 0xFFFFFFFF));
+  // Phase 1.2(b): string seeds take the 128-bit path; the numeric
+  // expression below is byte-identical to before for numbers.
+  const seed: number | string = options.polymorphicSeed ?? (Date.now() ^ (Math.random() * 0xFFFFFFFF));
   const seeded = options.polymorphicSeed !== undefined && options.polymorphicSeed !== null;
-  seedRandom(seed);
+  if (typeof seed === "string") seedRandom128(seed); else seedRandom(seed);
 
   if (nesting > 0 && !options.forceSingleVM) {
-    const innerSeed = (seed * 2654435761) >>> 0;
-    const outerSeed = (seed * 2246822519) >>> 0;
+    // Numeric sub-seed derivation is unchanged; string seeds derive
+    // domain-separated string sub-seeds so each nested layer takes the
+    // wide path. Suffixes are collision-free by construction: s+" inner"
+    // is injective per parent, and no s1+" inner" can equal any
+    // s2+" outer" (the 5-char suffixes differ).
+    const innerSeed = typeof seed === "string" ? seed + " inner" : (seed * 2654435761) >>> 0;
+    const outerSeed = typeof seed === "string" ? seed + " outer" : (seed * 2246822519) >>> 0;
     const vmId = options.vmId ?? "nested";
 
-    console.log(`[telemetry:${vmId}] Generating inner VM (seed=${innerSeed})...`);
+    if (_tel()) console.log(`[telemetry:${vmId}] Generating inner VM (seed=${innerSeed})...`);
     const t0 = Date.now();
 
     const safeInnerFeatures: FeatureFlag[] = [
@@ -3493,15 +3861,15 @@ export function generateVM(chunk: BytecodeChunk, options: VMGenOptions = {}): st
       forceFeatures: innerForced,
     });
     const t1 = Date.now();
-    console.log(`[telemetry:inner] inner_vm_size: ${innerVM.length} chars (${t1 - t0}ms)`);
+    if (_tel()) console.log(`[telemetry:inner] inner_vm_size: ${innerVM.length} chars (${t1 - t0}ms)`);
 
     try {
-      console.log(`[telemetry:${vmId}] Compiling inner VM to bytecode...`);
+      if (_tel()) console.log(`[telemetry:${vmId}] Compiling inner VM to bytecode...`);
       const innerChunk = compileString(innerVM);
       const t2 = Date.now();
-      console.log(`[telemetry:inner] inner_compile: ${t2 - t1}ms, ${innerChunk.code.length} instructions, ${innerChunk.K.length} constants, ${(innerChunk.protos || []).length} protos`);
+      if (_tel()) console.log(`[telemetry:inner] inner_compile: ${t2 - t1}ms, ${innerChunk.code.length} instructions, ${innerChunk.K.length} constants, ${(innerChunk.protos || []).length} protos`);
 
-      console.log(`[telemetry:${vmId}] Generating outer VM (seed=${outerSeed})...`);
+      if (_tel()) console.log(`[telemetry:${vmId}] Generating outer VM (seed=${outerSeed})...`);
       const outerVM = generateVM(innerChunk, {
         level: "max",
         nesting: 0,
@@ -3510,12 +3878,12 @@ export function generateVM(chunk: BytecodeChunk, options: VMGenOptions = {}): st
         executorGlobals: true,
       });
       const t3 = Date.now();
-      console.log(`[telemetry:outer] outer_vm_size: ${outerVM.length} chars (${t3 - t2}ms)`);
-      console.log(`[telemetry:${vmId}] Total nested VM: ${outerVM.length} chars (${t3 - t0}ms)`);
+      if (_tel()) console.log(`[telemetry:outer] outer_vm_size: ${outerVM.length} chars (${t3 - t2}ms)`);
+      if (_tel()) console.log(`[telemetry:${vmId}] Total nested VM: ${outerVM.length} chars (${t3 - t0}ms)`);
       if (outerVM.length > 800000) {
         console.warn(`[telemetry:${vmId}] WARNING: output > 800KB (${outerVM.length})`);
       }
-      console.log(`[telemetry:${vmId}] compile_errors: 0, fallback_used: false`);
+      if (_tel()) console.log(`[telemetry:${vmId}] compile_errors: 0, fallback_used: false`);
       return outerVM;
     } catch (e: any) {
       console.error(`[telemetry:${vmId}] compileString FAILED: ${e.message}`);
@@ -3524,8 +3892,8 @@ export function generateVM(chunk: BytecodeChunk, options: VMGenOptions = {}): st
       }
 
       console.warn(`[telemetry:${vmId}] Falling back to single VM (max level)`);
-      console.log(`[telemetry:${vmId}] compile_errors: 1, fallback_used: true`);
-      seedRandom(outerSeed);
+      if (_tel()) console.log(`[telemetry:${vmId}] compile_errors: 1, fallback_used: true`);
+      if (typeof outerSeed === "string") seedRandom128(outerSeed); else seedRandom(outerSeed);
       return generateVM(chunk, {
         level: "max",
         nesting: 0,
@@ -3543,6 +3911,8 @@ export function generateVM(chunk: BytecodeChunk, options: VMGenOptions = {}): st
   const doMinify = featureEnabled(options, "minification", level === "max");
   const xorKey = encodeStrings ? (1 + Math.floor(rng() * 254)) : 0;
   const xorStep = encodeStrings ? (1 + Math.floor(rng() * 254)) : 0;
+  // v2 computed-index K salt (Phase 1.1 / R-2): odd artifact-wide seed.
+  const constSalt = 1 + 2 * Math.floor(rng() * 32768);
   const codeXorKey = (level !== "debug") ? (1 + Math.floor(rng() * 254)) : 0;
   const doFragment = featureEnabled(options, "stringFragment", level === "max");
   const doConstantFold = featureEnabled(options, "constantFolding", level === "max");
@@ -3567,6 +3937,13 @@ export function generateVM(chunk: BytecodeChunk, options: VMGenOptions = {}): st
     flattenChunk(chunk);
   }
 
+  if (doShuffle && STACK_LEAD_DECOY.size > 0) {
+    const decoySalt = 1 + Math.floor(rng() * 0xFFFF);
+    applyArityDecoysChunk(chunk, decoySalt);
+    _stackArityDecoysActive = true;
+  }
+
+  try {
   if (doContextOps) {
     contextTransformChunk(chunk, ctxInit, ctxPrime);
   }
@@ -3621,7 +3998,9 @@ export function generateVM(chunk: BytecodeChunk, options: VMGenOptions = {}): st
   const doStringPools = level === "max" && doLazyDecode;
   const poolsVarName = doStringPools ? randomName(3) : "";
 
-  const vmFunction = buildVMFunction(n, opcodeEncode, level, encodeStrings, xorKey, xorStep, effectiveCodeXorKey, codeHash, lazyBaseKey, lazyKeyPrime, ctxInit, ctxPrime, jumpKey, protoKeys, cipherSeeds, doMutation, doPooling, poolsVarName, hotRealOps);
+  const vmFunction = buildVMFunction(n, opcodeEncode, level, encodeStrings, xorKey, xorStep,
+    effectiveCodeXorKey, codeHash, lazyBaseKey, lazyKeyPrime, ctxInit, ctxPrime, jumpKey, protoKeys, cipherSeeds,
+    doMutation, doPooling, poolsVarName, hotRealOps, constSalt);
 
   const honeypotPool = [
     "RemoteEvent","FireServer","InvokeServer","OnServerEvent","OnClientEvent",
@@ -3672,11 +4051,11 @@ export function generateVM(chunk: BytecodeChunk, options: VMGenOptions = {}): st
 
     const poolParts = pools.map(p => `{${p.join(",")}}`);
     poolsSerialized = `{${poolParts.join(",")}}`;
-    console.log(`[§69] String pools: ${pools.length} pools, ${pools.reduce((a, p) => a + p.length, 0)} total bytes`);
+    if (_tel()) console.log(`[§69] String pools: ${pools.length} pools, ${pools.reduce((a, p) => a + p.length, 0)} total bytes`);
   }
 
-  const dataK = serializeConstants(finalK, encodeStrings, xorKey, doLazyDecode ? false : doFragment, xorStep, doConstantFold, lazyBaseKey, lazyKeyPrime, doMutation);
-  const dataP = serializeProtos(chunk.protos, opcodeEncode, encodeStrings, doShuffle, xorKey, doLazyDecode ? false : doFragment, xorStep, effectiveCodeXorKey, doConstantFold, lazyBaseKey, lazyKeyPrime, level === "max", protoKeys, cipherSeeds, doMutation);
+  const dataK = serializeConstants(finalK, encodeStrings, xorKey, doLazyDecode ? false : doFragment, xorStep, doConstantFold, lazyBaseKey, lazyKeyPrime, doMutation, constSalt);
+  const dataP = serializeProtos(chunk.protos, opcodeEncode, encodeStrings, doShuffle, xorKey, doLazyDecode ? false : doFragment, xorStep, effectiveCodeXorKey, doConstantFold, lazyBaseKey, lazyKeyPrime, level === "max", protoKeys, cipherSeeds, doMutation, constSalt);
 
   const dK = randomName(3);
   const dC = randomName(3);
@@ -3751,14 +4130,8 @@ export function generateVM(chunk: BytecodeChunk, options: VMGenOptions = {}): st
     const fpHex = fingerprint.toString(16).padStart(8, '0').toUpperCase();
 
     const artLines = [
-      `   ___ _         _       ___         _          _   _           __   ___ `,
-      `  / __| |_  _ __| |___  | _ \\_ _ ___| |_ ___ __| |_(_)___ _ _   \\ \\ / / |`,
-      ` | (__| | || / _\` / -_) |  _/ '_/ _ \\  _/ -_) _|  _| / _ \\ ' \\   \\ V /| |`,
-      `  \\___|_|\\_, \\__,_\\___| |_| |_| \\___/\\__\\___\\__|\\__|_\\___/_||_|   \\_/ |_|`,
-      `         |__/`,
-      ``,
-      `  https://clydeprotectionde.cloud`,
-      `  build ${fpHex}`,
+      `Quantum Protection V2`,
+      `https://discord.gg/DvjFNyyjuH | Protected By Quantum Obfuscator`,
     ];
 
     for (let li = 0; li < 8 && li < artLines.length; li++) {
@@ -3772,5 +4145,8 @@ export function generateVM(chunk: BytecodeChunk, options: VMGenOptions = {}): st
     output = watermark + output;
   }
 
-  return output;
+    return output;
+  } finally {
+    _stackArityDecoysActive = false;
+  }
 }

@@ -105,7 +105,7 @@ export function addConst(chunk: BytecodeChunk, value: Constant): number {
   return idx;
 }
 
-export const RK_OFFSET = 256;
+export const RK_OFFSET = 2049;
 
 export function RK(kIndex: number): number {
   return kIndex + RK_OFFSET;
@@ -178,9 +178,109 @@ export const enum RegOp {
   FUSED_GGET_CALL   = 54,
   FUSED_LOADK_RET   = 55,
   FUSED_MOVE_RET    = 56,
+  FUSED_ADD_MOVE    = 57,
+  FUSED_MUL_ADD     = 58,
+  DECOY_0           = 59,
+  DECOY_1           = 60,
+  DECOY_2           = 61,
+  DECOY_3           = 62,
 }
 
-export const REG_OPCODE_COUNT = 57;
+export const REG_OPCODE_COUNT = 63;
+
+/**
+ * Phase 1.2(c): sparse per-build opcode wire space (both VMs).
+ *
+ * Wire opcode values are drawn uniformly from 0..SPARSE_OPCODE_RANGE-1 so the
+ * per-build map is a random injection with `range - count` gaps — never a
+ * contiguous 0..count-1 image. Ceiling rationale (7 bits, 128):
+ *  - reg packed wire: H = op*16 + argc, worst case 127*16 + 11 = 2043
+ *    (11 bits << 2^53); floor(H/16) decode stays exact.
+ *  - stack VLE: every wire opcode stays v < 128 => single byte (uniform
+ *    length class; 0..255 would introduce two-byte opcode signatures).
+ *  - stack max-level 0..127 key scan / split-table probe stay complete.
+ *  - reg shape-B dispatch mask (1..254, 8-bit) covers the 7-bit space.
+ * Headroom: 57 reg / 71 stack real ops today. (e) fused additions must keep
+ * the total <= SPARSE_OPCODE_RANGE or must widen it first (both generators
+ * throw at generation time if count > range — never a silent overflow).
+ */
+export const SPARSE_OPCODE_RANGE = 128;
+export const STACK_OPCODE_COUNT = 77;
+
+/**
+ * v2 packed-wire operand masks (Phase 1.1 / R-2).
+ *
+ * The on-wire instruction stream is variable-length: each instruction is a
+ * header word H = shuffledOp * 16 + argc followed by its operand words.
+ * Bit i of the mask = operand slot i+1 is semantically read by some handler
+ * body and must be present on the wire; other slots are dropped at pack
+ * time (their values are never read). argc = popcount(mask).
+ *
+ * Fused multi-quad ops bypass masks (their trailing quads are consumed
+ * verbatim — see REG_FUSED_SLOTS); every other op packs to 1 + popcount.
+ */
+export const REG_OP_MASK: number[] = (() => {
+  const m = new Array<number>(REG_OPCODE_COUNT).fill(0b111);
+  m[RegOp.NOP] = 0b000;
+  m[RegOp.LOADK] = 0b011;
+  m[RegOp.LOADNIL] = 0b011;
+  m[RegOp.MOVE] = 0b011;
+  m[RegOp.LOADKX] = 0b001;
+  m[RegOp.EXTRAARG] = 0b001;
+  m[RegOp.GETGLOBAL] = 0b011;
+  m[RegOp.SETGLOBAL] = 0b011;
+  m[RegOp.NEWTABLE] = 0b001;
+  m[RegOp.UNM] = 0b011;
+  m[RegOp.NOT] = 0b011;
+  m[RegOp.LEN] = 0b011;
+  m[RegOp.JMP] = 0b010;
+  m[RegOp.TEST] = 0b101;
+  m[RegOp.RETURN] = 0b011;
+  m[RegOp.FORPREP] = 0b011;
+  m[RegOp.FORLOOP] = 0b011;
+  m[RegOp.TFORLOOP] = 0b101;
+  m[RegOp.ITERPREP] = 0b001;
+  m[RegOp.GETUPVAL] = 0b011;
+  m[RegOp.SETUPVAL] = 0b011;
+  m[RegOp.CLOSEUPVAL] = 0b001;
+  m[RegOp.VARARG] = 0b011;
+  m[RegOp.CLOSURE] = 0b011;
+  // Phase 1.2(f): decoy opcodes - plausible arity, no-op bodies.
+  m[RegOp.DECOY_0] = 0b000;
+  m[RegOp.DECOY_1] = 0b001;
+  m[RegOp.DECOY_2] = 0b011;
+  m[RegOp.DECOY_3] = 0b111;
+  return m;
+})();
+
+/** Quad slots consumed per fused op (fused op quad + trailing NOP quads). */
+export const REG_FUSED_SLOTS = new Map<number, number>([
+  [RegOp.FUSED_TEST_JMP, 2],
+  [RegOp.FUSED_EQ_JMP, 2],
+  [RegOp.FUSED_LT_JMP, 2],
+  [RegOp.FUSED_LE_JMP, 2],
+  [RegOp.FUSED_TESTSET_JMP, 2],
+  [RegOp.FUSED_GGET, 2],
+  [RegOp.FUSED_LOADKK, 2],
+  [RegOp.FUSED_MOVE_MOVE, 2],
+  [RegOp.FUSED_SELF_CALL, 2],
+  [RegOp.FUSED_GGET_CALL, 3],
+  [RegOp.FUSED_LOADK_RET, 2],
+  [RegOp.FUSED_MOVE_RET, 2],
+  [RegOp.FUSED_ADD_MOVE, 2],
+  [RegOp.FUSED_MUL_ADD, 2],
+]);
+
+/** Ops whose bodies can advance past exactly one following instruction. */
+export const REG_SKIP_OPS = new Set<number>([
+  RegOp.TEST, RegOp.EQ, RegOp.LT, RegOp.LE, RegOp.TESTSET,
+  RegOp.LOADBOOL, RegOp.TFORLOOP,
+]);
+
+export function regOpArgc(op: number): number {
+  const mask = REG_OP_MASK[op] ?? 0b111;
+  return (mask & 1) + ((mask >> 1) & 1) + ((mask >> 2) & 1);
+}
 
 export interface RegInstruction {
   op: RegOp;
@@ -203,6 +303,10 @@ export interface RegBytecodeChunk {
 
   isVararg: boolean;
 
+  /** Per-build RK_OFFSET (threshold separating register from constant
+   *  indices). Defaults to RK_OFFSET (2049) when unset. */
+  rkOffset?: number;
+
   protos?: RegBytecodeChunk[];
 
   upvalues?: [number, number][];
@@ -213,9 +317,10 @@ export function regEmit(chunk: RegBytecodeChunk, op: RegOp, A: number = 0, B: nu
   chunk.code.push(op, A, B, C);
   chunk.nInstructions++;
 
-  if (A >= 0 && A < RK_OFFSET) chunk.maxRegs = Math.max(chunk.maxRegs, A + 1);
-  if (B >= 0 && B < RK_OFFSET) chunk.maxRegs = Math.max(chunk.maxRegs, B + 1);
-  if (C >= 0 && C < RK_OFFSET) chunk.maxRegs = Math.max(chunk.maxRegs, C + 1);
+  const _rkOff = chunk.rkOffset ?? RK_OFFSET;
+  if (A >= 0 && A < _rkOff) chunk.maxRegs = Math.max(chunk.maxRegs, A + 1);
+  if (B >= 0 && B < _rkOff) chunk.maxRegs = Math.max(chunk.maxRegs, B + 1);
+  if (C >= 0 && C < _rkOff) chunk.maxRegs = Math.max(chunk.maxRegs, C + 1);
   return pos;
 }
 
@@ -251,7 +356,7 @@ export function regAddConst(chunk: RegBytecodeChunk, value: Constant): number {
   return idx;
 }
 
-export function createRegChunk(): RegBytecodeChunk {
+export function createRegChunk(rkOffset?: number): RegBytecodeChunk {
   return {
     K: [],
     code: [],
@@ -259,6 +364,7 @@ export function createRegChunk(): RegBytecodeChunk {
     maxRegs: 0,
     nParams: 0,
     isVararg: false,
+    rkOffset: rkOffset ?? RK_OFFSET,
   };
 }
 

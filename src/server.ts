@@ -8,6 +8,7 @@ import { runObfuscatePipeline, PipelineLexError } from "./engine/obfuscatePipeli
 import type { PipelineVmType, PipelineVmLevel } from "./engine/obfuscatePipeline.js";
 import { resolveProfile } from "./engine/profiles.js";
 import type { ProtectionProfile, ObfuscationTarget } from "./engine/profiles.js";
+import { cacheKey } from "./cacheKey.js";
 
 const VALID_PROFILES: ProtectionProfile[] = ["FAST", "BALANCED", "MAXIMUM"];
 
@@ -24,10 +25,7 @@ const obfuscateCache = new Map<string, { output: string; expires: number }>();
 const OBFUSCATE_CACHE_MAX = 50;
 const OBFUSCATE_CACHE_TTL_MS = 5 * 60 * 1000;
 
-function cacheKey(code: string, opts: Record<string, unknown>): string {
-  return JSON.stringify([code.length, code, opts]);
-}
-
+// (cacheKey lives in ./cacheKey.js: pure, unit-tested, no express import.)
 function cacheGet(key: string): string | null {
   const entry = obfuscateCache.get(key);
   if (!entry) return null;
@@ -86,8 +84,11 @@ app.post("/api/obfuscate", (req: express.Request, res: express.Response) => {
     // Omitted = legacy random behavior (decoder names, polymorphic seeds).
     const seed = typeof opts.seed === "number" ? opts.seed : undefined;
     // Exact polymorphic seed override (additive, optional). Omitted = derived
-    // from seed, else wall-clock/random per generator.
-    const polymorphicSeed = typeof opts.polymorphicSeed === "number" ? opts.polymorphicSeed : undefined;
+    // from seed, else wall-clock/random per generator. Phase 1.2(b): accepts
+    // number (legacy 32-bit path) or string (128-bit path); the cache key
+    // discriminates the type (see ./cacheKey.js), so 1234 and "1234" never
+    // share an entry.
+    const polymorphicSeed = typeof opts.polymorphicSeed === "number" || typeof opts.polymorphicSeed === "string" ? opts.polymorphicSeed : undefined;
     // Explicit protection profile (FAST/BALANCED/MAXIMUM) and environment
     // target (generic/roblox). Absent profile = legacy behavior below.
     const profile: ProtectionProfile | undefined = VALID_PROFILES.includes(opts.profile)
@@ -164,9 +165,30 @@ app.post("/api/obfuscate", (req: express.Request, res: express.Response) => {
   }
 });
 
+// JSON error envelope for API requests. In-route JSON responses above are
+// untouched; this normalizes only what previously escaped as HTML: body-parser
+// failures (malformed JSON, oversized raw bodies), unknown /api/* routes, and
+// any uncaught error carrying err.status. Static-file 404s keep default HTML.
+app.use("/api", (req: express.Request, res: express.Response) => {
+  res.status(404).json({ error: "Unknown API endpoint" }) as any;
+});
+
+app.use((err: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+  if (err?.type === "entity.parse.failed") {
+    return res.status(400).json({ error: "Malformed JSON request body" }) as any;
+  }
+  if (err?.type === "entity.too.large") {
+    return res.status(413).json({ error: "Code payload too large (max 1MB)" }) as any;
+  }
+  if (err?.status) {
+    return res.status(err.status).json({ error: err.message || "Request error" }) as any;
+  }
+  return res.status(500).json({ error: `Server error: ${err?.message || err}` }) as any;
+});
+
 app.listen(PORT, () => {
   const url = `http://localhost:${PORT}`;
-  console.log(`\nClyde Obfuscator Server running at: ${url}`);
+  console.log(`\nQuantum Obfuscator Server running at: ${url}`);
   console.log("Press CTRL+C to terminate.\n");
 
   exec(`start ${url}`, (err) => {

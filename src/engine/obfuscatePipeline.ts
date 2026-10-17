@@ -1,5 +1,6 @@
 import { lex } from "../lexer/Lexer.js";
-import { parse } from "../parser/Parser.js";
+import { parseWithErrors } from "../parser/Parser.js";
+import type { Token, SourceLocation } from "../tokens.js";
 import { obfuscate } from "../obfuscator/Obfuscator.js";
 import { encodeStrings } from "../obfuscator/StringEncoder.js";
 import { scrambleControlFlow } from "../obfuscator/ControlFlowScrambler.js";
@@ -24,8 +25,15 @@ export interface PipelineOptions {
   vmLevel: PipelineVmLevel;
   /** Deterministic seed for encode/scramble/polymorphic generation. Omitted = legacy random. */
   seed?: number;
-  /** VM polymorphic seed override. Defaults to seed ?? Date.now(). */
-  polymorphicSeed?: number;
+  /**
+   * VM polymorphic seed override. Defaults to seed ?? Date.now().
+   * Phase 1.2(b): number | string. Numbers keep the legacy 32-bit stream
+   * bit-for-bit; strings (any UTF-16 incl. empty — valid, deterministic,
+   * distinct from absent) take the 128-bit sfc32 path (claimed space 2^128;
+   * >= 16 chars recommended for full entropy). Passed through to the VM
+   * generators, which document the full contract on their options.
+   */
+  polymorphicSeed?: number | string;
   /** Extra VM feature gates, appended to level-implied defaults. */
   disableFeatures?: string[];
   /** Stack VM only. Passed through to generateVM. */
@@ -56,11 +64,46 @@ export class PipelineLexError extends Error {
   }
 }
 
+export class PipelineParseError extends Error {
+  details: unknown[];
+  constructor(details: unknown[]) {
+    super("Parse error");
+    this.name = "PipelineParseError";
+    this.details = details;
+  }
+}
+
+/**
+ * Truncation guard (CLI exit-code hygiene; Parser.ts intentionally untouched).
+ * The parser silently drops failed trailing constructs (`local x =`, `1 + `)
+ * without recording an error. A complete chunk can never end with a
+ * continuation-demanding token, so such an ending is always invalid input.
+ * Returns a parser-shaped diagnostic, or null when the ending is clean.
+ * Zero false positives over the benchmark corpus (gated by cli-exit-codes).
+ */
+const DANGLING_END_TOKENS = new Set([
+  "=", "(", ",",
+  "+", "-", "*", "/", "%", "^", "..",
+  "<", ">", "<=", ">=", "==", "~=",
+  "&", "|", "~", ">>", "<<", "//",
+  "and", "or", "not",
+]);
+export function checkTruncatedInput(tokens: Token[]): { message: string; loc: SourceLocation } | null {
+  let end = tokens.length - 1;
+  while (end >= 0 && tokens[end]!.type === "EOF") end--;
+  if (end < 0) return null;
+  const t = tokens[end]!;
+  if ((t.type === "Punctuator" || t.type === "Keyword") && "value" in t && DANGLING_END_TOKENS.has((t as { value: string }).value)) {
+    return { message: "Unexpected end of input", loc: (t as { loc: SourceLocation }).loc };
+  }
+  return null;
+}
+
 /**
  * Single shared obfuscation engine used by the server and all CLIs.
  * Sequence: lex -> parse -> [encode] -> [scramble] -> rename ->
  *   stack: compile + generateVM | register: regCompile + generateRegVM | none: print.
- * Throws PipelineLexError on lex errors; lets parse errors propagate.
+ * Throws PipelineLexError on lex errors and PipelineParseError on parse errors.
  */
 export function runObfuscatePipeline(code: string, opts: PipelineOptions): string {
   const { tokens, errors: lexErrors } = lex(code);
@@ -68,7 +111,15 @@ export function runObfuscatePipeline(code: string, opts: PipelineOptions): strin
     throw new PipelineLexError(lexErrors);
   }
 
-  let ast = parse(tokens);
+  const parsed = parseWithErrors(tokens);
+  if (parsed.errors.length > 0) {
+    throw new PipelineParseError(parsed.errors);
+  }
+  const truncated = checkTruncatedInput(tokens);
+  if (truncated) {
+    throw new PipelineParseError([truncated]);
+  }
+  let ast = parsed.ast;
 
   if (opts.encodeStrings) {
     ast = encodeStrings(ast, opts.seed !== undefined ? { enabled: true, seed: opts.seed } : { enabled: true });
@@ -103,7 +154,20 @@ export function runObfuscatePipeline(code: string, opts: PipelineOptions): strin
   }
 
   if (opts.vmType === "register") {
-    const chunk = regCompile(obfuscated);
+    // Phase 1.2(g): per-build RK_OFFSET drawn from odd non-power-of-two
+    // domain [2049, 8191], seeded by polySeed. Threaded to both regCompile
+    // and generateRegVM so compile-time and runtime thresholds agree.
+    const rkOffset = (() => {
+      let seedNum = 0;
+      if (typeof polySeed === "number") seedNum = polySeed | 0;
+      else for (let i = 0; i < String(polySeed).length; i++) seedNum = (seedNum * 31 + String(polySeed).charCodeAt(i)) | 0;
+      let v = 2049 + (Math.abs(seedNum) % 3072) * 2;
+      if (v % 2 === 0) v += 1;
+      if (v > 8191) v = 8191;
+      if (v < 2049) v = 2049;
+      return v;
+    })();
+    const chunk = regCompile(obfuscated, { rkOffset });
     opts.onBytecode?.({
       instructions: chunk.code.length / 4,
       constants: chunk.K.length,
@@ -118,6 +182,7 @@ export function runObfuscatePipeline(code: string, opts: PipelineOptions): strin
       level: opts.vmLevel as RegVMLevel,
       executorGlobals,
       polymorphicSeed: polySeed,
+      rkOffset,
       disableFeatures: disableFeatures as any[],
       ...(opts.debugTrace !== undefined ? { debugTrace: opts.debugTrace } : {}),
       ...(opts.target !== undefined ? { target: opts.target } : {}),

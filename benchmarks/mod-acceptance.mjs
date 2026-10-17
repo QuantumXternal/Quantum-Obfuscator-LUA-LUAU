@@ -100,7 +100,7 @@ function compileSrc(src) {
   return compile(obfuscate(parse(lex(src).tokens), { renameLocals: false, preserveGlobals: true }));
 }
 function cloneChunk(c) {
-  return { K: [...c.K], code: [...c.code], protos: (c.protos || []).map(cloneChunk) };
+  return { ...c, K: [...c.K], code: [...c.code], protos: (c.protos || []).map(cloneChunk) };
 }
 function quietGenerate(chunk, seed) {
   const orig = console.log;

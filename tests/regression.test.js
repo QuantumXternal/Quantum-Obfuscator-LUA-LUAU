@@ -721,7 +721,7 @@ describe("fusion census (metric layer)", () => {
     expect(get(m, "LOADKK")).toBe(1);
     expect(get(m, "EQ_JMP")).toBe(0);
     expect(m.greedyTotal).toBe(4);
-    expect(m.perPattern.length).toBe(12);
+    expect(m.perPattern.length).toBe(14);
   });
   test("overlap: GGET_CALL site also matches GGET prefix; greedy counts once", () => {
     const code = [5, 0, 0, 0, 7, 0, 0, 0, 27, 0, 2, 1];
