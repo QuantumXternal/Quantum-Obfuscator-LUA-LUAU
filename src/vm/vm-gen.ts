@@ -1241,7 +1241,11 @@ export function wrapCustomCipher(source: string, seed?: number | string): string
   maybeJunk(lines);
 
   const envVariant = 0;
-  lines.push(`local ${vEnv}=(type(getfenv)=="function" and getfenv(0) or _G)`);
+  // Phase 5 / Step 3: restricted-executor hardening. getfenv may be present
+  // but blocked (throws) or absent; a bare `getfenv(0)` hard-crashes there.
+  // pcall-guarded call, table-typed result, else _G. Semantics preserved:
+  // prefers getfenv(0) exactly as before on hosts where it works.
+  lines.push(`local ${vEnv}=(function() local ok,r=pcall(getfenv,0) if ok and type(r)=="table" then return r end return _G end)()`);
 
   const builtinLines: string[] = [
     `local ${vTc}=${vEnv}[${vSc}(116,97,98,108,101)][${vSc}(99,111,110,99,97,116)]`,
@@ -1591,7 +1595,8 @@ export function wrapNestedVM(source: string, seed?: number | string): string {
   // exact RNG/name-counter stream for all downstream generation.
   emitHoneypot();
 
-  L.push(`local ${vEnv}=(type(getfenv)=="function" and getfenv(0) or _G)`);
+  // Phase 5 / Step 3: same restricted-executor guard as the primary path.
+  L.push(`local ${vEnv}=(function() local ok,r=pcall(getfenv,0) if ok and type(r)=="table" then return r end return _G end)()`);
   const builtins = [
     `local ${vTc}=${vEnv}[${vSc}(${encSC('table')})][${vSc}(${encSC('concat')})]`,
     `local ${vLd}=${vEnv}[${vSc}(${encSC('loadstring')})] or ${vEnv}[${vSc}(${encSC('load')})]`,
@@ -2311,7 +2316,9 @@ function buildEnvSetup(
   const env = n.env;
 
   if (level === "debug") {
-    let code = `local ${genv}=(type(getgenv)=="function" and getgenv())or(type(getfenv)=="function" and getfenv(0))or _G\n`;
+    // Phase 5 / Step 3: each resolver is attempted under pcall; restricted
+    // stubs (present but throwing) degrade to _G instead of hard-crashing.
+    let code = `local ${genv}=(function() local ok,r=pcall(getgenv) if ok and type(r)=="table" then return r end ok,r=pcall(getfenv,0) if ok and type(r)=="table" then return r end return _G end)()\n`;
     const entries = CORE_GLOBALS.map(g => `${g}=${g}`).join(",");
     code += `local ${env}=setmetatable({${entries}},{__index=function(_,k) local ok,v=pcall(function() return ${genv}[k] end);if ok then return v end;return nil end})\n`;
     if (includeExecutor) {
@@ -2352,7 +2359,7 @@ function buildEnvSetup(
   const _ldEnc = _ldChars.map(c => (c + _lsKey) % 256);
   const _tmpN = randomName(2);
 
-  lines.push(`local ${_ldFunc}=(function() local ${_tmpN}=${luaEsc("")};for _,_c in ipairs({${_lsEnc.join(",")}}) do ${_tmpN}=${_tmpN}..${bSC}((_c-${_lsKey}+256)%256) end;local _f=(type(getfenv)=="function" and getfenv(0) or _G)[${_tmpN}];if _f then return _f end;${_tmpN}=${luaEsc("")};for _,_c in ipairs({${_ldEnc.join(",")}}) do ${_tmpN}=${_tmpN}..${bSC}((_c-${_lsKey}+256)%256) end;return (type(getfenv)=="function" and getfenv(0) or _G)[${_tmpN}] end)()`);
+  lines.push(`local ${_ldFunc}=(function() local ${_tmpN}=${luaEsc("")};for _,_c in ipairs({${_lsEnc.join(",")}}) do ${_tmpN}=${_tmpN}..${bSC}((_c-${_lsKey}+256)%256) end;local _f=(function() local _ok,_r=pcall(getfenv,0) if _ok and type(_r)=="table" then return _r end return _G end)()[${_tmpN}];if _f then return _f end;${_tmpN}=${luaEsc("")};for _,_c in ipairs({${_ldEnc.join(",")}}) do ${_tmpN}=${_tmpN}..${bSC}((_c-${_lsKey}+256)%256) end;return (function() local _ok,_r=pcall(getfenv,0) if _ok and type(_r)=="table" then return _r end return _G end)()[${_tmpN}] end)()`);
   lines.push(`local ${bLS}=${_ldFunc}`);
 
   const _resolver = randomName(4);
