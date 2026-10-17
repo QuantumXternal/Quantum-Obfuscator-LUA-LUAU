@@ -9,6 +9,15 @@ export interface MBAOptions {
   seed?: number;
 }
 
+/**
+ * Tables with more fields than this skip MBA number expansion (see the
+ * TableConstructor case). Expanding every number in large static data
+ * tables (UI property maps, lookup arrays) multiplies node count ~3-6x per
+ * number with no logic-protection value; nested functions inside such
+ * tables are still fully transformed.
+ */
+export const MBA_TABLE_FIELD_BUDGET = 50;
+
 function mulberry32(seed: number): () => number {
   let a = seed >>> 0;
   return () => {
@@ -29,6 +38,30 @@ const VARIANTS = [
   (n: number, v: string) => `(${v} - (${v} - ${n}))`,
   (n: number, v: string) => `((${v} * 0 + ${n}) + (${v} - ${v}))`,
 ];
+
+/**
+ * Walk a skipped (large-table) subtree without transforming numbers, but
+ * apply full MBA to nested FunctionExpression bodies (callbacks and
+ * metamethods carry logic, unlike the bulk data around them). Mutates child
+ * references in place; the pass is single-shot per build.
+ */
+function transformFunctionsOnly(node: any, rng: () => number, varName: string): any {
+  if (!node || typeof node !== "object") return node;
+  if (Array.isArray(node)) {
+    for (let i = 0; i < node.length; i++) node[i] = transformFunctionsOnly(node[i], rng, varName);
+    return node;
+  }
+  if (node.type === "FunctionExpression") {
+    node.body = (node.body || []).map((s: any) => transformStatement(s, rng, varName));
+    return node;
+  }
+  for (const k of Object.keys(node)) {
+    if (k === "loc" || k === "type") continue;
+    const v = node[k];
+    if (v && typeof v === "object") node[k] = transformFunctionsOnly(v, rng, varName);
+  }
+  return node;
+}
 
 export function mbaTransformExpression(exp: Expression, rng: () => number, varName: string): Expression {
   if (exp.type === "NumberLiteral") {
@@ -86,7 +119,16 @@ export function mbaTransformExpression(exp: Expression, rng: () => number, varNa
     return { ...exp, object: mbaTransformExpression(exp.object, rng, varName), index: mbaTransformExpression(exp.index, rng, varName) } as any;
   }
   if (exp.type === "TableConstructor") {
-    return { ...exp, fields: (exp as any).fields.map((f: any) => ({ ...f, value: f.value ? mbaTransformExpression(f.value, rng, varName) : f.value })) } as any;
+    const fields = (exp as any).fields as any[];
+    if (fields.length > MBA_TABLE_FIELD_BUDGET) {
+      // Large static table: skip number transforms for its data subtree, but
+      // keep transforming nested functions (see transformFunctionsOnly).
+      for (const f of fields) {
+        if (f.value) f.value = transformFunctionsOnly(f.value, rng, varName);
+      }
+      return exp;
+    }
+    return { ...exp, fields: fields.map((f: any) => ({ ...f, value: f.value ? mbaTransformExpression(f.value, rng, varName) : f.value })) } as any;
   }
   return exp;
 }

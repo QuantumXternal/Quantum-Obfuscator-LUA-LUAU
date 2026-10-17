@@ -8,6 +8,31 @@ Conventions: times are single-run wall ms (run-to-run variance ± several ms —
 only consistent directional deltas across all 9 fixtures count). `none` path
 is the AST-only control: byte-identical before/after in every comparison.
 
+## Unreleased — large-script memory + server hardening (branch `fix/large-script-oom`)
+
+- fix(vm) `37f8e4a`→`ed1016a`: growable-buffer bytecode serializer + u16 operand
+  guards; RK offset adaptation (`adaptRkOffset`, actionable `i16 limit` error)
+  with pipeline recompile-on-widen; chunked LZMA→base85 (byte-identical, fixes a
+  per-group digit reversal found in the first chunked rewrite); StringEncoder
+  `maxStringLength`/`maxTotalBytes` budgets; 192 KB output line bound
+  (`splitLongLiteral`/`joinBounded`, bootstrap `nTconcat` fragments); sampled
+  cipher roundtrip verification above 1 MB. MEASURED (2.4 MB string-heavy,
+  seed 853287585): peak RSS −62.7% (3582→1335 MB); 580 KB fixture builds
+  without the previous 500 cliff.
+- feat(server) `650db24`: worker-thread obfuscation runner
+  (`src/obfuscationRunner.ts`, `src/server-worker.ts`) with heap caps + timeout;
+  byte-based input caps (`DEFAULT_MAX_INPUT_BYTES` = 20 MB), CLI `--max-size`,
+  UI over-cap banner; timeout→504, OOM/crash→500, lexer errors keep the 400
+  envelope.
+- perf(obfuscator): in-place AST mutation in ControlFlowScrambler; MBA
+  large-table field budget (`MBA_TABLE_FIELD_BUDGET` = 50, nested functions
+  still transformed); push/join string builders in vm-gen/reg-vm-gen. Output
+  byte-identical (RNG draw-order canaries unchanged).
+- tests: `tests/large-input.test.js` (limits parsing, reg-offset, StringEncoder
+  budget, runner lifecycle with injected factory, real-worker roundtrips, MBA
+  budget); `benchmarks/server-smoke.mjs` is now self-contained (spawns the
+  server; pins the 413 `bytes`/`maxBytes` envelope and the 504 timeout path).
+
 ## Release — Phase 5 (v3.0.0) - complete
 
 Core-engine closeout: standard-executor hardening, guaranteed wrapper

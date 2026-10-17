@@ -211,6 +211,13 @@ node dist/server.js
 
 Open [http://localhost:3000](http://localhost:3000) to access the obfuscation dashboard (BALANCED default, profile selector, seed controls).
 
+Input caps and worker isolation:
+
+- Requests are capped at **20 MB** of source (`MAX_INPUT_BYTES=<bytes>` to raise/lower; over-cap requests get a `413` JSON envelope with `bytes`/`maxBytes`).
+- Each obfuscation runs in a **worker thread** with its own heap limit (`MAX_OLD_GEN_MB`, default 2048) and timeout (`OBFUSCATE_TIMEOUT_MS`, default 15000); a timeout returns `504`, an OOM/crash returns `500`, and the API process itself stays alive.
+- The client-side pre-check mirrors the 20 MB default (bump `CLIENT_MAX_INPUT_BYTES` in `public/app.js` if you raise the server cap).
+- Set `PORT=<n>` to change the port and `NO_BROWSER=1` to skip auto-opening the browser.
+
 ### CLI Usage
 
 **Obfuscate a file:**
@@ -218,6 +225,8 @@ Open [http://localhost:3000](http://localhost:3000) to access the obfuscation da
 ```bash
 npm run obfuscate -- input.lua
 ```
+
+The CLI shares the same byte cap; raise it with `--max-size=<bytes|KB|MB>` or the `MAX_INPUT_BYTES` environment variable.
 
 **Lex tokens / Parse AST:**
 

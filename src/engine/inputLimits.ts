@@ -2,7 +2,10 @@
 // Pure module (no express import), mirroring ./cacheKey.ts, so tests can
 // exercise parsing and limits without binding a port.
 
-export const DEFAULT_MAX_INPUT_BYTES = 256 * 1024;
+// 20 MB comfortably covers the largest known real-world scripts (~580 KB)
+// while keeping the worker-thread heap cap and timeout as the ultimate
+// backstop for pathological inputs.
+export const DEFAULT_MAX_INPUT_BYTES = 20 * 1024 * 1024;
 
 /** Read a positive integer from the environment (fallback on absent/invalid). */
 export function envInt(name: string, fallback: number): number {

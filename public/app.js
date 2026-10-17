@@ -58,7 +58,7 @@ document.addEventListener("DOMContentLoaded", () => {
   // Client-side mirror of the server's default MAX_INPUT_BYTES cap (the
   // server may be configured higher; this pre-check only avoids shipping an
   // obviously-over-limit payload and gives immediate feedback).
-  const CLIENT_MAX_INPUT_BYTES = 256 * 1024;
+  const CLIENT_MAX_INPUT_BYTES = 20 * 1024 * 1024;
 
   function showOutputError(message) {
     if (!outputError) return;
@@ -194,7 +194,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
     const inputBytes = new TextEncoder().encode(code).length;
     if (inputBytes > CLIENT_MAX_INPUT_BYTES) {
-      showOutputError(`Input is ${inputBytes} bytes, above the 256 KB limit (${CLIENT_MAX_INPUT_BYTES} bytes). Trim the script or raise the server's MAX_INPUT_BYTES.`);
+      showOutputError(`Input is ${inputBytes} bytes, above the 20 MB limit (${CLIENT_MAX_INPUT_BYTES} bytes). Trim the script or raise the server's MAX_INPUT_BYTES.`);
       logConsole(`[INPUT-TOO-LARGE] ${inputBytes} bytes exceeds the client-side limit of ${CLIENT_MAX_INPUT_BYTES} bytes.`, "error");
       outputEditor.value = "";
       btnCopy.disabled = true;

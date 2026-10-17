@@ -699,17 +699,18 @@ function toUTF8Bytes(s: string): number[] {
 
 function luaStringLiteral(s: string): string {
   const bytes = toUTF8Bytes(s);
-  let out = '"';
+  const parts: string[] = ['"'];
   for (const b of bytes) {
-    if (b === 34) out += '\\"';
-    else if (b === 92) out += "\\\\";
-    else if (b === 10) out += "\\n";
-    else if (b === 13) out += "\\r";
-    else if (b === 0) out += "\\000";
-    else if (b < 32 || b > 126) out += `\\${b.toString().padStart(3, '0')}`;
-    else out += String.fromCharCode(b);
+    if (b === 34) parts.push('\\"');
+    else if (b === 92) parts.push("\\\\");
+    else if (b === 10) parts.push("\\n");
+    else if (b === 13) parts.push("\\r");
+    else if (b === 0) parts.push("\\000");
+    else if (b < 32 || b > 126) parts.push(`\\${b.toString().padStart(3, '0')}`);
+    else parts.push(String.fromCharCode(b));
   }
-  return out + '"';
+  parts.push('"');
+  return parts.join("");
 }
 
 function toHexLit(n: number): string {
@@ -1093,15 +1094,15 @@ function rleCompress(input: number[]): number[] {
 
 function b64Encode(bytes: number[]): string {
   const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-  let out = "";
+  const parts: string[] = [];
   for (let i = 0; i < bytes.length; i += 3) {
     const b0 = bytes[i], b1 = bytes[i + 1] ?? 0, b2 = bytes[i + 2] ?? 0;
-    out += chars[(b0 >> 2) & 0x3F];
-    out += chars[((b0 << 4) | (b1 >> 4)) & 0x3F];
-    out += (i + 1 < bytes.length) ? chars[((b1 << 2) | (b2 >> 6)) & 0x3F] : "=";
-    out += (i + 2 < bytes.length) ? chars[b2 & 0x3F] : "=";
+    parts.push(chars[(b0 >> 2) & 0x3F]);
+    parts.push(chars[((b0 << 4) | (b1 >> 4)) & 0x3F]);
+    parts.push((i + 1 < bytes.length) ? chars[((b1 << 2) | (b2 >> 6)) & 0x3F] : "=");
+    parts.push((i + 2 < bytes.length) ? chars[b2 & 0x3F] : "=");
   }
-  return out;
+  return parts.join("");
 }
 
 // R-1 detection hygiene (Phase 1.1): the boot idiom ("")[("\99...")]
@@ -1174,14 +1175,15 @@ export function wrapCustomCipher(source: string, seed?: number | string): string
   }
   const cipherAlpha = alphaArr.join('');
 
-  let encoded = "";
+  const encodedParts: string[] = [];
   for (let i = 0; i < encrypted.length; i += 3) {
     const b0 = encrypted[i], b1 = encrypted[i + 1] ?? 0, b2 = encrypted[i + 2] ?? 0;
-    encoded += cipherAlpha[(b0 >> 2) & 0x3F];
-    encoded += cipherAlpha[((b0 << 4) | (b1 >> 4)) & 0x3F];
-    encoded += (i + 1 < encrypted.length) ? cipherAlpha[((b1 << 2) | (b2 >> 6)) & 0x3F] : "=";
-    encoded += (i + 2 < encrypted.length) ? cipherAlpha[b2 & 0x3F] : "=";
+    encodedParts.push(cipherAlpha[(b0 >> 2) & 0x3F]);
+    encodedParts.push(cipherAlpha[((b0 << 4) | (b1 >> 4)) & 0x3F]);
+    encodedParts.push((i + 1 < encrypted.length) ? cipherAlpha[((b1 << 2) | (b2 >> 6)) & 0x3F] : "=");
+    encodedParts.push((i + 2 < encrypted.length) ? cipherAlpha[b2 & 0x3F] : "=");
   }
+  const encoded = encodedParts.join("");
 
   const nFrags = 3 + Math.floor(rng() * 3);
   const fragSz = Math.ceil(encoded.length / nFrags);
@@ -1493,14 +1495,15 @@ export function wrapNestedVM(source: string, seed?: number | string): string {
   }
   const alpha = alphaArr.join('');
 
-  let encoded = "";
+  const encodedParts: string[] = [];
   for (let i = 0; i < encBytes.length; i += 3) {
     const b0 = encBytes[i], b1 = encBytes[i + 1] ?? 0, b2 = encBytes[i + 2] ?? 0;
-    encoded += alpha[(b0 >> 2) & 0x3F];
-    encoded += alpha[((b0 << 4) | (b1 >> 4)) & 0x3F];
-    encoded += (i + 1 < encBytes.length) ? alpha[((b1 << 2) | (b2 >> 6)) & 0x3F] : "=";
-    encoded += (i + 2 < encBytes.length) ? alpha[b2 & 0x3F] : "=";
+    encodedParts.push(alpha[(b0 >> 2) & 0x3F]);
+    encodedParts.push(alpha[((b0 << 4) | (b1 >> 4)) & 0x3F]);
+    encodedParts.push((i + 1 < encBytes.length) ? alpha[((b1 << 2) | (b2 >> 6)) & 0x3F] : "=");
+    encodedParts.push((i + 2 < encBytes.length) ? alpha[b2 & 0x3F] : "=");
   }
+  const encoded = encodedParts.join("");
 
   const nAlphaFrags = 6 + Math.floor(rng() * 3);
   const alphaFragSz = Math.ceil(64 / nAlphaFrags);
@@ -1818,14 +1821,15 @@ export function wrapStubVM(source: string, seed?: number | string): string {
     else { encrypted.push((b ^ rk) & 0xFF); rk = (rk + rollingStep) & 0xFF; }
   }
 
-  let encoded = "";
+  const encodedParts: string[] = [];
   for (let i = 0; i < encrypted.length; i += 3) {
     const b0 = encrypted[i], b1 = encrypted[i+1] ?? 0, b2 = encrypted[i+2] ?? 0;
-    encoded += shuffledAlpha[(b0 >> 2) & 0x3F];
-    encoded += shuffledAlpha[((b0 << 4) | (b1 >> 4)) & 0x3F];
-    encoded += (i+1 < encrypted.length) ? shuffledAlpha[((b1 << 2) | (b2 >> 6)) & 0x3F] : "=";
-    encoded += (i+2 < encrypted.length) ? shuffledAlpha[b2 & 0x3F] : "=";
+    encodedParts.push(shuffledAlpha[(b0 >> 2) & 0x3F]);
+    encodedParts.push(shuffledAlpha[((b0 << 4) | (b1 >> 4)) & 0x3F]);
+    encodedParts.push((i+1 < encrypted.length) ? shuffledAlpha[((b1 << 2) | (b2 >> 6)) & 0x3F] : "=");
+    encodedParts.push((i+2 < encrypted.length) ? shuffledAlpha[b2 & 0x3F] : "=");
   }
+  const encoded = encodedParts.join("");
 
   const nFrags = 3 + Math.floor(rng() * 3);
   const fragSz = Math.ceil(encoded.length / nFrags);

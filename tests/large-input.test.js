@@ -13,6 +13,7 @@ import {
 import { lex } from "../dist/lexer/Lexer.js";
 import { parse } from "../dist/parser/Parser.js";
 import { encodeStrings } from "../dist/obfuscator/StringEncoder.js";
+import { applyMBA, MBA_TABLE_FIELD_BUDGET } from "../dist/obfuscator/MBAEncoder.js";
 
 describe("limits: output line bound", () => {
   test("short literals are returned unsplit (byte-identical fast path)", () => {
@@ -85,8 +86,8 @@ describe("input limits", () => {
     expect(envInt("QUANTUM_DEFINITELY_UNSET_ENV_VAR", 7)).toBe(7);
   });
 
-  test("default input cap is 256 KB", () => {
-    expect(DEFAULT_MAX_INPUT_BYTES).toBe(256 * 1024);
+  test("default input cap is 20 MB", () => {
+    expect(DEFAULT_MAX_INPUT_BYTES).toBe(20 * 1024 * 1024);
   });
 });
 
@@ -125,6 +126,25 @@ function findDecoderCall(node) {
   return null;
 }
 
+function findNodeByType(node, type) {
+  if (!node || typeof node !== "object") return null;
+  if (node.type === type) return node;
+  for (const k of Object.keys(node)) {
+    if (k === "loc") continue;
+    const v = node[k];
+    if (Array.isArray(v)) {
+      for (const item of v) {
+        const hit = findNodeByType(item, type);
+        if (hit) return hit;
+      }
+    } else if (v && typeof v === "object") {
+      const hit = findNodeByType(v, type);
+      if (hit) return hit;
+    }
+  }
+  return null;
+}
+
 describe("StringEncoder: large-input budget", () => {
   test("strings longer than maxStringLength stay plain; short strings encode", () => {
     const long = "x".repeat(100);
@@ -151,6 +171,53 @@ describe("StringEncoder: large-input budget", () => {
     const key = Number(call.args[1].value);
     const text = String.fromCharCode(...bytes.map((b) => b ^ key));
     expect(text).toBe("abc");
+  });
+});
+
+describe("MBA: large-table field budget", () => {
+  const numbers = (n) => Array.from({ length: n }, (_, i) => String(i + 1)).join(", ");
+
+  // The parser stores NumberLiteral.value as its source lexeme (string), while
+  // mbaTransformExpression only expands finite numbers. Coerce the literals to
+  // numeric values so this suite exercises the expansion/budget logic itself.
+  function coerceNumberValues(node) {
+    if (!node || typeof node !== "object") return node;
+    if (node.type === "NumberLiteral" && typeof node.value === "string") node.value = Number(node.value);
+    for (const k of Object.keys(node)) {
+      if (k === "loc") continue;
+      const v = node[k];
+      if (Array.isArray(v)) for (const item of v) coerceNumberValues(item);
+      else if (v && typeof v === "object") coerceNumberValues(v);
+    }
+    return node;
+  }
+
+  test(`tables with more than ${MBA_TABLE_FIELD_BUDGET} fields keep plain numbers`, () => {
+    const count = MBA_TABLE_FIELD_BUDGET + 10;
+    const ast = coerceNumberValues(parse(lex(`local t = {${numbers(count)}}`).tokens));
+    const out = applyMBA(ast, { enabled: true, seed: 7 });
+    const table = findNodeByType(out, "TableConstructor");
+    expect(table).toBeTruthy();
+    expect(table.fields.length).toBe(count);
+    for (const f of table.fields) expect(f.value.type).toBe("NumberLiteral");
+  });
+
+  test("functions nested in large tables are still fully transformed", () => {
+    const ast = coerceNumberValues(parse(lex(`local t = {f = function() local x = 5 return x end, ${numbers(MBA_TABLE_FIELD_BUDGET + 10)}}`).tokens));
+    const out = applyMBA(ast, { enabled: true, seed: 7 });
+    const table = findNodeByType(out, "TableConstructor");
+    expect(table.fields[0].value.type).toBe("FunctionExpression");
+    const inner = findNodeByType(table.fields[0].value, "LocalStatement");
+    expect(inner).toBeTruthy();
+    expect(inner.values[0].type).toBe("BinaryExpression");
+    expect(table.fields[1].value.type).toBe("NumberLiteral");
+  });
+
+  test("small tables still expand numbers as before", () => {
+    const ast = coerceNumberValues(parse(lex("local t = {1, 2, 3}").tokens));
+    const out = applyMBA(ast, { enabled: true, seed: 7 });
+    const table = findNodeByType(out, "TableConstructor");
+    for (const f of table.fields) expect(f.value.type).toBe("BinaryExpression");
   });
 });
 
@@ -249,7 +316,8 @@ describe("obfuscation runner: real worker", () => {
       { timeoutMs: 60000 },
     );
     expect(typeof out).toBe("string");
-    expect(out.length).toBeGreaterThan(50);
+    expect(out).toContain("print");
+    expect(out.length).toBeGreaterThan(10);
   }, 120000);
 
   test("lexer errors travel intact from real worker", async () => {

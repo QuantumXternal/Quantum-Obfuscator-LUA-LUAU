@@ -308,17 +308,18 @@ function toUTF8Bytes(s: string): number[] {
 
 function luaStringLiteral(s: string): string {
   const bytes = toUTF8Bytes(s);
-  let out = '"';
+  const parts: string[] = ['"'];
   for (const b of bytes) {
-    if (b === 34) out += '\\"';
-    else if (b === 92) out += "\\\\";
-    else if (b === 10) out += "\\n";
-    else if (b === 13) out += "\\r";
-    else if (b === 0) out += "\\000";
-    else if (b < 32 || b > 126) out += `\\${b.toString().padStart(3, '0')}`;
-    else out += String.fromCharCode(b);
+    if (b === 34) parts.push('\\"');
+    else if (b === 92) parts.push("\\\\");
+    else if (b === 10) parts.push("\\n");
+    else if (b === 13) parts.push("\\r");
+    else if (b === 0) parts.push("\\000");
+    else if (b < 32 || b > 126) parts.push(`\\${b.toString().padStart(3, '0')}`);
+    else parts.push(String.fromCharCode(b));
   }
-  return out + '"';
+  parts.push('"');
+  return parts.join("");
 }
 
 function luaEsc(s: string): string {
@@ -339,18 +340,19 @@ function luaEsc(s: string): string {
 }
 
 function luaStr(s: string): string {
-  let out = '"';
+  const parts: string[] = ['"'];
   for (let i = 0; i < s.length; i++) {
     const c = s.charCodeAt(i);
-    if (c === 34) out += '\\"';
-    else if (c === 92) out += '\\\\';
-    else if (c === 10) out += '\\n';
-    else if (c === 13) out += '\\r';
-    else if (c === 0) out += '\\000';
-    else if (c < 32 || c > 126) out += `\\${c.toString().padStart(3, '0')}`;
-    else out += s[i];
+    if (c === 34) parts.push('\\"');
+    else if (c === 92) parts.push('\\\\');
+    else if (c === 10) parts.push('\\n');
+    else if (c === 13) parts.push('\\r');
+    else if (c === 0) parts.push('\\000');
+    else if (c < 32 || c > 126) parts.push(`\\${c.toString().padStart(3, '0')}`);
+    else parts.push(s[i]);
   }
-  return out + '"';
+  parts.push('"');
+  return parts.join("");
 }
 
 function featureEnabled(options: RegVMGenOptions, flag: RegFeatureFlag, levelDefault: boolean): boolean {
@@ -730,18 +732,18 @@ function serializeConstant(v: Constant, ctx: BuildCtx, idx: number): string {
 
       if (rng() < 0.5) {
 
-        let lit = '"';
+        const litParts: string[] = ['"'];
         for (const b of encoded) {
-          if (b === 92) lit += '\\\\';
-          else if (b === 34) lit += '\\"';
-          else if (b === 10) lit += '\\n';
-          else if (b === 13) lit += '\\r';
-          else if (b === 0) lit += '\\000';
-          else if (b < 32 || b > 126) lit += `\\${b.toString().padStart(3, '0')}`;
-          else lit += String.fromCharCode(b);
+          if (b === 92) litParts.push('\\\\');
+          else if (b === 34) litParts.push('\\"');
+          else if (b === 10) litParts.push('\\n');
+          else if (b === 13) litParts.push('\\r');
+          else if (b === 0) litParts.push('\\000');
+          else if (b < 32 || b > 126) litParts.push(`\\${b.toString().padStart(3, '0')}`);
+          else litParts.push(String.fromCharCode(b));
         }
-        lit += '"';
-        return lit;
+        litParts.push('"');
+        return litParts.join("");
       }
       return `{${encoded.join(",")}}`;
     }
