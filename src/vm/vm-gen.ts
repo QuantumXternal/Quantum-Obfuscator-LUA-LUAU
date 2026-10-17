@@ -12,7 +12,7 @@ let _rng: () => number = Math.random;
 // operational, not progress.
 function _tel(): boolean { return process.env.QUANTUM_TELEMETRY === '1'; }
 
-function seedRandom(seed: number): void {
+export function seedRandom(seed: number): void {
   let s = seed | 0;
   _rng = () => {
     s = (s + 0x6D2B79F5) | 0;
@@ -26,7 +26,7 @@ function seedRandom(seed: number): void {
 // separators) expand any UTF-16 string to 128-bit sfc32 state (closure-held,
 // same call shape as the legacy stream). Claimed space 2^128, below the 71!
 // opcode-permutation bound. Numeric seeds never touch this path.
-function seedRandom128(str: string): void {
+export function seedRandom128(str: string): void {
   const half = (dom: number): [number, number] => {
     let h1 = 0xdeadbeef ^ dom, h2 = 0x41c6ce57 ^ dom;
     for (let i = 0; i < str.length; i++) {
@@ -53,6 +53,16 @@ function seedRandom128(str: string): void {
 }
 
 function rng(): number { return _rng(); }
+
+// Phase 5 / Step 1: optional explicit seeding for the envelope wrappers.
+// Absent seed => identical legacy behavior (ambient RNG stream). Seeding must
+// also reset the name counter (same contract as generateVM) or emitted
+// identifier suffixes drift between calls despite identical RNG streams.
+function applySeedParam(seed?: number | string): void {
+  if (seed === undefined || seed === null) return;
+  if (typeof seed === "string") seedRandom128(seed); else seedRandom(seed);
+  resetNames();
+}
 
 function compileString(luaSource: string): BytecodeChunk {
   const lexer = new Lexer(luaSource);
@@ -1115,7 +1125,8 @@ function buildAlphabet(): string {
   return std.slice(0, 62) + rep.join("");
 }
 
-export function wrapCustomCipher(source: string): string {
+export function wrapCustomCipher(source: string, seed?: number | string): string {
+  applySeedParam(seed);
 
   const srcBytes: number[] = [];
   for (let i = 0; i < source.length; i++) srcBytes.push(source.charCodeAt(i));
@@ -1429,7 +1440,9 @@ export function wrapCustomCipher(source: string): string {
   return lines.join("\n");
 }
 
-export function wrapNestedVM(source: string): string {
+export function wrapNestedVM(source: string, seed?: number | string): string {
+  applySeedParam(seed);
+
   const srcBytes: number[] = [];
   for (let i = 0; i < source.length; i++) srcBytes.push(source.charCodeAt(i));
 
@@ -1751,7 +1764,9 @@ export function wrapNestedVM(source: string): string {
   return L.join("\n");
 }
 
-export function wrapStubVM(source: string): string {
+export function wrapStubVM(source: string, seed?: number | string): string {
+  applySeedParam(seed);
+
   const srcBytes: number[] = [];
   for (let i = 0; i < source.length; i++) srcBytes.push(source.charCodeAt(i));
 
