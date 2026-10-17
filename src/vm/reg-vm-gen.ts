@@ -2005,7 +2005,11 @@ function buildVMRuntime(ctx: BuildCtx, assignStyle: boolean = false): string {
     L.push(`if not ${opqVar} then ${n.R}={};${n.code}={};${n.ip}=#${n.code}+1;${n.kk}=#${n.poff}+1 end`);
   }
   const preWhileIdx = L.length;
+  L.push(`local _kr=0`);
+  L.push(`local _rotKey=${Math.floor(rng() * 65536)}`);
   L.push(`while ${n.kk}<=#${n.poff} and ${n.ip}<=#${n.code} do`);
+  L.push(`_kr=_kr+1`);
+  L.push(`if _kr%256==0 then _rotKey=bit32.bxor(_rotKey,_kr*31+${Math.floor(rng() * 65536)}) end`);
 
   // v2 packed wire: code[ip] is a header word H = shuffledOp*16+argc, not a
   // bare opcode. Decode H, derive op=floor(H/16); s1..s3 always read (nil-
@@ -2022,7 +2026,7 @@ function buildVMRuntime(ctx: BuildCtx, assignStyle: boolean = false): string {
     if (useRot) {
       const rkVar = randomName(3);
 
-      L.push(`local ${rkVar}=${n.bBand}(${ctx.rotSeed}+${n.ip}*${ctx.rotStep}+${n.ip}*${n.ip}*${ctx.rotStep2},0xFF)`);
+       L.push(`local ${rkVar}=${n.bBand}(${ctx.rotSeed}+${n.ip}*${ctx.rotStep}+${n.ip}*${n.ip}*${ctx.rotStep2},0xFF)`);
       L.push(`local ${hVar}=${n.bBxor}(${n.code}[${n.ip}],${rkVar},${mkVar})`);
     } else {
       L.push(`local ${hVar}=${n.bBxor}(${n.code}[${n.ip}],${mkVar})`);
@@ -2044,7 +2048,7 @@ function buildVMRuntime(ctx: BuildCtx, assignStyle: boolean = false): string {
 
     if (useRot) {
       const rkVar = randomName(3);
-      L.push(`local ${rkVar}=${n.bBand}(${ctx.rotSeed}+${n.ip}*${ctx.rotStep}+${n.ip}*${n.ip}*${ctx.rotStep2},0xFF)`);
+       L.push(`local ${rkVar}=${n.bBand}(${ctx.rotSeed}+${n.ip}*${ctx.rotStep}+${n.ip}*${n.ip}*${ctx.rotStep2},0xFF)`);
       L.push(`local ${hVar}=${n.bBxor}(${n.code}[${n.ip}],${rkVar})`);
     } else {
       L.push(`local ${hVar}=${n.code}[${n.ip}]`);
