@@ -508,6 +508,23 @@ select option {
   display: none !important;
 }
 
+/* Visible failure banner for API errors (413 too large, 504 timeout, 500). */
+.output-error {
+  display: block;
+  margin: 0 0 10px 0;
+  padding: 10px 12px;
+  border: 1px solid rgba(255, 70, 70, 0.55);
+  border-left: 4px solid #ff4646;
+  border-radius: 6px;
+  background: rgba(255, 60, 60, 0.12);
+  color: #ff9c9c;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 
 /* ---------- Console ---------- */
 

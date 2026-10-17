@@ -3,6 +3,7 @@
 import { readFileSync, writeFileSync } from "fs";
 import { runObfuscatePipeline, PipelineLexError, PipelineParseError } from "../engine/obfuscatePipeline.js";
 import type { PipelineVmLevel } from "../engine/obfuscatePipeline.js";
+import { DEFAULT_MAX_INPUT_BYTES, envInt, parseByteSize } from "../engine/inputLimits.js";
 
 const args = process.argv.slice(2);
 
@@ -23,6 +24,25 @@ if (!file) {
 }
 
 const source = readFileSync(file, "utf-8");
+
+// Input-size guard: register-VM generation cost scales with the compiled
+// instruction/constant stream; refuse upfront instead of ballooning.
+const maxSizeRaw = args.find((a) => a.startsWith("--max-size="))?.slice("--max-size=".length) ?? null;
+let maxInputBytes = envInt("MAX_INPUT_BYTES", DEFAULT_MAX_INPUT_BYTES);
+if (maxSizeRaw !== null) {
+  const parsed = parseByteSize(maxSizeRaw);
+  if (parsed === null) {
+    console.error(`Invalid --max-size value: ${maxSizeRaw} (expected e.g. 262144, 256kb, 2mb)`);
+    process.exit(1);
+  }
+  maxInputBytes = parsed;
+}
+const sourceBytes = Buffer.byteLength(source, "utf8");
+if (sourceBytes > maxInputBytes) {
+  console.error(`Input too large: ${sourceBytes} bytes exceeds ${maxInputBytes} (raise with --max-size=<bytes|KB|MB> or MAX_INPUT_BYTES)`);
+  process.exit(1);
+}
+
 console.error(`[RegVM] Input: ${file} (${source.length} chars)`);
 console.error(`[RegVM] Level: ${level}`);
 

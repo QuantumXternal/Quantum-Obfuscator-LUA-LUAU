@@ -53,6 +53,24 @@ document.addEventListener("DOMContentLoaded", () => {
   const consoleLog = document.getElementById("terminal-console");
   const statusIndicator = document.getElementById("indicator");
   const statusTitle = document.getElementById("status-title");
+  const outputError = document.getElementById("output-error");
+
+  // Client-side mirror of the server's default MAX_INPUT_BYTES cap (the
+  // server may be configured higher; this pre-check only avoids shipping an
+  // obviously-over-limit payload and gives immediate feedback).
+  const CLIENT_MAX_INPUT_BYTES = 256 * 1024;
+
+  function showOutputError(message) {
+    if (!outputError) return;
+    outputError.textContent = message;
+    outputError.classList.remove("hidden");
+  }
+
+  function hideOutputError() {
+    if (!outputError) return;
+    outputError.textContent = "";
+    outputError.classList.add("hidden");
+  }
 
   let debounceTimer;
 
@@ -174,6 +192,16 @@ document.addEventListener("DOMContentLoaded", () => {
       return;
     }
 
+    const inputBytes = new TextEncoder().encode(code).length;
+    if (inputBytes > CLIENT_MAX_INPUT_BYTES) {
+      showOutputError(`Input is ${inputBytes} bytes, above the 256 KB limit (${CLIENT_MAX_INPUT_BYTES} bytes). Trim the script or raise the server's MAX_INPUT_BYTES.`);
+      logConsole(`[INPUT-TOO-LARGE] ${inputBytes} bytes exceeds the client-side limit of ${CLIENT_MAX_INPUT_BYTES} bytes.`, "error");
+      outputEditor.value = "";
+      btnCopy.disabled = true;
+      updateStatus("red", "Input Too Large");
+      return;
+    }
+
     const btnText = btnObfuscate.querySelector(".btn-text");
     const loader = btnObfuscate.querySelector(".btn-loader");
     
@@ -229,6 +257,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
       outputEditor.value = result.output;
       btnCopy.disabled = false;
+      hideOutputError();
 
       updateStatus("green", "Success");
       logConsole("[SUCCESS] Obfuscation completed successfully!", "success");
@@ -242,9 +271,12 @@ document.addEventListener("DOMContentLoaded", () => {
     } catch (err) {
       // Stage 19C: network-layer failures (server down/unreachable) are
       // labeled distinctly from HTTP/pipeline failures so they can never
-      // be confused with a server-side obfuscation error.
+      // be confused with a server-side obfuscation error. The same message
+      // is surfaced in the visible red banner (413 too-large and 504
+      // timeout envelopes included), so failures are never silent.
       const network = err instanceof TypeError;
       logConsole(`[${network ? "NETWORK-ERROR" : "OBFUSCATION-FAILED"}] ${network ? "API unreachable (is the local server running on :3000?): " : "Pipeline error: "}${err.message}`, "error");
+      showOutputError(network ? "API unreachable. Is the local server running on :3000?" : err.message);
       outputEditor.value = "";
       btnCopy.disabled = true;
       updateStatus("red", "Failed");

@@ -4,6 +4,7 @@ import { readFileSync, writeFileSync } from "fs";
 import { join } from "path";
 import { runObfuscatePipeline, PipelineLexError, PipelineParseError } from "../engine/obfuscatePipeline.js";
 import type { PipelineVmLevel } from "../engine/obfuscatePipeline.js";
+import { DEFAULT_MAX_INPUT_BYTES, envInt, parseByteSize } from "../engine/inputLimits.js";
 
 const args = process.argv.slice(2);
 const noRename = args.includes("--no-rename");
@@ -35,6 +36,25 @@ function foo(a, b)
   return a + b
 end
 `;
+
+// Input-size guard: large scripts make the tokenizer/parser and the
+// (optional) VM generation balloon; refuse upfront with an actionable
+// override instead of thrashing. Mirrors the server cap.
+const maxSizeRaw = args.find((a) => a.startsWith("--max-size="))?.slice("--max-size=".length) ?? null;
+let maxInputBytes = envInt("MAX_INPUT_BYTES", DEFAULT_MAX_INPUT_BYTES);
+if (maxSizeRaw !== null) {
+  const parsed = parseByteSize(maxSizeRaw);
+  if (parsed === null) {
+    console.error(`Invalid --max-size value: ${maxSizeRaw} (expected e.g. 262144, 256kb, 2mb)`);
+    process.exit(1);
+  }
+  maxInputBytes = parsed;
+}
+const sourceBytes = Buffer.byteLength(source, "utf8");
+if (sourceBytes > maxInputBytes) {
+  console.error(`Input too large: ${sourceBytes} bytes exceeds ${maxInputBytes} (raise with --max-size=<bytes|KB|MB> or MAX_INPUT_BYTES)`);
+  process.exit(1);
+}
 
 const vmDebug = args.includes("--vm-debug");
 

@@ -4,11 +4,12 @@ import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 
 import { validate } from "./compiler/LuauCompiler.js";
-import { runObfuscatePipeline, PipelineLexError } from "./engine/obfuscatePipeline.js";
 import type { PipelineVmType, PipelineVmLevel } from "./engine/obfuscatePipeline.js";
 import { resolveProfile } from "./engine/profiles.js";
 import type { ProtectionProfile, ObfuscationTarget } from "./engine/profiles.js";
 import { cacheKey } from "./cacheKey.js";
+import { runObfuscationInWorker, RunnerFailure } from "./obfuscationRunner.js";
+import { DEFAULT_MAX_INPUT_BYTES, envInt, inputTooLargeMessage } from "./engine/inputLimits.js";
 
 const VALID_PROFILES: ProtectionProfile[] = ["FAST", "BALANCED", "MAXIMUM"];
 
@@ -16,8 +17,13 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
 const app = express();
-const PORT = 3000;
-const MAX_CODE_LENGTH = 1024 * 1024; // 1 MB payload guard (DoS protection)
+const PORT = envInt("PORT", 3000);
+// Input cap (bytes, UTF-8). Raisable via MAX_INPUT_BYTES for trusted local
+// use; the worker also has its own heap limit + timeout (see runner).
+const MAX_INPUT_BYTES = envInt("MAX_INPUT_BYTES", DEFAULT_MAX_INPUT_BYTES);
+// Cache only reasonably-sized outputs; multi-MB artifacts would pin memory
+// for the whole TTL with near-zero reuse value.
+const CACHE_MAX_ENTRY_BYTES = 2 * 1024 * 1024;
 
 // Tiny LRU for identical obfuscation requests. Bounded to avoid memory leaks;
 // entries expire after 5 minutes. Cache key includes every option + code.
@@ -40,6 +46,7 @@ function cacheGet(key: string): string | null {
 }
 
 function cacheSet(key: string, output: string): void {
+  if (output.length > CACHE_MAX_ENTRY_BYTES) return;
   if (obfuscateCache.size >= OBFUSCATE_CACHE_MAX) {
     const oldest = obfuscateCache.keys().next();
     if (!oldest.done) obfuscateCache.delete(oldest.value);
@@ -47,7 +54,10 @@ function cacheSet(key: string, output: string): void {
   obfuscateCache.set(key, { output, expires: Date.now() + OBFUSCATE_CACHE_TTL_MS });
 }
 
-app.use(express.json({ limit: "1mb" }));
+// Body parser limit scales with the input cap (JSON escaping overhead), so
+// the explicit byte check below produces the actionable 413 in normal cases
+// and the parser-level error handler covers absurd raw bodies.
+app.use(express.json({ limit: `${Math.max(1, Math.ceil((MAX_INPUT_BYTES * 3) / (1024 * 1024)))}mb` }));
 
 app.use(express.static(join(__dirname, "..", "public")));
 
@@ -57,8 +67,9 @@ app.post("/api/validate", (req: express.Request, res: express.Response) => {
     if (typeof code !== "string") {
       return res.status(400).json({ error: "Invalid 'code' parameter" }) as any;
     }
-    if (code.length > MAX_CODE_LENGTH) {
-      return res.status(413).json({ error: "Code payload too large (max 1MB)" }) as any;
+    const bytes = Buffer.byteLength(code, "utf8");
+    if (bytes > MAX_INPUT_BYTES) {
+      return res.status(413).json({ error: inputTooLargeMessage(MAX_INPUT_BYTES), bytes, maxBytes: MAX_INPUT_BYTES }) as any;
     }
     console.log(`[API] /api/validate - Code length: ${code.length} characters`);
     const result = validate(code);
@@ -69,14 +80,15 @@ app.post("/api/validate", (req: express.Request, res: express.Response) => {
   }
 });
 
-app.post("/api/obfuscate", (req: express.Request, res: express.Response) => {
+app.post("/api/obfuscate", async (req: express.Request, res: express.Response) => {
   try {
     const { code, options } = req.body;
     if (typeof code !== "string") {
       return res.status(400).json({ error: "Invalid 'code' parameter" }) as any;
     }
-    if (code.length > MAX_CODE_LENGTH) {
-      return res.status(413).json({ error: "Code payload too large (max 1MB)" }) as any;
+    const bytes = Buffer.byteLength(code, "utf8");
+    if (bytes > MAX_INPUT_BYTES) {
+      return res.status(413).json({ error: inputTooLargeMessage(MAX_INPUT_BYTES), bytes, maxBytes: MAX_INPUT_BYTES }) as any;
     }
 
     const opts = options || {};
@@ -134,9 +146,9 @@ app.post("/api/obfuscate", (req: express.Request, res: express.Response) => {
         if (opts.scramble !== undefined) base.scramble = opts.scramble === true;
         if (opts.oneLine !== undefined) base.oneLine = opts.oneLine === true;
         if (disableFeatures !== undefined) base.disableFeatures = disableFeatures;
-        output = runObfuscatePipeline(code, base);
+        output = await runObfuscationInWorker(code, base as unknown as Record<string, unknown>);
       } else {
-        output = runObfuscatePipeline(code, {
+        output = await runObfuscationInWorker(code, {
           renameLocals: !noRename,
           preserveGlobals: !noPreserve,
           encodeStrings: encodeStringsOpt,
@@ -151,8 +163,18 @@ app.post("/api/obfuscate", (req: express.Request, res: express.Response) => {
         });
       }
     } catch (err: any) {
-      if (err instanceof PipelineLexError) {
-        return res.status(400).json({ error: "Lexer error", details: err.details });
+      if (err instanceof RunnerFailure) {
+        if (err.kind === "timeout") {
+          return res.status(504).json({ error: err.message }) as any;
+        }
+        // OOM and worker crashes: the input exceeded worker resources or the
+        // isolate died; report a clean JSON error instead of hanging.
+        return res.status(500).json({ error: err.message }) as any;
+      }
+      // PipelineLexError travels through the worker by name (see
+      // obfuscationRunner.RemoteError); preserve the original 400 envelope.
+      if (err?.name === "PipelineLexError") {
+        return res.status(400).json({ error: "Lexer error", details: err.details }) as any;
       }
       throw err;
     }
@@ -178,7 +200,7 @@ app.use((err: any, _req: express.Request, res: express.Response, _next: express.
     return res.status(400).json({ error: "Malformed JSON request body" }) as any;
   }
   if (err?.type === "entity.too.large") {
-    return res.status(413).json({ error: "Code payload too large (max 1MB)" }) as any;
+    return res.status(413).json({ error: inputTooLargeMessage(MAX_INPUT_BYTES) }) as any;
   }
   if (err?.status) {
     return res.status(err.status).json({ error: err.message || "Request error" }) as any;
@@ -191,6 +213,7 @@ app.listen(PORT, () => {
   console.log(`\nQuantum Obfuscator Server running at: ${url}`);
   console.log("Press CTRL+C to terminate.\n");
 
+  if (process.env.NO_BROWSER === "1") return;
   exec(`start ${url}`, (err) => {
     if (err) {
       console.log(`Note: Failed to open browser automatically. Please navigate manually to ${url}`);
