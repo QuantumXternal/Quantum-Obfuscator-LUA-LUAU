@@ -117,9 +117,9 @@ const OPCODES_1ARG = new Set([
   44, 45, 47, 49, 50, 52, 54, 55, 65, 67
 ]);
 
-const OPCODES_2ARG = new Set([39, 53, 60, 61, 66]);
+const OPCODES_2ARG = new Set([39, 53, 60, 61, 66, 72]);
 
-const OPCODES_3ARG = new Set([56, 57, 58, 59, 62, 63, 68, 69, 70]);
+const OPCODES_3ARG = new Set([56, 57, 58, 59, 62, 63, 68, 69, 70, 71]);
 
 /**
  * Phase 1.2(d): stack-vm wire-arity decoys. Selected normal ops carry one
@@ -270,7 +270,7 @@ function fuseOpcodes(code: number[]): number[] {
         const b = result[i + 3];
         const arith = result[i + 4];
         const c = result[i + 6];
-        const superOp = arith === 9 ? 57 : arith === 10 ? 58 : arith === 11 ? 59 : arith === 12 ? 68 : arith === 13 ? 69 : arith === 48 ? 70 : arith === 15 ? 63 : -1;
+        const superOp = arith === 9 ? 57 : arith === 10 ? 58 : arith === 11 ? 59 : arith === 12 ? 68 : arith === 13 ? 69 : arith === 14 ? 71 : arith === 48 ? 70 : arith === 15 ? 63 : -1;
         if (superOp !== -1 && canFuse(i, 7, jt) && rng() > 0.25) {
           result[i] = superOp; result[i+1] = a; result[i+2] = b; result[i+3] = c;
           result[i+4] = 0; result[i+5] = 0; result[i+6] = 0;
@@ -293,6 +293,14 @@ function fuseOpcodes(code: number[]): number[] {
         if (canFuse(i, 4, jt) && rng() > 0.25) {
           result[i] = 61; result[i+1] = a; result[i+2] = b; result[i+3] = 0;
           i += 4; continue;
+        }
+      }
+
+      if (result[i + 2] === 25 && i + 4 < result.length && result[i + 3] === 6) {
+        const c = result[i + 4];
+        if (canFuse(i, 5, jt) && rng() > 0.25) {
+          result[i] = 72; result[i+1] = a; result[i+2] = c; result[i+3] = 0; result[i+4] = 0;
+          i += 5; continue;
         }
       }
     }
@@ -2706,6 +2714,8 @@ function buildHandlerTemplates(n: NameMap, doNonLinearJumps: boolean = false, pr
   // operator). Numbers fast-path, pcall coercion, __idiv lookup, and the
   // x//0 -> inf leniency are therefore identical to h[48] by construction.
   h[70] = `function() local a=${code}[${ip}];${ip}=${ip}+1;local b=${code}[${ip}];${ip}=${ip}+1;local c=${code}[${ip}];${ip}=${ip}+1;${setLocal}(c,${arithMM}(${getLocal}(a),${getLocal}(b),function(x,y) return math.floor(x/y) end,"__idiv")) end`;
+  h[71] = `function() local a=${code}[${ip}];${ip}=${ip}+1;local b=${code}[${ip}];${ip}=${ip}+1;local c=${code}[${ip}];${ip}=${ip}+1;${setLocal}(c,${getLocal}(a)^${getLocal}(b)) end`;
+  h[72] = `function() local a=${code}[${ip}];${ip}=${ip}+1;local c=${code}[${ip}];${ip}=${ip}+1;${setLocal}(c,-${getLocal}(a)) end`;
 
   h[67] = `function() local _a=${code}[${ip}];${ip}=${ip}+1;if ${n.ctxBit}==0 then ${push}(${getLocal}(_a)) else ${push}(${resolveK}(_a+1)) end end`;
 

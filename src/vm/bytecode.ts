@@ -201,7 +201,7 @@ export const REG_OPCODE_COUNT = 59;
  * throw at generation time if count > range — never a silent overflow).
  */
 export const SPARSE_OPCODE_RANGE = 128;
-export const STACK_OPCODE_COUNT = 71;
+export const STACK_OPCODE_COUNT = 73;
 
 /**
  * v2 packed-wire operand masks (Phase 1.1 / R-2).

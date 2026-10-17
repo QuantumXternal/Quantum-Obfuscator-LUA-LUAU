@@ -723,6 +723,16 @@ export function runVM(
         const a = code[ip++]; const b = code[ip++]; const c = code[ip++];
         setLocal(c, arithMM(getLocal(a), getLocal(b), (x, y) => Math.floor(x / y), "__idiv"));
       }
+      else if (op === 71) {
+        const a = code[ip++]; const b = code[ip++]; const c = code[ip++];
+        setLocal(c, arithMM(getLocal(a), getLocal(b), (x, y) => x ** y, "__pow"));
+      }
+      else if (op === 72) {
+        const a = code[ip++]; const c = code[ip++];
+        const v = getLocal(a);
+        const mm = getMM(v, "__unm");
+        setLocal(c, typeof mm === "function" ? mm(v) : -(v as number));
+      }
       else {
 
       }
