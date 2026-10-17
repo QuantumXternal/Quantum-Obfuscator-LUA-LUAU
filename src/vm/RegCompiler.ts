@@ -169,7 +169,7 @@ function patchJump(ctx: Ctx, jmpPC: number, targetPC: number): void {
 function constRK(ctx: Ctx, value: Constant): number {
   const ki = regAddConst(ctx.chunk, value);
   const _rkOff = ctx.chunk.rkOffset ?? RK_OFFSET;
-  if (ki < _rkOff) return RK(ki);
+  if (ki < _rkOff) return RK(ki, _rkOff);
   // Flat number[] encoding has no operand width limit, and LOADK already
   // carries full constant indices (cf. the literal sites below), so a
   // two-instruction LOADKX+EXTRAARG spill is pure overhead: an extra dispatch
@@ -582,7 +582,8 @@ function compileExprRK(ctx: Ctx, exp: Expression): number {
       if (exp.name === "true") return constRK(ctx, true);
       if (exp.name === "false") return constRK(ctx, false);
       const reg = ctx.locals.get(exp.name);
-      if (reg !== undefined && reg < RK_OFFSET) return reg;
+      const _rkOff = ctx.chunk.rkOffset ?? RK_OFFSET;
+      if (reg !== undefined && reg < _rkOff) return reg;
       return compileExpr(ctx, exp, -1);
     }
     default:

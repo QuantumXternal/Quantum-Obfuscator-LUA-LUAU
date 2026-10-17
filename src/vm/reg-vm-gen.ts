@@ -1730,7 +1730,7 @@ function buildBuiltinCaptures(ctx: BuildCtx): { code: string; assignOnly: string
 
   const lsBoot = randomName(2);
   lines.push(`local ${lsBoot}=loadstring`);
-  const envBootSrc = `return (type(getfenv)=='function' and getfenv(0)) or _G`;
+  const envBootSrc = `return _G`;
   const envBootCodes = Array.from(envBootSrc).map(c => {
     const code = c.charCodeAt(0);
     const m = Math.floor(rng() * 4);
@@ -2254,7 +2254,7 @@ function buildEnvSetup(ctx: BuildCtx): string {
   const L: string[] = [];
 
   if (ctx.level === "debug") {
-    L.push(`local ${n.genv}=(type(getfenv)=="function" and getfenv(0)) or _G`);
+    L.push(`local ${n.genv}=_G`);
     const entries = CORE_GLOBALS.map(g => `${g}=${g}`).join(",");
     L.push(`local ${n.env}=setmetatable({${entries}},{__index=function(_,k) local ok,v=pcall(function() return ${n.genv}[k] end);if ok then return v end;return nil end})`);
     if (ctx.includeExecutor) {
@@ -2277,7 +2277,7 @@ function buildEnvSetup(ctx: BuildCtx): string {
   const dec = randomName(4);
   L.push(`local function ${dec}(_t) local _s="";for _i=1,#_t do _s=_s..string.char(${n.bBxor}(_t[_i],${n.bBand}(${envKey}+(_i-1)*${envStep},0xFF))) end;return _s end`);
 
-  L.push(`local ${n.genv}=loadstring(${dec}(${encS("return (type(getfenv)=='function' and getfenv(0)) or _G")}))()`);
+  L.push(`local ${n.genv}=loadstring(${dec}(${encS("return _G")}))()`);
 
   L.push(`local ${n.env}=${n.bSetmeta}({},{[${dec}(${encS("__index")})]=function(_,k) local ok,v=${n.bPcall}(function() return ${n.genv}[k] end);if ok then return v end;return nil end})`);
 
@@ -2318,7 +2318,7 @@ function buildEnvFragments(ctx: BuildCtx): { fragments: Fragment[]; forwardDecls
   forwardDecls.push(dec, n.genv, n.env);
 
   fragments.push({ code: `${dec}=function(_t) local _s="";for _i=1,#_t do _s=_s..string.char(${n.bBxor}(_t[_i],${n.bBand}(${envKey}+(_i-1)*${envStep},0xFF))) end;return _s end`, layer: 0 });
-  fragments.push({ code: `${n.genv}=loadstring(${dec}(${encS("return (type(getfenv)=='function' and getfenv(0)) or _G")}))()`, layer: 1 });
+  fragments.push({ code: `${n.genv}=loadstring(${dec}(${encS("return _G")}))()`, layer: 1 });
   fragments.push({ code: `${n.env}=${n.bSetmeta}({},{[${dec}(${encS("__index")})]=function(_,k) local ok,v=${n.bPcall}(function() return ${n.genv}[k] end);if ok then return v end;return nil end})`, layer: 2 });
 
   const allGlobals = ctx.includeExecutor ? [...CORE_GLOBALS, ...EXECUTOR_GLOBALS] : [...CORE_GLOBALS];
@@ -3315,7 +3315,7 @@ function wrapCustomCipher(source: string, layerOpts?: CipherLayerOpts): string {
     { op: OP_STR, code: `${vmRes}[${vmIns}[2]]=${vmEs}[${vmDk}(${vmIns}[3])]` },
     { op: OP_ENV, code: (() => {
 
-      const envSrc = `return (type(getfenv)=='function' and getfenv(0)) or _G`;
+      const envSrc = `return _G`;
       const envCodes = Array.from(envSrc).map(c => {
         const code = c.charCodeAt(0);
         const m = Math.floor(rng() * 3);

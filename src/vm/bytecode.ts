@@ -107,16 +107,16 @@ export function addConst(chunk: BytecodeChunk, value: Constant): number {
 
 export const RK_OFFSET = 2049;
 
-export function RK(kIndex: number): number {
-  return kIndex + RK_OFFSET;
+export function RK(kIndex: number, offset: number = RK_OFFSET): number {
+  return kIndex + offset;
 }
 
-export function isRK_K(rk: number): boolean {
-  return rk >= RK_OFFSET;
+export function isRK_K(rk: number, offset: number = RK_OFFSET): boolean {
+  return rk >= offset;
 }
 
-export function rkToK(rk: number): number {
-  return rk - RK_OFFSET;
+export function rkToK(rk: number, offset: number = RK_OFFSET): number {
+  return rk - offset;
 }
 
 export const enum RegOp {

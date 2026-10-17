@@ -30,11 +30,13 @@ const { generateRegVM } = await import("../dist/vm/reg-vm-gen.js");
 const TMP = mkdtempSync(join(tmpdir(), "regexec-"));
 const SHIMTEXT = HAS_RT ? readFileSync(SHIM, "utf8") : "";
 const quiet = (fn) => { const o = console.log; console.log = () => {}; try { return fn(); } finally { console.log = o; } };
-function genReg(src, level, seed) {
+function genReg(src, level, seed, rkOffset) {
   return quiet(() => {
-    const base = regCompile(parse(lex(src).tokens));
+    const base = regCompile(parse(lex(src).tokens), rkOffset !== undefined ? { rkOffset } : {});
     const cl = (c) => ({ ...c, K: [...c.K], code: [...c.code], protos: (c.protos || []).map(cl) });
-    return generateRegVM(cl(base), { level, polymorphicSeed: seed });
+    const opts = { level, polymorphicSeed: seed };
+    if (rkOffset !== undefined) opts.rkOffset = rkOffset;
+    return generateRegVM(cl(base), opts);
   });
 }
 function runRT(exe, file) {
@@ -74,3 +76,34 @@ for (const name of FIXTURES) {
     }, 180000);
   }
 }
+// Phase 1.2(g) regression: the per-build RK_OFFSET must round-trip through
+// compile -> wire -> runtime. Defect: constRK encoded constants via RK(),
+// which hardcoded the default 2049 offset, while the runtime threshold used
+// the threaded offset — every constant operand then decoded as a register.
+// The pipeline always runs with a seed-derived offset, so the default-only
+// coverage above could never see it.
+const RK_OFFSETS = [2051, 4517, 6000, 8191];
+t("per-build rkOffset artifacts execute correctly on Luau+PUC", () => {
+  const src = "local x = 1 + 2\nprint(x)";
+  const srcF = join(TMP, "src-rkoff.lua");
+  writeFileSync(srcF, src);
+  writeFileSync(srcF + ".shim", SHIMTEXT + "\n" + src);
+  const wantL = runRT(LUAU, srcF);
+  const wantP = runRT(LUA54, srcF + ".shim");
+  expect(wantL.code).toBe(0);
+  expect(wantP.code).toBe(0);
+  for (const level of ["normal", "max"]) {
+    for (const rkOffset of RK_OFFSETS) {
+      const art = genReg(src, level, 1234, rkOffset);
+      const af = join(TMP, `rkoff-${level}-${rkOffset}.lua`);
+      writeFileSync(af, art);
+      writeFileSync(af + ".shim", SHIMTEXT + "\n" + art);
+      const rl = runRT(LUAU, af);
+      const rp = runRT(LUA54, af + ".shim");
+      expect(rl.code).toBe(0);
+      expect(rp.code).toBe(0);
+      expect(rl.out).toBe(wantL.out);
+      expect(rp.out).toBe(wantP.out);
+    }
+  }
+}, 180000);

@@ -1115,7 +1115,7 @@ function buildAlphabet(): string {
   return std.slice(0, 62) + rep.join("");
 }
 
-function wrapCustomCipher(source: string): string {
+export function wrapCustomCipher(source: string): string {
 
   const srcBytes: number[] = [];
   for (let i = 0; i < source.length; i++) srcBytes.push(source.charCodeAt(i));
@@ -1429,7 +1429,7 @@ function wrapCustomCipher(source: string): string {
   return lines.join("\n");
 }
 
-function wrapNestedVM(source: string): string {
+export function wrapNestedVM(source: string): string {
   const srcBytes: number[] = [];
   for (let i = 0; i < source.length; i++) srcBytes.push(source.charCodeAt(i));
 
@@ -1751,7 +1751,7 @@ function wrapNestedVM(source: string): string {
   return L.join("\n");
 }
 
-function wrapStubVM(source: string): string {
+export function wrapStubVM(source: string): string {
   const srcBytes: number[] = [];
   for (let i = 0; i < source.length; i++) srcBytes.push(source.charCodeAt(i));
 
