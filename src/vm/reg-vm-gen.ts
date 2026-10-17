@@ -1729,7 +1729,8 @@ function buildBuiltinCaptures(ctx: BuildCtx): { code: string; assignOnly: string
   lines.push(`local ${scVar}=("")[${luaEsc("char")}]`);
 
   const lsBoot = randomName(2);
-  lines.push(`local ${lsBoot}=loadstring`);
+  // Phase 5 / Step 3: load-only hosts (loadstring absent) must not hard-crash.
+  lines.push(`local ${lsBoot}=loadstring or load`);
   const envBootSrc = `return _G`;
   const envBootCodes = Array.from(envBootSrc).map(c => {
     const code = c.charCodeAt(0);
@@ -2086,9 +2087,9 @@ function buildVMRuntime(ctx: BuildCtx, assignStyle: boolean = false): string {
     const corruptAction = `${n.R}[1]=bit32.bxor((${n.R}[1] or 0),1);if #${n.code}>0 then ${n.code}[${n.ip}]=bit32.bxor(${n.code}[${n.ip}],1) end`;
 
     if (secCheckVariant === 0 || secCheckVariant === 1) {
-      L.push(`if ${n.kk}>128 and ${n.ip}%${secInterval * 4}<4 then local ${secVar}=${n.bPcall}(function() return ${n.env}["game"] end);if ${secVar} and ${n.bType}(${n.env}["game"])~="userdata" then ${corruptAction} end;if type(rawget)=="function" and rawget(${n.env},"print")~=${n.env}["print"] then ${corruptAction} end;if type(debug)=="table" and type(debug.gethook)~="function" then ${corruptAction} end end`);
+      L.push(`if ${n.kk}>128 and ${n.ip}%${secInterval * 4}<4 then local ${secVar}=${n.bPcall}(function() return ${n.env}["game"] end);if ${secVar} and ${n.bType}(${n.env}["game"])~="userdata" then ${corruptAction} end;if type(rawget)=="function" and rawget(${n.env},"print")~=${n.env}["print"] then ${corruptAction} end;if type(debug)=="table" and type(debug.gethook)=="function" then local ok,hh=pcall(debug.gethook) if ok and hh~=nil then ${corruptAction} end end end`);
     } else {
-      L.push(`if ${n.kk}>128 and ${n.ip}%${secInterval * 4}<4 then local ${secVar},_sv=${n.bPcall}(function() return ${n.env}["game"]["Workspace"] end);if not ${secVar} then ${corruptAction} end;if type(rawget)=="function" and rawget(${n.env},"print")~=${n.env}["print"] then ${corruptAction} end;if type(debug)=="table" and type(debug.gethook)~="function" then ${corruptAction} end end`);
+      L.push(`if ${n.kk}>128 and ${n.ip}%${secInterval * 4}<4 then local ${secVar},_sv=${n.bPcall}(function() return ${n.env}["game"]["Workspace"] end);if not ${secVar} then ${corruptAction} end;if type(rawget)=="function" and rawget(${n.env},"print")~=${n.env}["print"] then ${corruptAction} end;if type(debug)=="table" and type(debug.gethook)=="function" then local ok,hh=pcall(debug.gethook) if ok and hh~=nil then ${corruptAction} end end end`);
     }
   }
 
@@ -2277,7 +2278,8 @@ function buildEnvSetup(ctx: BuildCtx): string {
   const dec = randomName(4);
   L.push(`local function ${dec}(_t) local _s="";for _i=1,#_t do _s=_s..string.char(${n.bBxor}(_t[_i],${n.bBand}(${envKey}+(_i-1)*${envStep},0xFF))) end;return _s end`);
 
-  L.push(`local ${n.genv}=loadstring(${dec}(${encS("return _G")}))()`);
+  // Phase 5 / Step 3: loadstring-or-load fallback (load-only hosts).
+  L.push(`local ${n.genv}=(loadstring or load)(${dec}(${encS("return _G")}))()`);
 
   L.push(`local ${n.env}=${n.bSetmeta}({},{[${dec}(${encS("__index")})]=function(_,k) local ok,v=${n.bPcall}(function() return ${n.genv}[k] end);if ok then return v end;return nil end})`);
 
@@ -2318,7 +2320,8 @@ function buildEnvFragments(ctx: BuildCtx): { fragments: Fragment[]; forwardDecls
   forwardDecls.push(dec, n.genv, n.env);
 
   fragments.push({ code: `${dec}=function(_t) local _s="";for _i=1,#_t do _s=_s..string.char(${n.bBxor}(_t[_i],${n.bBand}(${envKey}+(_i-1)*${envStep},0xFF))) end;return _s end`, layer: 0 });
-  fragments.push({ code: `${n.genv}=loadstring(${dec}(${encS("return _G")}))()`, layer: 1 });
+  // Phase 5 / Step 3: loadstring-or-load fallback (load-only hosts).
+  fragments.push({ code: `${n.genv}=(loadstring or load)(${dec}(${encS("return _G")}))()`, layer: 1 });
   fragments.push({ code: `${n.env}=${n.bSetmeta}({},{[${dec}(${encS("__index")})]=function(_,k) local ok,v=${n.bPcall}(function() return ${n.genv}[k] end);if ok then return v end;return nil end})`, layer: 2 });
 
   const allGlobals = ctx.includeExecutor ? [...CORE_GLOBALS, ...EXECUTOR_GLOBALS] : [...CORE_GLOBALS];
