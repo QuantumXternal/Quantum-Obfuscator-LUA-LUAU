@@ -166,6 +166,7 @@ interface NameMap {
   poff: string;
   kk: string;
   jbias: string;
+  csVar: string;
 }
 
 let _rngState = 0;
@@ -263,9 +264,10 @@ function createNameMap(level: RegVMLevel): NameMap {
       bTostring: "_tostring", bRawget: "_rawget", bSetmeta: "_setmeta",
       bBxor: "_bxor", bBand: "_band",
       bGetmeta: "_getmeta", bNext: "_next",
-      s1: "_s1", s2: "_s2", s3: "_s3",
-      poff: "P", kk: "_kk", jbias: "_jb",
-    };
+       s1: "_s1", s2: "_s2", s3: "_s3",
+       poff: "P", kk: "_kk", jbias: "_jb",
+       csVar: "_cs",
+     };
   }
   return {
     run: randomName(5), env: randomName(4), genv: randomName(4),
@@ -284,6 +286,7 @@ function createNameMap(level: RegVMLevel): NameMap {
     bGetmeta: randomName(3), bNext: randomName(3),
     s1: randomName(2), s2: randomName(2), s3: randomName(2),
     poff: randomName(2), kk: randomName(2), jbias: randomName(3),
+    csVar: randomName(3),
   };
 }
 
@@ -845,7 +848,7 @@ function registerHandler(op: RegOp, gen: HandlerGen): void {
 registerHandler(RegOp.NOP, () => ``);
 
 registerHandler(RegOp.LOADK, (n, ctx) =>
-  `${n.R}[A+1]=${n.K}[${n.bBxor}(B,${ctx.constSalt}%#${n.K})+1]`);
+  `${n.R}[A+1]=${n.K}[${n.bBxor}(B,${n.csVar}%#${n.K})+1]`);
 
 registerHandler(RegOp.LOADNIL, (n) =>
   `for _i=A,A+B do ${n.R}[_i+1]=nil end`);
@@ -857,18 +860,18 @@ registerHandler(RegOp.MOVE, (n) =>
   `${n.R}[A+1]=${n.R}[B+1]`);
 
 registerHandler(RegOp.LOADKX, (n, ctx) =>
-  `local ex=${n.code}[${n.ip}+1];${n.R}[A+1]=${n.K}[${n.bBxor}(ex,${ctx.constSalt}%#${n.K})+1];${n.kk}=${n.kk}+1;${n.ip}=${n.poff}[${n.kk}] or (#${n.code}+1)`);
+  `local ex=${n.code}[${n.ip}+1];${n.R}[A+1]=${n.K}[${n.bBxor}(ex,${n.csVar}%#${n.K})+1];${n.kk}=${n.kk}+1;${n.ip}=${n.poff}[${n.kk}] or (#${n.code}+1)`);
 
 registerHandler(RegOp.EXTRAARG, () => ``);
 
 registerHandler(RegOp.GETGLOBAL, (n, ctx) => {
   const dbg = process.env.DEBUG_VM === '1';
   const nilChk = dbg ? `;if ${n.R}[A+1]==nil then warn("[GETGLOBAL] nil: "..tostring(_k)) end` : '';
-  return `do local _k=${n.K}[${n.bBxor}(B,${ctx.constSalt}%#${n.K})+1];if ${n.ic}[1]==_k then ${n.R}[A+1]=${n.ic}[2] else local _v=${n.env}[_k];${n.R}[A+1]=_v;${n.ic}[1]=_k;${n.ic}[2]=_v end${nilChk} end`;
+  return `do local _k=${n.K}[${n.bBxor}(B,${n.csVar}%#${n.K})+1];if ${n.ic}[1]==_k then ${n.R}[A+1]=${n.ic}[2] else local _v=${n.env}[_k];${n.R}[A+1]=_v;${n.ic}[1]=_k;${n.ic}[2]=_v end${nilChk} end`;
 });
 
 registerHandler(RegOp.SETGLOBAL, (n, ctx) =>
-  `do ${n.env}[${n.K}[${n.bBxor}(B,${ctx.constSalt}%#${n.K})+1]]=${n.R}[A+1];${n.ic}[1]=nil end`);
+  `do ${n.env}[${n.K}[${n.bBxor}(B,${n.csVar}%#${n.K})+1]]=${n.R}[A+1];${n.ic}[1]=nil end`);
 
 registerHandler(RegOp.GETTABLE, (n) => {
   const dbg = process.env.DEBUG_VM === '1';
@@ -1068,8 +1071,8 @@ registerHandler(RegOp.FUSED_TESTSET_JMP, (n) => {
 registerHandler(RegOp.FUSED_GGET, (n, ctx) => {
   const v = Math.floor(rng() * 3);
   const dbg = process.env.DEBUG_VM === '1';
-  const nilG = dbg ? `if _g==nil then warn("[FUSED_GGET] nil global: "..tostring(${n.K}[${n.bBxor}(B,${ctx.constSalt}%#${n.K})+1])) end;` : '';
-  const kacc = `${n.K}[${n.bBxor}(B,${ctx.constSalt}%#${n.K})+1]`;
+  const nilG = dbg ? `if _g==nil then warn("[FUSED_GGET] nil global: "..tostring(${n.K}[${n.bBxor}(B,${n.csVar}%#${n.K})+1])) end;` : '';
+  const kacc = `${n.K}[${n.bBxor}(B,${n.csVar}%#${n.K})+1]`;
   if (v === 0)
     return `do local _A2=${n.code}[${n.ip}-3];local _C2=${n.code}[${n.ip}-1];local _g=${n.env}[${kacc}];${nilG}${n.R}[A+1]=_g;${n.R}[_A2+1]=_g[${n.RK}(_C2)] end`;
   if (v === 1)
@@ -1079,7 +1082,7 @@ registerHandler(RegOp.FUSED_GGET, (n, ctx) => {
 
 registerHandler(RegOp.FUSED_LOADKK, (n, ctx) => {
   const v = Math.floor(rng() * 2);
-  const kacc = (e: string) => `${n.K}[${n.bBxor}(${e},${ctx.constSalt}%#${n.K})+1]`;
+  const kacc = (e: string) => `${n.K}[${n.bBxor}(${e},${n.csVar}%#${n.K})+1]`;
   if (v === 0)
     return `do local _A2=${n.code}[${n.ip}-3];local _B2=${n.code}[${n.ip}-2];${n.R}[A+1]=${kacc("B")};${n.R}[_A2+1]=${kacc("_B2")} end`;
   return `do ${n.R}[A+1]=${kacc("B")};${n.R}[${n.code}[${n.ip}-3]+1]=${kacc(`${n.code}[${n.ip}-2]`)} end`;
@@ -1131,7 +1134,7 @@ registerHandler(RegOp.FUSED_GGET_CALL, (n) => {
 registerHandler(RegOp.FUSED_LOADK_RET, (n, ctx) => {
   const v = Math.floor(rng() * 2);
   // v2 computed-index K (Phase 1.1 / R-2): B is a raw const index.
-  const kacc = `${n.K}[${n.bBxor}(B,${ctx.constSalt}%#${n.K})+1]`;
+  const kacc = `${n.K}[${n.bBxor}(B,${n.csVar}%#${n.K})+1]`;
   if (v === 0)
     return `do ${n.R}[A+1]=${kacc};return ${n.tPack}(${n.R}[A+1]) end`;
   return `do local _v=${kacc};return ${n.tPack}(_v) end`;
@@ -1862,7 +1865,7 @@ function buildVMRuntime(ctx: BuildCtx, assignStyle: boolean = false): string {
     // v2 computed-index K access (Phase 1.1 / R-2): real entry j (0-based)
     // lives at bxor(j, eff)+1 with eff = S % #K (S odd artifact salt, so
     // eff != 0 for #K>=2). No literal index addresses a real constant.
-    L.push(`local function ${n.RK}(x) if x>=${rkThreshVar} then return ${n.K}[${n.bBxor}((x-${rkSubVar})-1,${ctx.constSalt}%#${n.K})+1] else return ${n.R}[x+1] end end`);
+    L.push(`local function ${n.RK}(x) if x>=${rkThreshVar} then return ${n.K}[${n.bBxor}((x-${rkSubVar})-1,${n.csVar}%#${n.K})+1] else return ${n.R}[x+1] end end`);
   } else {
     L.push(`local function ${n.RK}(x) if x>=${ctx.rkOffset} then return ${n.K}[x-${ctx.rkOffset - 1}] else return ${n.R}[x+1] end end`);
   }
@@ -1881,7 +1884,7 @@ function buildVMRuntime(ctx: BuildCtx, assignStyle: boolean = false): string {
     for (const [sOp, body] of bodies) {
       void sOp;
       const inlined = body.replace(rkRe, (_m, v) =>
-        `(${v}>=${rkThreshVar} and ${n.K}[${n.bBxor}((${v}-${rkSubVar})-1,${ctx.constSalt}%#${n.K})+1] or ${n.R}[${v}+1])`);
+        `(${v}>=${rkThreshVar} and ${n.K}[${n.bBxor}((${v}-${rkSubVar})-1,${n.csVar}%#${n.K})+1] or ${n.R}[${v}+1])`);
       if (inlined !== body) bodies.set(sOp, inlined);
     }
   }
@@ -2007,12 +2010,14 @@ function buildVMRuntime(ctx: BuildCtx, assignStyle: boolean = false): string {
   const preWhileIdx = L.length;
   L.push(`local _kr=0`);
   L.push(`local _rotKey=${Math.floor(rng() * 65536)}`);
+  L.push(`local ${ctx.names.csVar}=${ctx.constSalt}`);
   L.push(`local _skk=0`);
   L.push(`local _sip=0`);
   L.push(`local _ssync=0`);
   L.push(`while ${n.kk}<=#${n.poff} and ${n.ip}<=#${n.code} do`);
   L.push(`_kr=_kr+1`);
   L.push(`if _kr%256==0 then _rotKey=bit32.bxor(_rotKey,_kr*31+${Math.floor(rng() * 65536)}) end`);
+  L.push(`if _kr%256==0 then local _oldEff=${ctx.names.csVar}%#${n.K}; ${ctx.names.csVar}=bit32.bxor(${ctx.names.csVar},_kr*31+${Math.floor(rng() * 65536)}); local _newEff=${ctx.names.csVar}%#${n.K}; if _oldEff~=_newEff then local _nk={}; for _ji=0,#${n.K}-1 do _nk[bit32.bxor(_ji,_newEff)+1]=${n.K}[bit32.bxor(_ji,_oldEff)+1] end; for _ji=1,#${n.K} do ${n.K}[_ji]=_nk[_ji] end end end`);
   L.push(`_ssync=_ssync+1;if _ssync>=64 then _skk=${n.kk};_sip=${n.ip};_ssync=0 end`);
   L.push(`if _kr%256==0 and (${n.kk}~=_skk or ${n.ip}~=_sip) then ${n.R}[1]=bit32.bxor((${n.R}[1] or 0),1) end`);
 
