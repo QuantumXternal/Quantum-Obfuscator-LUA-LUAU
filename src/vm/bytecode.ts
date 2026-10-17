@@ -178,9 +178,11 @@ export const enum RegOp {
   FUSED_GGET_CALL   = 54,
   FUSED_LOADK_RET   = 55,
   FUSED_MOVE_RET    = 56,
+  FUSED_ADD_MOVE    = 57,
+  FUSED_MUL_ADD     = 58,
 }
 
-export const REG_OPCODE_COUNT = 57;
+export const REG_OPCODE_COUNT = 59;
 
 /**
  * Phase 1.2(c): sparse per-build opcode wire space (both VMs).
@@ -256,6 +258,8 @@ export const REG_FUSED_SLOTS = new Map<number, number>([
   [RegOp.FUSED_GGET_CALL, 3],
   [RegOp.FUSED_LOADK_RET, 2],
   [RegOp.FUSED_MOVE_RET, 2],
+  [RegOp.FUSED_ADD_MOVE, 2],
+  [RegOp.FUSED_MUL_ADD, 2],
 ]);
 
 /** Ops whose bodies can advance past exactly one following instruction. */

@@ -825,7 +825,7 @@ const REG_OP_NAMES: string[] = [
   "CLOSEUPVAL","PCALL","XPCALL","ITERPREP","LOADKX","EXTRAARG",
   "F_TEST_JMP","F_EQ_JMP","F_LT_JMP","F_LE_JMP","F_TESTSET_JMP",
   "F_GGET","F_LOADKK","F_MOVE_MOVE","F_SELF_CALL","F_GGET_CALL",
-  "F_LOADK_RET","F_MOVE_RET",
+  "F_LOADK_RET","F_MOVE_RET","F_ADD_MOVE","F_MUL_ADD",
 ];
 
 type HandlerGen = (n: NameMap, ctx: BuildCtx) => string;
@@ -1140,6 +1140,20 @@ registerHandler(RegOp.FUSED_MOVE_RET, (n) => {
   return `do ${n.R}[A+1]=${n.R}[B+1];local _B2=${n.code}[${n.ip}-2];if _B2==0 then return ${n.tPack}(${n.tUnpack}(${n.R},A+1,${n.top})) elseif _B2==1 then return ${n.tPack}() else return ${n.tPack}(${n.tUnpack}(${n.R},A+1,A+_B2-1)) end end`;
 });
 
+registerHandler(RegOp.FUSED_ADD_MOVE, (n) => {
+  const v = Math.floor(rng() * 2);
+  if (v === 0)
+    return `do ${n.R}[A+1]=${n.RK}(B)+${n.RK}(C);local _D2=${n.code}[${n.ip}-3];${n.R}[_D2+1]=${n.R}[A+1] end`;
+  return `do local _s=${n.RK}(B)+${n.RK}(C);${n.R}[A+1]=_s;local _D2=${n.code}[${n.ip}-3];${n.R}[_D2+1]=_s end`;
+});
+
+registerHandler(RegOp.FUSED_MUL_ADD, (n) => {
+  const v = Math.floor(rng() * 2);
+  if (v === 0)
+    return `do ${n.R}[A+1]=${n.RK}(B)*${n.RK}(C);local _D2=${n.code}[${n.ip}-3];local _E2=${n.code}[${n.ip}-1];${n.R}[_D2+1]=${n.R}[A+1]+${n.RK}(_E2) end`;
+  return `do local _s=${n.RK}(B)*${n.RK}(C);${n.R}[A+1]=_s;local _D2=${n.code}[${n.ip}-3];local _E2=${n.code}[${n.ip}-1];${n.R}[_D2+1]=_s+${n.RK}(_E2) end`;
+});
+
 function computeJumpTargets(code: number[]): Set<number> {
   const targets = new Set<number>();
   for (let i = 0; i < code.length; i += 4) {
@@ -1206,7 +1220,8 @@ function flattenControlFlow(chunk: RegBytecodeChunk): number {
           op === (RegOp.FUSED_TESTSET_JMP as number) || op === (RegOp.FUSED_GGET as number) ||
           op === (RegOp.FUSED_LOADKK as number) || op === (RegOp.FUSED_MOVE_MOVE as number) ||
           op === (RegOp.FUSED_SELF_CALL as number) || op === (RegOp.FUSED_LOADK_RET as number) ||
-          op === (RegOp.FUSED_MOVE_RET as number)) {
+          op === (RegOp.FUSED_MOVE_RET as number) || op === (RegOp.FUSED_ADD_MOVE as number) ||
+          op === (RegOp.FUSED_MUL_ADD as number)) {
         targets.delete(i + 4);
       }
 
@@ -1233,7 +1248,8 @@ function flattenControlFlow(chunk: RegBytecodeChunk): number {
           op === (RegOp.FUSED_TESTSET_JMP as number) || op === (RegOp.FUSED_GGET as number) ||
           op === (RegOp.FUSED_LOADKK as number) || op === (RegOp.FUSED_MOVE_MOVE as number) ||
           op === (RegOp.FUSED_SELF_CALL as number) || op === (RegOp.FUSED_LOADK_RET as number) ||
-          op === (RegOp.FUSED_MOVE_RET as number)) {
+          op === (RegOp.FUSED_MOVE_RET as number) || op === (RegOp.FUSED_ADD_MOVE as number) ||
+          op === (RegOp.FUSED_MUL_ADD as number)) {
         unsafeSplit.add(i + 4);
       }
       if (op === (RegOp.FUSED_GGET_CALL as number)) {
@@ -1446,6 +1462,13 @@ function buildFusionPatterns(enabled: Set<number>): FusionPattern[] {
   add(RegOp.FUSED_MOVE_RET as number, "MOVE_RET", 2, (c, i) =>
     c[i] === (RegOp.MOVE as number) && c[i+4] === (RegOp.RETURN as number));
 
+  add(RegOp.FUSED_ADD_MOVE as number, "ADD_MOVE", 2, (c, i) =>
+    c[i] === (RegOp.ADD as number) && c[i+4] === (RegOp.MOVE as number) &&
+    c[i+4+2] === c[i+1]);
+
+  add(RegOp.FUSED_MUL_ADD as number, "MUL_ADD", 2, (c, i) =>
+    c[i] === (RegOp.MUL as number) && c[i+4] === (RegOp.ADD as number) &&
+    c[i+4+2] === c[i+1]);
   return patterns;
 }
 
@@ -1468,6 +1491,8 @@ const ALL_FUSION_IDS = [
   RegOp.FUSED_SELF_CALL as number,
   RegOp.FUSED_LOADK_RET as number,
   RegOp.FUSED_MOVE_RET as number,
+  RegOp.FUSED_ADD_MOVE as number,
+  RegOp.FUSED_MUL_ADD as number,
 ];
 
 /**
@@ -3782,6 +3807,7 @@ export function generateRegVM(chunk: RegBytecodeChunk, options: RegVMGenOptions 
       RegOp.FUSED_LOADKK as number, RegOp.FUSED_MOVE_MOVE as number,
       RegOp.FUSED_SELF_CALL as number, RegOp.FUSED_GGET_CALL as number,
       RegOp.FUSED_LOADK_RET as number, RegOp.FUSED_MOVE_RET as number,
+      RegOp.FUSED_ADD_MOVE as number, RegOp.FUSED_MUL_ADD as number,
     ];
 
     for (let si = allFusionOps.length - 1; si > 0; si--) {
