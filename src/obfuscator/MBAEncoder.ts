@@ -33,7 +33,7 @@ const VARIANTS = [
 export function mbaTransformExpression(exp: Expression, rng: () => number, varName: string): Expression {
   if (exp.type === "NumberLiteral") {
     const n = (exp as any).value as number;
-    if (!Number.isFinite(n) || !Number.isInteger(n)) return exp;
+    if (!Number.isFinite(n)) return exp;
     // Skip 0/1 to keep output reasonable; still transform via identity.
     const variant = VARIANTS[Math.floor(rng() * VARIANTS.length)];
     const expr = variant(n, varName);
