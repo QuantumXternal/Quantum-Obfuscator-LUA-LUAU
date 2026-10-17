@@ -8,7 +8,34 @@ Conventions: times are single-run wall ms (run-to-run variance ± several ms —
 only consistent directional deltas across all 9 fixtures count). `none` path
 is the AST-only control: byte-identical before/after in every comparison.
 
-## Hardening — Phase 1.2(g) (RK_OFFSET per-build + proto arity audit)
+## Hardening — Phase 1.2(h) (proofs + docs + 1.2 closeout)
+
+- Cross-build isolation: NMI < 0.01 (pooled, 0.000176) and normalized
+  Kendall-tau in [0.45, 0.55] (0.4991) over 190 cross-build pairs.
+  Same-seed control: tau_norm = 1.0, NMI = 1.0.
+- 200-seed uniqueness: 200/200 distinct maps for both VMs. Permutation
+  space: reg ~2^390, stack ~2^510.
+- exposeMap (takeRecordedOpcodeMaps) is gen-time only (module-local, never
+  serialized).
+- 10 new adversarial cells (seeds 5,17,777,31337,90210 x reg/stack): all
+  REFUSE verbatim, exit 1, no .clean.lua.
+- Standing baseline (plain/stack-max/reg) still refuses.
+- Hot-loop bench: reg numeric 30.85M (vs 31.0M, -0.5%), within +/-2%.
+- Full suite green: 514 tests (32 suites).
+
+Phase 1.2 (complete) summary
+- (a) P1/P2/P3 gate; hardening/phase1-2 branch.
+- (b) seed widening + 128-bit PRNG (number|string polymorphic seeds).
+- (c) sparse per-build opcode space (128-wide, reg 59/stack 73 real ops).
+- (d) per-op wire-arity changes (reg lead-salt, stack lead-decoy).
+- (e) new fused ops (reg ADD_MOVE/MUL_ADD, stack POW/UNM_STORE); -5.14%
+  instruction count.
+- (f) decoy opcodes (reg 59-62, stack 64-66+73-76); fuzz indistinguishable.
+- (g) RK_OFFSET per-build (default 2049, domain [2049,8191]); proto arity
+  audit passed (no positional consumers).
+- (h) proofs + closeout.
+
+Phase 1.2(g) (RK_OFFSET per-build + proto arity audit)
 
 - REG: RK_OFFSET is no longer a fixed 256. Default 2049 (odd, non-power-
   of-two, above the global max K length ~402); domain [2049, 8191] for
@@ -27,6 +54,20 @@ is the AST-only control: byte-identical before/after in every comparison.
   half; gate satisfied by verification.
 - BREAKS numeric-path byte-identity vs (f) by construction (RK_OFFSET
   threshold algebra + per-build draw). Bench +/-2%.
+
+Phase 1.2(f) (decoy opcodes, both VMs)
+
+- REG decoys (reg-vm-gen.ts): DECOY_0..3 (RegOp 59-62) with plausible
+  arity 0/1/2/3 and no-op bodies. REG_OPCODE_COUNT 59 -> 63 (sparse
+  range 128 = 65 gaps). REG_OP_MASK set per arity. Never emitted by the
+  compiler (tests/decoy-nonemission.test.js across fixture corpus + complex
+  control flow). Decoy-hit and dispatch-miss indistinguishable under fuzz
+  (tests/decoy-fuzz.test.js, 2000 iterations x 2 VMs, no throws).
+- STACK decoys (vm-gen.ts): hardens 64-66 (NOP/1-arg/2-arg camo) and adds
+  73-76 (0/1/2/3-arg decoys). STACK_OPCODE_COUNT 73 -> 77 (sparse range
+  128 = 51 gaps). OPCODES sets updated; handlers h[73-76]; runner cases
+  added. Compiler non-emission proven.
+- BREAKS numeric-path byte-identity vs (e). Bench +/-2%.
 
 Phase 1.2(e) (new fused ops, both VMs)
 
