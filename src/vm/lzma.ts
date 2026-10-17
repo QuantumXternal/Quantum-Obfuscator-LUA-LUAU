@@ -8,7 +8,12 @@ export function base85Encode(data: Uint8Array): string {
     padded.set(data);
   }
 
-  let result = "";
+  // Chunked accumulation, byte-identical to the previous `result +=` builder
+  // (group digits are still computed least-significant-first into c[4..0]
+  // and emitted in c[0..4] order), with bounded intermediate strings.
+  const parts: string[] = [];
+  let chunk = "";
+
   for (let i = 0; i < padded.length; i += 4) {
     const val =
       (padded[i] << 24) |
@@ -19,20 +24,23 @@ export function base85Encode(data: Uint8Array): string {
     const uval = val >>> 0;
 
     if (uval === 0) {
-      result += "z";
+      chunk += "z";
+      if (chunk.length >= 8192) { parts.push(chunk); chunk = ""; }
       continue;
     }
 
     let v = uval;
-    const c = new Array(5);
-    for (let j = 4; j >= 0; j--) {
-      c[j] = String.fromCharCode(33 + (v % 85));
-      v = Math.floor(v / 85);
-    }
-    result += c.join("");
+    const c4 = 33 + (v % 85); v = Math.floor(v / 85);
+    const c3 = 33 + (v % 85); v = Math.floor(v / 85);
+    const c2 = 33 + (v % 85); v = Math.floor(v / 85);
+    const c1 = 33 + (v % 85); v = Math.floor(v / 85);
+    const c0 = 33 + (v % 85);
+    chunk += String.fromCharCode(c0, c1, c2, c3, c4);
+    if (chunk.length >= 8192) { parts.push(chunk); chunk = ""; }
   }
 
-  return result;
+  if (chunk.length > 0) parts.push(chunk);
+  return parts.join("");
 }
 
 export function base85Decode(str: string): Uint8Array {

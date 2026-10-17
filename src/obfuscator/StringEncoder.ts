@@ -228,100 +228,111 @@ function makeDecoderStatements(
   return [cacheStmt, decoderFunc];
 }
 
-function transformExpression(exp: Expression, key: number, decoderName: string): Expression {
+interface EncodeBudget {
+  maxLen: number;
+  remaining: number;
+}
+
+function transformExpression(exp: Expression, key: number, decoderName: string, budget: EncodeBudget): Expression {
   if (exp.type === "StringLiteral") {
     if (exp.value === "") return exp;
+    // Budget gate: long literals stay plain (a per-byte table for an
+    // N-byte literal compiles to O(N) instructions/constants and is what
+    // sank large embedded assets); the total budget bounds instruction
+    // growth for scripts with thousands of small strings.
+    if (exp.value.length > budget.maxLen || exp.value.length > budget.remaining) return exp;
+    budget.remaining -= exp.value.length;
     const bytes = encodeString(exp.value, key);
     return makeDecodeCall(bytes, key, exp.loc, decoderName) as Expression;
   }
   if (exp.type === "BinaryExpression") {
     return {
       ...exp,
-      left: transformExpression(exp.left, key, decoderName),
-      right: transformExpression(exp.right, key, decoderName),
+      left: transformExpression(exp.left, key, decoderName, budget),
+      right: transformExpression(exp.right, key, decoderName, budget),
     };
   }
   if (exp.type === "UnaryExpression") {
-    return { ...exp, argument: transformExpression(exp.argument, key, decoderName) };
+    return { ...exp, argument: transformExpression(exp.argument, key, decoderName, budget) };
   }
   if (exp.type === "CallExpression") {
     return {
       ...exp,
-      callee: transformExpression(exp.callee, key, decoderName),
-      args: exp.args.map((a) => transformExpression(a, key, decoderName)),
+      callee: transformExpression(exp.callee, key, decoderName, budget),
+      args: exp.args.map((a) => transformExpression(a, key, decoderName, budget)),
     };
   }
   if (exp.type === "MethodCallExpression") {
     return {
       ...exp,
-      object: transformExpression(exp.object, key, decoderName),
-      args: exp.args.map((a) => transformExpression(a, key, decoderName)),
+      object: transformExpression(exp.object, key, decoderName, budget),
+      args: exp.args.map((a) => transformExpression(a, key, decoderName, budget)),
     };
   }
   if (exp.type === "IndexExpression") {
     return {
       ...exp,
-      object: transformExpression(exp.object, key, decoderName),
-      index: transformExpression(exp.index, key, decoderName),
+      object: transformExpression(exp.object, key, decoderName, budget),
+      index: transformExpression(exp.index, key, decoderName, budget),
     };
   }
   if (exp.type === "MemberExpression") {
-    return { ...exp, object: transformExpression(exp.object, key, decoderName) };
+    return { ...exp, object: transformExpression(exp.object, key, decoderName, budget) };
   }
   if (exp.type === "TableConstructor") {
     return {
       ...exp,
       fields: exp.fields.map((f) => {
         if (f.kind === "index")
-          return { ...f, index: transformExpression(f.index, key, decoderName), value: transformExpression(f.value, key, decoderName) };
+          return { ...f, index: transformExpression(f.index, key, decoderName, budget), value: transformExpression(f.value, key, decoderName, budget) };
         if (f.kind === "named")
-          return { ...f, value: transformExpression(f.value, key, decoderName) };
-        return { ...f, value: transformExpression(f.value, key, decoderName) };
+          return { ...f, value: transformExpression(f.value, key, decoderName, budget) };
+        return { ...f, value: transformExpression(f.value, key, decoderName, budget) };
       }),
     };
   }
   if (exp.type === "FunctionExpression") {
     return {
       ...exp,
-      body: exp.body.map((s) => transformStatement(s, key, decoderName)),
+      body: exp.body.map((s) => transformStatement(s, key, decoderName, budget)),
     };
   }
   if (exp.type === "ParenExpression") {
-    return { ...exp, expression: transformExpression(exp.expression, key, decoderName) };
+    return { ...exp, expression: transformExpression(exp.expression, key, decoderName, budget) };
   }
   if (exp.type === "TypeAssertion") {
-    return { ...exp, expression: transformExpression(exp.expression, key, decoderName) };
+    return { ...exp, expression: transformExpression(exp.expression, key, decoderName, budget) };
   }
   if (exp.type === "IfElseExpression") {
     return {
       ...exp,
-      condition: transformExpression(exp.condition, key, decoderName),
-      thenExp: transformExpression(exp.thenExp, key, decoderName),
+      condition: transformExpression(exp.condition, key, decoderName, budget),
+      thenExp: transformExpression(exp.thenExp, key, decoderName, budget),
       elseifClauses: exp.elseifClauses?.map((c) => ({
         ...c,
-        condition: transformExpression(c.condition, key, decoderName),
-        value: transformExpression(c.value, key, decoderName),
+        condition: transformExpression(c.condition, key, decoderName, budget),
+        value: transformExpression(c.value, key, decoderName, budget),
       })),
-      elseExp: transformExpression(exp.elseExp, key, decoderName),
+      elseExp: transformExpression(exp.elseExp, key, decoderName, budget),
     };
   }
   if (exp.type === "StringInterpolation") {
     return {
       ...exp,
       parts: exp.parts.map((p) =>
-        typeof p === "string" ? p : transformExpression(p, key, decoderName)
+        typeof p === "string" ? p : transformExpression(p, key, decoderName, budget)
       ),
     };
   }
   return exp;
 }
 
-function transformStatement(stmt: Statement | LastStatement, key: number, decoderName: string): Statement | LastStatement {
+function transformStatement(stmt: Statement | LastStatement, key: number, decoderName: string, budget: EncodeBudget): Statement | LastStatement {
   switch (stmt.type) {
     case "LocalStatement":
       return {
         ...stmt,
-        values: stmt.values?.map((e) => transformExpression(e, key, decoderName)),
+        values: stmt.values?.map((e) => transformExpression(e, key, decoderName, budget)),
       };
     case "AssignmentStatement":
       return {
@@ -329,66 +340,66 @@ function transformStatement(stmt: Statement | LastStatement, key: number, decode
         vars: stmt.vars.map((v) => {
           if (v.type === "Identifier") return v;
           if (v.type === "IndexExpression")
-            return { ...v, object: transformExpression(v.object, key, decoderName), index: transformExpression(v.index, key, decoderName) };
-          return { ...v, object: transformExpression(v.object, key, decoderName) };
+            return { ...v, object: transformExpression(v.object, key, decoderName, budget), index: transformExpression(v.index, key, decoderName, budget) };
+          return { ...v, object: transformExpression(v.object, key, decoderName, budget) };
         }),
-        values: stmt.values.map((e) => transformExpression(e, key, decoderName)),
+        values: stmt.values.map((e) => transformExpression(e, key, decoderName, budget)),
       };
     case "CompoundAssignmentStatement":
       return {
         ...stmt,
         var: stmt.var.type === "Identifier" ? stmt.var : {
           ...stmt.var,
-          object: transformExpression(stmt.var.object, key, decoderName),
-          ...(stmt.var.type === "IndexExpression" && { index: transformExpression(stmt.var.index, key, decoderName) }),
+          object: transformExpression(stmt.var.object, key, decoderName, budget),
+          ...(stmt.var.type === "IndexExpression" && { index: transformExpression(stmt.var.index, key, decoderName, budget) }),
         },
-        value: transformExpression(stmt.value, key, decoderName),
+        value: transformExpression(stmt.value, key, decoderName, budget),
       };
     case "FunctionCallStatement":
-      return { ...stmt, call: transformExpression(stmt.call, key, decoderName) as CallExpression };
+      return { ...stmt, call: transformExpression(stmt.call, key, decoderName, budget) as CallExpression };
     case "ReturnStatement":
-      return { ...stmt, values: stmt.values?.map((e) => transformExpression(e, key, decoderName)) };
+      return { ...stmt, values: stmt.values?.map((e) => transformExpression(e, key, decoderName, budget)) };
     case "IfStatement":
       return {
         ...stmt,
-        condition: transformExpression(stmt.condition, key, decoderName),
-        thenBody: stmt.thenBody.map((s) => transformStatement(s, key, decoderName)),
+        condition: transformExpression(stmt.condition, key, decoderName, budget),
+        thenBody: stmt.thenBody.map((s) => transformStatement(s, key, decoderName, budget)),
         elseifClauses: stmt.elseifClauses?.map((c) => ({
           ...c,
-          condition: transformExpression(c.condition, key, decoderName),
-          body: c.body.map((s) => transformStatement(s, key, decoderName)),
+          condition: transformExpression(c.condition, key, decoderName, budget),
+          body: c.body.map((s) => transformStatement(s, key, decoderName, budget)),
         })),
-        elseBody: stmt.elseBody?.map((s) => transformStatement(s, key, decoderName)),
+        elseBody: stmt.elseBody?.map((s) => transformStatement(s, key, decoderName, budget)),
       };
     case "ForNumericStatement":
       return {
         ...stmt,
-        start: transformExpression(stmt.start, key, decoderName),
-        end: transformExpression(stmt.end, key, decoderName),
-        step: stmt.step ? transformExpression(stmt.step, key, decoderName) : undefined,
-        body: stmt.body.map((s) => transformStatement(s, key, decoderName)),
+        start: transformExpression(stmt.start, key, decoderName, budget),
+        end: transformExpression(stmt.end, key, decoderName, budget),
+        step: stmt.step ? transformExpression(stmt.step, key, decoderName, budget) : undefined,
+        body: stmt.body.map((s) => transformStatement(s, key, decoderName, budget)),
       };
     case "ForInStatement":
       return {
         ...stmt,
-        iter: stmt.iter.map((e) => transformExpression(e, key, decoderName)),
-        body: stmt.body.map((s) => transformStatement(s, key, decoderName)),
+        iter: stmt.iter.map((e) => transformExpression(e, key, decoderName, budget)),
+        body: stmt.body.map((s) => transformStatement(s, key, decoderName, budget)),
       };
     case "LocalFunctionStatement":
     case "FunctionStatement":
       return {
         ...stmt,
         params: stmt.params,
-        body: stmt.body.map((s) => transformStatement(s, key, decoderName)),
+        body: stmt.body.map((s) => transformStatement(s, key, decoderName, budget)),
       };
     case "DoStatement":
     case "WhileStatement":
     case "RepeatStatement":
       return {
         ...stmt,
-        ...(stmt.type === "WhileStatement" && { condition: transformExpression(stmt.condition, key, decoderName) }),
-        ...(stmt.type === "RepeatStatement" && { condition: transformExpression(stmt.condition, key, decoderName) }),
-        body: stmt.body.map((s) => transformStatement(s, key, decoderName)),
+        ...(stmt.type === "WhileStatement" && { condition: transformExpression(stmt.condition, key, decoderName, budget) }),
+        ...(stmt.type === "RepeatStatement" && { condition: transformExpression(stmt.condition, key, decoderName, budget) }),
+        body: stmt.body.map((s) => transformStatement(s, key, decoderName, budget)),
       };
     default:
       return stmt;
@@ -405,6 +416,17 @@ export interface StringEncoderOptions {
   // this seed (mulberry32) instead of Math.random(), enabling reproducible
   // builds, caching, and snapshot tests. Omitted = legacy random behavior.
   seed?: number;
+
+  // Longest string (UTF-16 code units, matching encodeString) that gets
+  // encoded into a byte table. Longer literals stay plain: an N-byte table
+  // compiles to O(N) VM instructions/constants (embedded assets, base85
+  // blobs), which is the documented large-input failure mode. Default 64.
+  maxStringLength?: number;
+
+  // Total encoded-string bytes allowed per build. Once exhausted, the
+  // remaining literals stay plain, bounding worst-case instruction growth
+  // for scripts with thousands of small strings. Default 65536.
+  maxTotalBytes?: number;
 }
 
 function mulberry32(seed: number): () => number {
@@ -435,7 +457,12 @@ export function encodeStrings(ast: Chunk, options: StringEncoderOptions = {}): C
   const loc = ast.body[0]?.loc ?? { start: { line: 1, column: 1, offset: 0 }, end: { line: 1, column: 1, offset: 0 } };
   const decoders = makeDecoderStatements(key, loc, decoderName, rng);
 
-  const transformedBody = ast.body.map((s) => transformStatement(s, key, decoderName));
+  const budget: EncodeBudget = {
+    maxLen: options.maxStringLength ?? 64,
+    remaining: options.maxTotalBytes ?? 65536,
+  };
+
+  const transformedBody = ast.body.map((s) => transformStatement(s, key, decoderName, budget));
 
   return {
     ...ast,

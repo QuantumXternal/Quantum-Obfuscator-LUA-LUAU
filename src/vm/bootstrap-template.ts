@@ -1,3 +1,5 @@
+import { splitLongLiteral } from "./limits.js";
+
 export interface BootstrapConfig {
   vmBlob: string;
   vmOrigLen: number;
@@ -136,6 +138,19 @@ export function generateBootstrap(config: BootstrapConfig): string {
   const lvl = longStringLevel(vmBlob);
   const open = "[" + "=".repeat(lvl) + "[";
   const close = "]" + "=".repeat(lvl) + "]";
+
+  // Line-width policy: the blob is split into <= MAX_OUTPUT_LINE_BYTES
+  // pieces so no emitted line can blow up downstream viewers. A single
+  // piece keeps the exact legacy shape (byte-identical for all existing
+  // small artifacts); multiple pieces are concatenated at runtime with
+  // the already-bound table.concat alias, each piece on its own line.
+  const blobPieces = splitLongLiteral(vmBlob);
+  const blobExpr = blobPieces.length === 1
+    ? `${open}${vmBlob}${close}`
+    : `${nTconcat}({\n${blobPieces.map((p) => {
+        const pl = longStringLevel(p);
+        return `[${"=".repeat(pl)}[${p}]${"=".repeat(pl)}]`;
+      }).join(",\n")}\n})`;
 
   const usedStates = new Set<number>();
   const stDecode   = uniqueRandInt(100, 9999, usedStates, rng); usedStates.add(stDecode);
@@ -408,7 +423,7 @@ export function generateBootstrap(config: BootstrapConfig): string {
   const cases: StateCase[] = [];
 
   cases.push({ id: stDecode, code: [
-    `${nRaw}=${nDecode}(${open}${vmBlob}${close})`,
+    `${nRaw}=${nDecode}(${blobExpr})`,
     `${nState}=${stDecrypt}`,
   ].join('\n') });
 

@@ -6,6 +6,7 @@ import { tmpdir as _dumpTmpdir } from "os";
 import { join as _dumpJoin } from "path";
 import { encryptAndEncode, compressToBase85, compressBytesToBase85 } from "./lzma.js";
 import { generateBootstrap } from "./bootstrap-template.js";
+import { joinBounded } from "./limits.js";
 
 export type RegVMLevel = "debug" | "normal" | "max";
 
@@ -2714,6 +2715,47 @@ function verifyCipherRoundtrip(
   const lut: Record<number, number> = {};
   for (let i = 0; i < 64; i++) lut[alpha.charCodeAt(i)] = i;
   lut[padByte] = 0;
+
+  // Large-payload fast path: full roundtrip verification rebuilds the whole
+  // payload as four JS number[] copies (decode -> decrypt -> RLE -> LZSS),
+  // which for multi-MB generators is a large transient cost. Above the
+  // limit we verify (1) the exact decoded length via a single pad scan and
+  // (2) cipher correctness at sampled indices via direct group decode
+  // (first/last 2048 bytes + a uniform stride). The full leg still covers
+  // every artifact <= 1MB, i.e. all test corpora and normal builds.
+  const CIPHER_VERIFY_FULL_LIMIT = 1 << 20;
+  if (bytes.length > CIPHER_VERIFY_FULL_LIMIT) {
+    let padCount = 0;
+    for (let i = 0; i < b64.length; i++) {
+      if (b64.charCodeAt(i) === padByte) padCount++;
+    }
+    const decodedLen = Math.floor(b64.length / 4) * 3 - padCount;
+    if (decodedLen !== bytes.length) {
+      throw new Error(`[cipher-verify] Length mismatch: decoded ${decodedLen} vs original ${bytes.length}`);
+    }
+    const checkAt = (i: number): void => {
+      const base = Math.floor(i / 3) * 4;
+      const a = lut[b64.charCodeAt(base)], b = lut[b64.charCodeAt(base + 1)];
+      const c = lut[b64.charCodeAt(base + 2)], d = lut[b64.charCodeAt(base + 3)];
+      const e0 = ((a << 2) | (b >> 4)) & 0xFF;
+      const e1 = ((b << 4) | (c >> 2)) & 0xFF;
+      const e2 = ((c << 6) | d) & 0xFF;
+      const encByte = i % 3 === 0 ? e0 : i % 3 === 1 ? e1 : e2;
+      const decrypted = cInv[encByte] ^ ((cSeed + i * cStep) & 0xFF);
+      if (decrypted !== bytes[i]) {
+        throw new Error(`[cipher-verify] Byte mismatch at ${i}: decoded ${decrypted} vs original ${bytes[i]}`);
+      }
+    };
+    const n = bytes.length;
+    const head = Math.min(2048, n);
+    for (let i = 0; i < head; i++) checkAt(i);
+    const tail = Math.max(head, n - 2048);
+    for (let i = tail; i < n; i++) checkAt(i);
+    const stride = Math.max(1, Math.floor(n / 50000));
+    for (let i = head; i < tail; i += stride) checkAt(i);
+    return;
+  }
+
   const decoded: number[] = [];
   for (let i = 0; i < b64.length; i += 4) {
     const p1 = b64.charCodeAt(i), p2 = b64.charCodeAt(i+1), p3 = b64.charCodeAt(i+2), p4 = b64.charCodeAt(i+3);
@@ -2844,14 +2886,21 @@ function wrapCustomCipher(source: string, layerOpts?: CipherLayerOpts): string {
   const padChar = pool[64];
   const padByte = padChar.charCodeAt(0);
 
-  let b64 = '';
+  // Chunked accumulation: byte-identical to the previous `b64 +=` builder,
+  // but bounded intermediate strings (the legacy chain relies on V8 rope
+  // concatenation and retains every intermediate node until the end).
+  const b64Parts: string[] = [];
+  let b64Chunk = '';
   for (let i = 0; i < enc.length; i += 3) {
     const a = enc[i], b = enc[i + 1] ?? 0, c = enc[i + 2] ?? 0;
-    b64 += alpha[a >> 2];
-    b64 += alpha[((a & 3) << 4) | (b >> 4)];
-    b64 += (i + 1 < enc.length) ? alpha[((b & 15) << 2) | (c >> 6)] : padChar;
-    b64 += (i + 2 < enc.length) ? alpha[c & 63] : padChar;
+    b64Chunk += alpha[a >> 2];
+    b64Chunk += alpha[((a & 3) << 4) | (b >> 4)];
+    b64Chunk += (i + 1 < enc.length) ? alpha[((b & 15) << 2) | (c >> 6)] : padChar;
+    b64Chunk += (i + 2 < enc.length) ? alpha[c & 63] : padChar;
+    if (b64Chunk.length >= 8192) { b64Parts.push(b64Chunk); b64Chunk = ''; }
   }
+  if (b64Chunk.length > 0) b64Parts.push(b64Chunk);
+  const b64 = b64Parts.join('');
 
   verifyCipherRoundtrip(rawBytes, bytes, enc, cInv, cSeed, cStep, b64, alpha, padByte);
 
@@ -3666,26 +3715,50 @@ function generateDynamicSeed(chunk: RegBytecodeChunk): number {
 }
 
 function serializeBytecodeAsBinary(chunk: RegBytecodeChunk, ctx: BuildCtx): Uint8Array {
-  const parts: number[] = [];
+  // Growable byte writer. Previously a number[] (~8 bytes per entry) with
+  // final Uint8Array conversion; for large chunks that is a several-fold
+  // transient copy of the whole serialized form. Buffer growth here is
+  // amortized and the emitted bytes are IDENTICAL (all integer writes are
+  // little-endian u8/u16/u32/i16, and writeF64 keeps Buffer.writeDoubleLE
+  // semantics for the NaN/inf edge cases).
+  let cap = 1 << 16;
+  let len = 0;
+  let buf = Buffer.allocUnsafe(cap);
 
-  function writeU8(v: number): void { parts.push(v & 0xFF); }
-  function writeU16(v: number): void { parts.push(v & 0xFF, (v >>> 8) & 0xFF); }
+  function ensure(n: number): void {
+    if (len + n <= cap) return;
+    while (cap < len + n) cap *= 2;
+    const next = Buffer.allocUnsafe(cap);
+    buf.copy(next, 0, 0, len);
+    buf = next;
+  }
+  function writeU8(v: number): void { ensure(1); buf[len++] = v & 0xFF; }
+  function writeU16(v: number): void { ensure(2); buf[len++] = v & 0xFF; buf[len++] = (v >>> 8) & 0xFF; }
   function writeU32(v: number): void {
-    parts.push(v & 0xFF, (v >>> 8) & 0xFF, (v >>> 16) & 0xFF, (v >>> 24) & 0xFF);
+    ensure(4);
+    buf[len++] = v & 0xFF; buf[len++] = (v >>> 8) & 0xFF; buf[len++] = (v >>> 16) & 0xFF; buf[len++] = (v >>> 24) & 0xFF;
   }
   function writeI16(v: number): void {
     const u = v < 0 ? v + 65536 : v;
     writeU16(u);
   }
   function writeF64(v: number): void {
-    const buf = Buffer.alloc(8);
-    buf.writeDoubleLE(v, 0);
-    for (let i = 0; i < 8; i++) parts.push(buf[i]);
+    ensure(8);
+    buf.writeDoubleLE(v, len);
+    len += 8;
   }
   function writeString(s: string): void {
     const encoded = Buffer.from(s, 'utf-8');
+    // Serialization domain guard: lengths are stored as u16. Previously an
+    // over-long constant silently truncated (or corrupted the instruction
+    // stream); fail loudly with an actionable message instead.
+    if (encoded.length > 0xFFFF) {
+      throw new Error(`[RegVM] string constant too large to serialize (${encoded.length} bytes > 65535); split the literal or reduce encoded string data`);
+    }
     writeU16(encoded.length);
-    for (let i = 0; i < encoded.length; i++) parts.push(encoded[i]);
+    ensure(encoded.length);
+    encoded.copy(buf, len);
+    len += encoded.length;
   }
 
   function serializeChunk(ch: RegBytecodeChunk): void {
@@ -3707,6 +3780,11 @@ function serializeBytecodeAsBinary(chunk: RegBytecodeChunk, ctx: BuildCtx): Uint
     }
 
     const K = ch.K;
+    // u16 constant-count domain: a chunk with more constants cannot be
+    // serialized faithfully. Fail loudly instead of truncating K.length.
+    if (K.length > 0xFFFF) {
+      throw new Error(`[RegVM] constant table too large to serialize (${K.length} constants > 65535); reduce encoded string data or split the script`);
+    }
     writeU16(K.length);
     for (const k of K) {
       if (k === null || k === undefined) {
@@ -3738,7 +3816,7 @@ function serializeBytecodeAsBinary(chunk: RegBytecodeChunk, ctx: BuildCtx): Uint
   }
 
   serializeChunk(chunk);
-  return new Uint8Array(parts);
+  return buf.subarray(0, len);
 }
 
 export function generateRegVM(chunk: RegBytecodeChunk, options: RegVMGenOptions = {}): string {
@@ -3754,15 +3832,25 @@ export function generateRegVM(chunk: RegBytecodeChunk, options: RegVMGenOptions 
   // falls back to the domain default RK_OFFSET (2049) when unset.
   const rkOffset = options.rkOffset ?? chunk.rkOffset ?? RK_OFFSET;
   chunk.rkOffset = rkOffset;
-  // Hard generation-time error if any K length aliases into register space.
-  const _maxK = (() => {
-    let m = chunk.K.length;
-    const walk = (c: RegBytecodeChunk) => { m = Math.max(m, c.K.length); for (const p of c.protos || []) walk(p); };
+  // Hard generation-time error if any K length or register count aliases
+  // into the wrong side of the offset threshold (the pipeline adapts the
+  // offset to the compiled chunk; this guards direct generator misuse).
+  const _domain = (() => {
+    let mK = chunk.K.length;
+    let mR = chunk.maxRegs ?? 0;
+    const walk = (c: RegBytecodeChunk) => {
+      mK = Math.max(mK, c.K.length);
+      mR = Math.max(mR, c.maxRegs ?? 0);
+      for (const p of c.protos || []) walk(p);
+    };
     walk(chunk);
-    return m;
+    return { mK, mR };
   })();
-  if (_maxK >= rkOffset) {
-    throw new Error(`[RegVM] K length ${_maxK} >= rkOffset ${rkOffset}; widen the offset domain`);
+  if (_domain.mK >= rkOffset) {
+    throw new Error(`[RegVM] K length ${_domain.mK} >= rkOffset ${rkOffset}; widen the offset domain`);
+  }
+  if (_domain.mR > rkOffset) {
+    throw new Error(`[RegVM] register count ${_domain.mR} > rkOffset ${rkOffset}; widen the offset domain`);
   }
 
   // Operational footgun guard: these generation-time flags silently weaken
@@ -4198,7 +4286,12 @@ export function generateRegVM(chunk: RegBytecodeChunk, options: RegVMGenOptions 
       const watermark = output.substring(0, watermarkEnd + 3);
       const code = output.substring(watermarkEnd + 3);
 
-      const oneLine = code.split('\n').filter(l => l.trim().length > 0).join(' ');
+      // Line-width policy: legacy artifacts flatten to one line; keep that
+      // shape only while it stays under the bound, otherwise break at
+      // original line boundaries (semantics-neutral whitespace swap).
+      // Byte-identical to the legacy flatten for artifacts under
+      // MAX_OUTPUT_LINE_BYTES.
+      const oneLine = joinBounded(code.split('\n').filter(l => l.trim().length > 0)).join('\n');
       output = watermark + '\n' + oneLine;
     }
   }

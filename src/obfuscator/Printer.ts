@@ -12,6 +12,7 @@ import type {
   GenericTypeListWithDefaults,
   Attribute,
 } from "../ast/types.js";
+import { joinBounded } from "../vm/limits.js";
 
 export function printChunk(chunk: Chunk): string {
   return chunk.body.map((s) => printStatement(s)).join("\n");
@@ -20,18 +21,26 @@ export function printChunk(chunk: Chunk): string {
 export function printChunkOneLine(chunk: Chunk): string {
   const output = chunk.body.map((s) => printStatement(s)).join("\n");
 
-  return output
+  // Line-width policy (see vm/limits.ts): legacy behavior flattens the whole
+  // chunk into one line. Keep that shape while it stays under the bound;
+  // larger chunks break at original line boundaries first so every physical
+  // line stays bounded (whitespace-only change at line boundaries).
+  const lines = output
     .split("\n")
     .map(line => line.trim())
-    .filter(line => line.length > 0 && !line.startsWith("--"))
-    .join(" ")
-    .replace(/\s+/g, " ")
-    .replace(/end\s+end/g, "end end")
-    .replace(/end\s+else/g, "end else")
-    .replace(/end\s+elseif/g, "end elseif")
-    .replace(/then\s+end/g, "then end")
-    .replace(/do\s+end/g, "do end")
-    .trim();
+    .filter(line => line.length > 0 && !line.startsWith("--"));
+  const segments = joinBounded(lines).map((seg) =>
+    seg
+      .replace(/\s+/g, " ")
+      .replace(/end\s+end/g, "end end")
+      .replace(/end\s+else/g, "end else")
+      .replace(/end\s+elseif/g, "end elseif")
+      .replace(/then\s+end/g, "then end")
+      .replace(/do\s+end/g, "do end")
+      .trim()
+  );
+
+  return segments.join("\n").trim();
 }
 
 function printStatement(stmt: Statement | LastStatement): string {

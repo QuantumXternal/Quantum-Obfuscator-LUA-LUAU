@@ -6,6 +6,7 @@ import { encodeStrings } from "../obfuscator/StringEncoder.js";
   import { scrambleControlFlow } from "../obfuscator/ControlFlowScrambler.js";
   import { applyMBA } from "../obfuscator/MBAEncoder.js";
 import { printChunk, printChunkOneLine } from "../obfuscator/Printer.js";
+import { adaptRkOffset } from "../vm/reg-offset.js";
 import { compile } from "../vm/Compiler.js";
 import { regCompile } from "../vm/RegCompiler.js";
 import { generateVM } from "../vm/vm-gen.js";
@@ -201,7 +202,14 @@ export function runObfuscatePipeline(code: string, opts: PipelineOptions): strin
       if (v < 2049) v = 2049;
       return v;
     })();
-    const chunk = regCompile(obfuscated, { rkOffset });
+    const chunk0 = regCompile(obfuscated, { rkOffset });
+    // Large-input rescue: if the compiled constant table (or register count)
+    // does not fit below the seeded offset, widen the offset and recompile
+    // so operand baking and the runtime threshold agree. Ordinary scripts
+    // keep the seeded draw untouched (widened === false, single compile).
+    const adapt = adaptRkOffset(chunk0, rkOffset);
+    const finalRkOffset = adapt.rkOffset;
+    const chunk = adapt.widened ? regCompile(obfuscated, { rkOffset: finalRkOffset }) : chunk0;
     opts.onBytecode?.({
       instructions: chunk.code.length / 4,
       constants: chunk.K.length,
@@ -216,7 +224,7 @@ export function runObfuscatePipeline(code: string, opts: PipelineOptions): strin
       level: opts.vmLevel as RegVMLevel,
       executorGlobals,
       polymorphicSeed: polySeed,
-      rkOffset,
+      rkOffset: finalRkOffset,
       disableFeatures: disableFeatures as any[],
       ...(opts.debugTrace !== undefined ? { debugTrace: opts.debugTrace } : {}),
       ...(opts.target !== undefined ? { target: opts.target } : {}),

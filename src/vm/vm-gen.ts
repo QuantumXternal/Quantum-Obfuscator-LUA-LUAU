@@ -3,6 +3,16 @@ import { SPARSE_OPCODE_RANGE, STACK_OPCODE_COUNT } from "./bytecode.js";
 import { Lexer } from "../lexer/Lexer.js";
 import { Parser } from "../parser/Parser.js";
 import { compile as compileAST } from "./Compiler.js";
+import { splitLongLiteral, joinBounded } from "./limits.js";
+
+// Emit a (possibly very long) encoded fragment as one or more bounded-width
+// string literals joined by `..` across lines. Single-piece fragments keep
+// the exact legacy emission (byte-identical for existing small artifacts).
+function emitFragmentLiteral(s: string): string {
+  const pieces = splitLongLiteral(s);
+  if (pieces.length === 1) return `"${s}"`;
+  return pieces.map((p) => `"${p}"`).join("..\n");
+}
 
 let _rng: () => number = Math.random;
 
@@ -1323,7 +1333,7 @@ export function wrapCustomCipher(source: string, seed?: number | string): string
         [declOrder[i], declOrder[j]] = [declOrder[j], declOrder[i]];
       }
       for (const idx of declOrder) {
-        l.push(`${vFt}[${idx + 1}]="${frags[idx]}"`);
+        l.push(`${vFt}[${idx + 1}]=${emitFragmentLiteral(frags[idx])}`);
         if (rng() > 0.8) l.push(junkLine());
       }
       l.push(`local ${vData}=${vTc}(${vFt})`);
@@ -1338,7 +1348,7 @@ export function wrapCustomCipher(source: string, seed?: number | string): string
       for (const idx of declOrder) {
         const fv = randomName(3);
         fragVars[idx] = fv;
-        l.push(`local ${fv}="${frags[idx]}"`);
+        l.push(`local ${fv}=${emitFragmentLiteral(frags[idx])}`);
         if (rng() > 0.8) l.push(junkLine());
       }
       // R-6 frag-idiom rotation: `..` chain vs inline table.concat (a third
@@ -1660,7 +1670,7 @@ export function wrapNestedVM(source: string, seed?: number | string): string {
     [dataOrder[i], dataOrder[j]] = [dataOrder[j], dataOrder[i]];
   }
   for (const idx of dataOrder) {
-    L.push(`local ${dataFragVars[idx]}="${dataFrags[idx]}"`);
+    L.push(`local ${dataFragVars[idx]}=${emitFragmentLiteral(dataFrags[idx])}`);
     if (rng() > 0.65) L.push(emitHoneypot());
   }
 
@@ -1901,7 +1911,7 @@ export function wrapStubVM(source: string, seed?: number | string): string {
     [declOrder[i], declOrder[j]] = [declOrder[j], declOrder[i]];
   }
   for (const idx of declOrder) {
-    L.push(`local ${fragVars[idx]}="${frags[idx]}"`);
+    L.push(`local ${fragVars[idx]}=${emitFragmentLiteral(frags[idx])}`);
   }
 
   const fakeCheck2 = Math.floor(rng() * 0xFFFFFF);
@@ -2103,7 +2113,11 @@ export function wrapStubVM(source: string, seed?: number | string): string {
   L.push(`for _i=1,#${a_o} do ${a_t}[_i]=${a_sc}(${a_o}[_i]) end`);
   L.push(`${a_ls}(${a_tc}(${a_t}))()`);
 
-  return L.join(' ');
+  // Line-width policy: keep the legacy "one flat line" shape only while it
+  // stays under the bound; longer artifacts break at original line
+  // boundaries (a semantics-neutral whitespace swap). Byte-identical to the
+  // legacy join for all artifacts under MAX_OUTPUT_LINE_BYTES.
+  return joinBounded(L).join("\n");
 }
 
 function vleEncode(values: number[]): number[] {
