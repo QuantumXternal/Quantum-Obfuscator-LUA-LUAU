@@ -158,7 +158,10 @@ function transformStatement(
             ),
             body: c.body.map((s) => transformStatement(s, seed)),
           };
-        }),
+        }).concat([{
+          condition: { type: "BooleanLiteral", value: false, loc: stmt.loc } as any,
+          body: [{ type: "ExpressionStatement", expression: { type: "CallExpression", callee: { type: "Identifier", name: "print", loc: stmt.loc } as any, args: [], loc: stmt.loc } as any, loc: stmt.loc } as any],
+        }]),
         elseBody: stmt.elseBody?.map((s) => transformStatement(s, seed)),
       };
     }
@@ -248,11 +251,32 @@ function transformStatement(
     case "LocalFunctionStatement":
     case "FunctionStatement":
     case "TypeFunctionStatement":
-    case "ExportTypeFunctionStatement":
+    case "ExportTypeFunctionStatement": {
+      seed.value++;
+      const stVar = `_st${seed.value}`;
+      const transformedBody = (stmt.body || []).map((s) => transformStatement(s, seed));
       return {
         ...stmt,
-        body: stmt.body.map((s) => transformStatement(s, seed)),
+        body: [
+          { type: "LocalStatement", vars: [{ name: stVar }], values: [{ type: "NumberLiteral", value: 0, loc: stmt.loc } as any], loc: stmt.loc } as any,
+          {
+            type: "WhileStatement",
+            condition: { type: "BooleanLiteral", value: true, loc: stmt.loc } as any,
+            body: [
+              {
+                type: "IfStatement",
+                condition: { type: "BinaryExpression", operator: "==", left: { type: "Identifier", name: stVar, loc: stmt.loc } as any, right: { type: "NumberLiteral", value: 0, loc: stmt.loc } as any, loc: stmt.loc } as any,
+                thenBody: [...transformedBody, { type: "AssignmentStatement", vars: [{ name: stVar }], values: [{ type: "NumberLiteral", value: 1, loc: stmt.loc } as any], loc: stmt.loc } as any],
+                elseifClauses: [{ condition: { type: "BinaryExpression", operator: "==", left: { type: "Identifier", name: stVar, loc: stmt.loc } as any, right: { type: "NumberLiteral", value: 1, loc: stmt.loc } as any, loc: stmt.loc } as any, body: [{ type: "BreakStatement", loc: stmt.loc } as any] }],
+                elseBody: [{ type: "BreakStatement", loc: stmt.loc } as any],
+                loc: stmt.loc,
+              } as any,
+            ],
+            loc: stmt.loc,
+          } as any,
+        ],
       };
+    }
     case "DoStatement":
       return {
         ...stmt,
