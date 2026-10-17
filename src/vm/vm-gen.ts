@@ -114,12 +114,12 @@ function shuffleOpcodes(doShuffle: boolean): { encode: number[]; decode: number[
 
 const OPCODES_1ARG = new Set([
   4, 5, 6, 7, 8, 30, 31, 32, 33, 34, 35, 37, 38, 40, 41, 42, 43,
-  44, 45, 47, 49, 50, 52, 54, 55, 65, 67
+  44, 45, 47, 49, 50, 52, 54, 55, 65, 67, 74
 ]);
 
-const OPCODES_2ARG = new Set([39, 53, 60, 61, 66, 72]);
+const OPCODES_2ARG = new Set([39, 53, 60, 61, 66, 72, 75]);
 
-const OPCODES_3ARG = new Set([56, 57, 58, 59, 62, 63, 68, 69, 70, 71]);
+const OPCODES_3ARG = new Set([56, 57, 58, 59, 62, 63, 68, 69, 70, 71, 76]);
 
 /**
  * Phase 1.2(d): stack-vm wire-arity decoys. Selected normal ops carry one
@@ -2716,6 +2716,11 @@ function buildHandlerTemplates(n: NameMap, doNonLinearJumps: boolean = false, pr
   h[70] = `function() local a=${code}[${ip}];${ip}=${ip}+1;local b=${code}[${ip}];${ip}=${ip}+1;local c=${code}[${ip}];${ip}=${ip}+1;${setLocal}(c,${arithMM}(${getLocal}(a),${getLocal}(b),function(x,y) return math.floor(x/y) end,"__idiv")) end`;
   h[71] = `function() local a=${code}[${ip}];${ip}=${ip}+1;local b=${code}[${ip}];${ip}=${ip}+1;local c=${code}[${ip}];${ip}=${ip}+1;${setLocal}(c,${getLocal}(a)^${getLocal}(b)) end`;
   h[72] = `function() local a=${code}[${ip}];${ip}=${ip}+1;local c=${code}[${ip}];${ip}=${ip}+1;${setLocal}(c,-${getLocal}(a)) end`;
+  // Phase 1.2(f): decoy opcodes - plausible arity, no-op bodies.
+  h[73] = `function() end`;
+  h[74] = `function() local _a=${code}[${ip}];${ip}=${ip}+1 end`;
+  h[75] = `function() local _a=${code}[${ip}];${ip}=${ip}+1;local _b=${code}[${ip}];${ip}=${ip}+1 end`;
+  h[76] = `function() local _a=${code}[${ip}];${ip}=${ip}+1;local _b=${code}[${ip}];${ip}=${ip}+1;local _c=${code}[${ip}];${ip}=${ip}+1 end`;
 
   h[67] = `function() local _a=${code}[${ip}];${ip}=${ip}+1;if ${n.ctxBit}==0 then ${push}(${getLocal}(_a)) else ${push}(${resolveK}(_a+1)) end end`;
 

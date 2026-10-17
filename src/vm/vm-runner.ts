@@ -733,6 +733,10 @@ export function runVM(
         const mm = getMM(v, "__unm");
         setLocal(c, typeof mm === "function" ? mm(v) : -(v as number));
       }
+      else if (op === 73) { /* decoy: no-op */ }
+      else if (op === 74) { ip++; /* decoy: consume 1 */ }
+      else if (op === 75) { ip += 2; /* decoy: consume 2 */ }
+      else if (op === 76) { ip += 3; /* decoy: consume 3 */ }
       else {
 
       }

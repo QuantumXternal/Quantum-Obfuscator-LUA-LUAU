@@ -81,10 +81,10 @@ describe("nested map extraction (N=100 Maximum nested builds)", () => {
       const { art, maps } = nestedMaps(700000 + i);
       expect(maps.length).toBe(2);
       const [inner, outer] = maps;
-expect(inner.length).toBe(73);
-expect(outer.length).toBe(73);
-expect(new Set(inner).size).toBe(73);
-expect(new Set(outer).size).toBe(73);
+expect(inner.length).toBe(77);
+expect(outer.length).toBe(77);
+expect(new Set(inner).size).toBe(77);
+expect(new Set(outer).size).toBe(77);
       for (const v of [...inner, ...outer]) expect(v).toBeLessThan(128);
       innerMaps.push(inner);
       outerMaps.push(outer);
@@ -106,10 +106,10 @@ expect(new Set(outer).size).toBe(73);
     }
   });
 
-  test(`independence: NMI(inner, outer) < 0.01 with permutation null (${N_BUILDS} builds x 73 ops)`, () => {
+  test(`independence: NMI(inner, outer) < 0.01 with permutation null (${N_BUILDS} builds x 77 ops)`, () => {
     const pairs = [];
     for (let i = 0; i < innerMaps.length; i++) {
-      for (let j = 0; j < 73; j++) pairs.push([bin(innerMaps[i][j]), bin(outerMaps[i][j])]);
+      for (let j = 0; j < 77; j++) pairs.push([bin(innerMaps[i][j]), bin(outerMaps[i][j])]);
     }
     const observed = nmiFromPairs(pairs);
     expect(observed).toBeLessThan(0.01);
@@ -126,7 +126,7 @@ expect(new Set(outer).size).toBe(73);
       const permPairs = [];
       for (let i = 0; i < innerMaps.length; i++) {
         const om = outerMaps[order[i]];
-        for (let j = 0; j < 73; j++) permPairs.push([bin(innerMaps[i][j]), bin(om[j])]);
+        for (let j = 0; j < 77; j++) permPairs.push([bin(innerMaps[i][j]), bin(om[j])]);
       }
       nullNm.push(nmiFromPairs(permPairs));
     }
