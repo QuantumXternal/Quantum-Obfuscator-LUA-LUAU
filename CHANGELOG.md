@@ -8,7 +8,34 @@ Conventions: times are single-run wall ms (run-to-run variance ± several ms —
 only consistent directional deltas across all 9 fixtures count). `none` path
 is the AST-only control: byte-identical before/after in every comparison.
 
-## Hardening — Phase 1.2(h) (proofs + docs + 1.2 closeout)
+## Hardening — Phase 1 (v2.0.0) - complete
+
+Phase 1 hardening of the Quantum Obfuscator against ClydeDeobfuscator and
+related deobfuscators. Sub-phases (a)-(h) of 1.2 plus 1.3 (env binding)
+and 1.4 (adversarial validation). Summary of deliverables:
+
+- 1.2(a): P1/P2/P3 gate; hardening/phase1-2 branch.
+- 1.2(b): number|string polymorphic seeds with 128-bit dual-path RNG.
+- 1.2(c): sparse per-build opcode space (128-wide; reg 59/stack 73 real ops).
+- 1.2(d): per-op wire-arity changes (reg lead-salt, stack lead-decoy).
+- 1.2(e): new fused ops (reg ADD_MOVE/MUL_ADD, stack POW/UNM_STORE);
+  instruction count -5.14%.
+- 1.2(f): decoy opcodes (reg 59-62, stack 64-66+73-76); fuzz
+  indistinguishable (2000 iters).
+- 1.2(g): per-build RK_OFFSET (default 2049, domain [2049,8191]); proto
+  arity audit (no positional consumers).
+- 1.2(h): proofs (NMI 0.000176, tau 0.4991, 200/200 uniqueness);
+  10 adversarial cells REFUSE; closeout.
+- 1.3: env binding + self-modifying bytecode verification; boot overhead
+  (reg/normal 21ms, stack/normal 15ms, < 50ms gate).
+- 1.4: adversarial validation vs Clyde, Luraph-V15, larpcorrupt, Prometheus
+  (no SUCCESS/PARTIAL; all REFUSE/CRASH/GARBAGE). SECURITY.md committed.
+
+Final state: 521 tests (36 suites) green; hot-loop bench within +/-2%;
+string/numeric determinism preserved; debug artifacts byte-identical
+(plaintext bypass preserved).
+
+Phase 1.2(h) (proofs + docs + 1.2 closeout)
 
 - Cross-build isolation: NMI < 0.01 (pooled, 0.000176) and normalized
   Kendall-tau in [0.45, 0.55] (0.4991) over 190 cross-build pairs.
