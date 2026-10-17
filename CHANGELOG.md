@@ -8,7 +8,7 @@ Conventions: times are single-run wall ms (run-to-run variance ± several ms —
 only consistent directional deltas across all 9 fixtures count). `none` path
 is the AST-only control: byte-identical before/after in every comparison.
 
-## Unreleased — large-script memory + server hardening (branch `fix/large-script-oom`)
+## Release — v3.1.0 (large-script memory + server hardening, seed parity, MBA activation)
 
 - fix(vm) `37f8e4a`→`ed1016a`: growable-buffer bytecode serializer + u16 operand
   guards; RK offset adaptation (`adaptRkOffset`, actionable `i16 limit` error)

@@ -6,7 +6,7 @@
 
 A from-scratch Luau obfuscation engine in TypeScript: complete Lexer → Parser → AST → Obfuscator → VM pipeline with no external parsing dependencies, two virtual machine architectures, a layered protection envelope, and byte-identical reproducible builds.
 
-[![Version](https://img.shields.io/badge/version-3.0.0-66bb6a?style=flat-square)](../../releases/tag/v3.0.0)
+[![Version](https://img.shields.io/badge/version-3.1.0-66bb6a?style=flat-square)](../../releases/tag/v3.1.0)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.3+-3178C6?style=flat-square&logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
 [![Node.js](https://img.shields.io/badge/Node.js-18+-339933?style=flat-square&logo=node.js&logoColor=white)](https://nodejs.org/)
 [![License](https://img.shields.io/badge/License-MIT-blue?style=flat-square)](./LICENSE)
@@ -16,12 +16,14 @@ A from-scratch Luau obfuscation engine in TypeScript: complete Lexer → Parser 
 
 ---
 
-## v3.0.0 Release Highlights
+## v3.1.0 Release Highlights
 
-- **Executor hardening (new)** — output runs on restricted executors: pcall-guarded `getfenv` resolvers with `_G` fallback, `loadstring or load` boot paths, and an anti-tamper probe that only fires on a **positive** hook detection (a real installed tracer) instead of false-positiving on stripped debug libraries.
-- **Guaranteed wrapper determinism (new)** — `wrapCustomCipher`, `wrapNestedVM`, and `wrapStubVM` accept a `seed` (number or string); the pipeline and every wrapper layer are byte-identical across repeated builds with the same seed.
+- **Large-script hardening (new)** — the 580 KB acceptance fixture builds OOM-free with worker-thread isolation (timeout ⇒ `504`, crash ⇒ `500`), a 20 MB default input cap, growable bytecode serialization, chunked LZMA envelopes, and bounded output lines (192 KB). Peak RSS **−62.7%** on the 2.4 MB stress fixture.
+- **Seed parity (new)** — CLI `--profile/--seed/--target`, the Web UI seed field, and API builds are **byte-identical** for the same input+seed (`benchmarks/seed-parity.mjs`, 6/6 across profiles × seeds).
+- **MBA constants active in MAXIMUM** — floating-point-exact MBA identities and return-value rewriting; the parser keeps raw lexemes (`1e5`, `0xFF`) so AST-only builds print byte-identical constants.
+- **Executor hardening** — output runs on restricted executors: pcall-guarded `getfenv` resolvers with `_G` fallback, `loadstring or load` boot paths, and an anti-tamper probe that only fires on a **positive** hook detection (a real installed tracer) instead of false-positiving on stripped debug libraries.
 - **Adversarial re-verification** — ClydeDeobfuscator: **5/5 REFUSE**; Luraph V15: **5/5 GARBAGE** (no source recovered). See the [resistance matrix](#deobfuscation-resistance-matrix) and [SECURITY.md](./SECURITY.md).
-- **556 tests / 42 suites green**, 24/24 dual-VM execution matrix on Luau 0.742 + PUC-Lua 5.4.8.
+- **587 tests / 43 suites green**, 24/24 dual-VM execution matrix on Luau 0.742 + PUC-Lua 5.4.8.
 
 ---
 
