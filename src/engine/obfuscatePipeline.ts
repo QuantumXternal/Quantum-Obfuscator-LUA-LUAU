@@ -14,6 +14,7 @@ import type { RegVMLevel } from "../vm/reg-vm-gen.js";
 
 export type PipelineVmType = "none" | "stack" | "register";
 export type PipelineVmLevel = "debug" | "normal" | "max";
+export type PerformanceTier = "turbo" | "balanced" | "maximum";
 
 export interface PipelineOptions {
   renameLocals: boolean;
@@ -23,6 +24,10 @@ export interface PipelineOptions {
   oneLine: boolean;
   vmType: PipelineVmType;
   vmLevel: PipelineVmLevel;
+  /** Phase 3.1: performance tier. Overrides vmType/vmLevel when set.
+   *  turbo = AST transforms only (no VM); balanced = stack VM;
+   *  maximum = register VM + polymorphic dispatch + anti-analysis. */
+  performanceTier?: PerformanceTier;
   /** Deterministic seed for encode/scramble/polymorphic generation. Omitted = legacy random. */
   seed?: number;
   /**
@@ -53,6 +58,8 @@ export interface PipelineOptions {
    * Used by the register-VM CLI to preserve its `[RegVM] Bytecode:` log line.
    */
   onBytecode?: (info: { instructions: number; constants: number; protos: number; maxRegs: number }) => void;
+  /** Phase 3.2: function names to exclude from VM virtualization (macro). */
+  noVmFunctions?: string[];
 }
 
 export class PipelineLexError extends Error {
@@ -129,11 +136,30 @@ export function runObfuscatePipeline(code: string, opts: PipelineOptions): strin
     ast = scrambleControlFlow(ast, opts.seed !== undefined ? { enabled: true, seed: opts.seed } : { enabled: true });
   }
 
+  // Phase 3.2: macro directive --@quantum:no-vm. Pre-scan raw source for the
+  // directive immediately preceding a function declaration; record the
+  // function name so it can be excluded from virtualization.
+  const noVmFunctions = new Set<string>(opts.noVmFunctions ?? []);
+  const lines = code.split(/\r?\n/);
+  for (let i = 0; i < lines.length - 1; i++) {
+    if (/--@\s*quantum\s*:\s*no-vm/i.test(lines[i])) {
+      const m = lines[i + 1].match(/(?:local\s+)?function\s+([A-Za-z_]\w*)/);
+      if (m) noVmFunctions.add(m[1]);
+    }
+  }
+  opts.noVmFunctions = [...noVmFunctions];
+
   const obfuscated = obfuscate(ast, {
     renameLocals: opts.renameLocals,
     preserveGlobals: opts.preserveGlobals,
   });
 
+  // Phase 3.1: resolve performance tier to vmType/vmLevel.
+  if (opts.performanceTier) {
+    if (opts.performanceTier === "turbo") { opts.vmType = "none"; opts.vmLevel = "normal"; }
+    else if (opts.performanceTier === "balanced") { opts.vmType = "stack"; opts.vmLevel = "normal"; }
+    else { opts.vmType = "register"; opts.vmLevel = "max"; }
+  }
   const executorGlobals = opts.executorGlobals ?? opts.vmLevel !== "debug";
   const polySeed = opts.polymorphicSeed ?? opts.seed ?? Date.now();
 
