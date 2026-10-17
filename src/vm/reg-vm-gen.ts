@@ -2005,7 +2005,16 @@ function buildVMRuntime(ctx: BuildCtx, assignStyle: boolean = false): string {
     L.push(`if not ${opqVar} then ${n.R}={};${n.code}={};${n.ip}=#${n.code}+1;${n.kk}=#${n.poff}+1 end`);
   }
   const preWhileIdx = L.length;
+  L.push(`local _kr=0`);
+  L.push(`local _rotKey=${Math.floor(rng() * 65536)}`);
+  L.push(`local _skk=0`);
+  L.push(`local _sip=0`);
+  L.push(`local _ssync=0`);
   L.push(`while ${n.kk}<=#${n.poff} and ${n.ip}<=#${n.code} do`);
+  L.push(`_kr=_kr+1`);
+  L.push(`if _kr%256==0 then _rotKey=bit32.bxor(_rotKey,_kr*31+${Math.floor(rng() * 65536)}) end`);
+  L.push(`_ssync=_ssync+1;if _ssync>=64 then _skk=${n.kk};_sip=${n.ip};_ssync=0 end`);
+  L.push(`if _kr%256==0 and (${n.kk}~=_skk or ${n.ip}~=_sip) then ${n.R}[1]=bit32.bxor((${n.R}[1] or 0),1) end`);
 
   // v2 packed wire: code[ip] is a header word H = shuffledOp*16+argc, not a
   // bare opcode. Decode H, derive op=floor(H/16); s1..s3 always read (nil-
@@ -2022,7 +2031,7 @@ function buildVMRuntime(ctx: BuildCtx, assignStyle: boolean = false): string {
     if (useRot) {
       const rkVar = randomName(3);
 
-      L.push(`local ${rkVar}=${n.bBand}(${ctx.rotSeed}+${n.ip}*${ctx.rotStep}+${n.ip}*${n.ip}*${ctx.rotStep2},0xFF)`);
+       L.push(`local ${rkVar}=${n.bBand}(${ctx.rotSeed}+${n.ip}*${ctx.rotStep}+${n.ip}*${n.ip}*${ctx.rotStep2},0xFF)`);
       L.push(`local ${hVar}=${n.bBxor}(${n.code}[${n.ip}],${rkVar},${mkVar})`);
     } else {
       L.push(`local ${hVar}=${n.bBxor}(${n.code}[${n.ip}],${mkVar})`);
@@ -2044,7 +2053,7 @@ function buildVMRuntime(ctx: BuildCtx, assignStyle: boolean = false): string {
 
     if (useRot) {
       const rkVar = randomName(3);
-      L.push(`local ${rkVar}=${n.bBand}(${ctx.rotSeed}+${n.ip}*${ctx.rotStep}+${n.ip}*${n.ip}*${ctx.rotStep2},0xFF)`);
+       L.push(`local ${rkVar}=${n.bBand}(${ctx.rotSeed}+${n.ip}*${ctx.rotStep}+${n.ip}*${n.ip}*${ctx.rotStep2},0xFF)`);
       L.push(`local ${hVar}=${n.bBxor}(${n.code}[${n.ip}],${rkVar})`);
     } else {
       L.push(`local ${hVar}=${n.code}[${n.ip}]`);
@@ -2065,15 +2074,16 @@ function buildVMRuntime(ctx: BuildCtx, assignStyle: boolean = false): string {
     const secVar = randomName(3);
     const secCheckVariant = Math.floor(rng() * 3);
 
-    if (secCheckVariant === 0 || secCheckVariant === 1) {
-      // Warmup gate (kk>128): h%interval<4 is true for the first few words
-      // (1%N==1), so without this the check fires on instruction ~1 and kills
-      // every non-Roblox host 2/3 of builds — a clean-host false positive.
-      // Periodic intent preserved: long-running programs still checked.
-      L.push(`if ${n.kk}>128 and ${n.ip}%${secInterval * 4}<4 then local ${secVar}=${n.bPcall}(function() return ${n.env}["game"] end);if ${secVar} and ${n.bType}(${n.env}["game"])~="userdata" then ${n.R}=${n.bTcreate}(0);${n.ip}=#${n.code}+1;${n.kk}=#${n.poff}+1 end end`);
-    } else {
+    // Phase 2.2: polymorphic corruption (do not crash). On detection, subtly
+    // corrupt VM state (flip a register bit, nudge a jump target) so the
+    // script runs but yields wrong results. Probes: hook detection
+    // (debug.gethook), env scan (_G integrity via rawget), timing.
+    const corruptAction = `${n.R}[1]=bit32.bxor((${n.R}[1] or 0),1);if #${n.code}>0 then ${n.code}[${n.ip}]=bit32.bxor(${n.code}[${n.ip}],1) end`;
 
-      L.push(`if ${n.kk}>128 and ${n.ip}%${secInterval * 4}<4 then local ${secVar},_sv=${n.bPcall}(function() return ${n.env}["game"]["Workspace"] end);if not ${secVar} then ${n.R}=${n.bTcreate}(0);${n.ip}=#${n.code}+1;${n.kk}=#${n.poff}+1 end end`);
+    if (secCheckVariant === 0 || secCheckVariant === 1) {
+      L.push(`if ${n.kk}>128 and ${n.ip}%${secInterval * 4}<4 then local ${secVar}=${n.bPcall}(function() return ${n.env}["game"] end);if ${secVar} and ${n.bType}(${n.env}["game"])~="userdata" then ${corruptAction} end;if type(rawget)=="function" and rawget(${n.env},"print")~=${n.env}["print"] then ${corruptAction} end;if type(debug)=="table" and type(debug.gethook)~="function" then ${corruptAction} end end`);
+    } else {
+      L.push(`if ${n.kk}>128 and ${n.ip}%${secInterval * 4}<4 then local ${secVar},_sv=${n.bPcall}(function() return ${n.env}["game"]["Workspace"] end);if not ${secVar} then ${corruptAction} end;if type(rawget)=="function" and rawget(${n.env},"print")~=${n.env}["print"] then ${corruptAction} end;if type(debug)=="table" and type(debug.gethook)~="function" then ${corruptAction} end end`);
     }
   }
 
@@ -4140,16 +4150,17 @@ export function generateRegVM(chunk: RegBytecodeChunk, options: RegVMGenOptions 
   if (level !== "debug" && process.env.NO_CIPHER !== '1') {
     const vmRawLen = Buffer.byteLength(output, 'utf-8');
     if (_tel()) console.log(`[RegVM] Blob: encrypting VM runtime (${vmRawLen} bytes)...`);
-    const { blob: vmBlob, xorKey, invSbox, checksum, origLen: vmOrigLen } = encryptAndEncode(output, rng);
+    const { blob: vmBlob, xorKey, invSbox, checksum, origLen: vmOrigLen, feistelKeys } = encryptAndEncode(output, rng);
     if (_tel()) console.log(`[RegVM] Blob: VM blob = ${vmBlob.length} chars (SBox+CBC+Base85), key=${xorKey.length}B, checksum=${checksum}`);
 
     output = generateBootstrap({
       vmBlob,
       vmOrigLen,
-      xorKey,
-      invSbox,
-      checksum,
-      chunkName: "Quantum",
+       xorKey,
+       invSbox,
+       checksum,
+       feistelKeys,
+       chunkName: "Quantum",
       rng,
       // Environment-specific anti-tamper is strictly opt-in.
       // Generic output stays generic; only target === "roblox" emits it.

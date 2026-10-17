@@ -107,6 +107,8 @@ export interface ClydeBlob {
   invSbox: number[];
   checksum: number;
   origLen: number;
+  /** Phase 2.1: 4 Feistel round keys (XOR -> Feistel -> CBC). */
+  feistelKeys: number[];
 }
 
 export function encryptAndEncode(input: string, rng: () => number): ClydeBlob {
@@ -125,20 +127,43 @@ export function encryptAndEncode(input: string, rng: () => number): ClydeBlob {
     xorKey.push(Math.floor(rng() * 256));
   }
 
+  // Phase 2.1: 4 Feistel round keys (XOR -> Feistel -> CBC).
+  const feistelKeys: number[] = [];
+  for (let i = 0; i < 4; i++) feistelKeys.push(Math.floor(rng() * 256));
+
   const substituted = new Uint8Array(raw.length);
   for (let i = 0; i < raw.length; i++) {
     substituted[i] = sbox[raw[i]];
   }
 
-  const encrypted = new Uint8Array(substituted.length);
-  encrypted[0] = substituted[0] ^ xorKey[0];
-  for (let i = 1; i < substituted.length; i++) {
-    encrypted[i] = substituted[i] ^ xorKey[i % keyLen] ^ encrypted[i - 1];
+  // Feistel network (4 rounds) on byte-pairs: forward for encryption.
+  const feistelOut = new Uint8Array(substituted.length);
+  for (let i = 0; i < substituted.length; i++) {
+    if (i + 1 < substituted.length) {
+      let L = substituted[i];
+      let R = substituted[i + 1];
+      for (let r = 0; r < 4; r++) {
+        const newL = R;
+        const newR = L ^ (((R + feistelKeys[r]) & 0xFF));
+        L = newL; R = newR;
+      }
+      feistelOut[i] = L;
+      feistelOut[i + 1] = R;
+      i++; // skip paired byte
+    } else {
+      feistelOut[i] = substituted[i];
+    }
+  }
+
+  const encrypted = new Uint8Array(feistelOut.length);
+  encrypted[0] = feistelOut[0] ^ xorKey[0];
+  for (let i = 1; i < feistelOut.length; i++) {
+    encrypted[i] = feistelOut[i] ^ xorKey[i % keyLen] ^ encrypted[i - 1];
   }
 
   const blob = base85Encode(encrypted);
 
-  return { blob, xorKey, invSbox, checksum, origLen };
+  return { blob, xorKey, invSbox, checksum, origLen, feistelKeys };
 }
 
 export function compressToBase85(input: string): string {
