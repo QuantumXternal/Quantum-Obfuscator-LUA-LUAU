@@ -2007,9 +2007,14 @@ function buildVMRuntime(ctx: BuildCtx, assignStyle: boolean = false): string {
   const preWhileIdx = L.length;
   L.push(`local _kr=0`);
   L.push(`local _rotKey=${Math.floor(rng() * 65536)}`);
+  L.push(`local _skk=0`);
+  L.push(`local _sip=0`);
+  L.push(`local _ssync=0`);
   L.push(`while ${n.kk}<=#${n.poff} and ${n.ip}<=#${n.code} do`);
   L.push(`_kr=_kr+1`);
   L.push(`if _kr%256==0 then _rotKey=bit32.bxor(_rotKey,_kr*31+${Math.floor(rng() * 65536)}) end`);
+  L.push(`_ssync=_ssync+1;if _ssync>=64 then _skk=${n.kk};_sip=${n.ip};_ssync=0 end`);
+  L.push(`if _kr%256==0 and (${n.kk}~=_skk or ${n.ip}~=_sip) then ${n.R}[1]=bit32.bxor((${n.R}[1] or 0),1) end`);
 
   // v2 packed wire: code[ip] is a header word H = shuffledOp*16+argc, not a
   // bare opcode. Decode H, derive op=floor(H/16); s1..s3 always read (nil-
