@@ -10,6 +10,7 @@ document.addEventListener("DOMContentLoaded", () => {
   const optVmType = document.getElementById("opt-vm-type");
   const optVmLevel = document.getElementById("opt-vm-level");
   const optProfile = document.getElementById("opt-profile");
+  const optSeed = document.getElementById("opt-seed");
 
   // Profile defaults for all option controls. Manual changes mark fields
   // dirty so they are sent as explicit overrides; changing the profile
@@ -225,11 +226,30 @@ document.addEventListener("DOMContentLoaded", () => {
     } else {
       seedBuf[0] = (Date.now() ^ (Math.random() * 0xFFFFFFFF)) >>> 0;
     }
+    // Optional fixed seed: reproduces byte-identical output for the same
+    // code+options. Sent as both seed and polymorphicSeed so the CLI
+    // (--seed) produces the exact same bytes.
+    const seedRaw = optSeed ? optSeed.value.trim() : "";
+    let fixedSeed = null;
+    if (seedRaw !== "") {
+      const n = Number(seedRaw);
+      if (Number.isFinite(n)) {
+        fixedSeed = n;
+      } else {
+        logConsole(`[WARNING] Ignoring non-numeric seed "${seedRaw}" (using random polymorphic seed).`, "warning");
+      }
+    }
     const payload = {
       code,
       // Only manually overridden fields are sent; profile defaults apply
       // server-side for everything else.
-      options: { profile, ...dirty, polymorphicSeed: seedBuf[0] },
+      options: {
+        profile,
+        ...dirty,
+        ...(fixedSeed !== null
+          ? { seed: fixedSeed, polymorphicSeed: fixedSeed }
+          : { polymorphicSeed: seedBuf[0] }),
+      },
     };
 
     try {

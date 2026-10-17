@@ -61,7 +61,7 @@ Two complementary layers control protection strength. They land on the same VM m
 |---------|-----------|-----|-------|
 | `FAST` | Rename only | none | Smallest/fastest tier for build pipelines |
 | `BALANCED` | Rename + string encoding + control-flow scramble | Register @ normal | **Web UI default** |
-| `MAXIMUM` | Rename + string encoding + control-flow scramble | Register @ max | Roblox anti-tamper bootstrap only when `target: "roblox"`; fully generic otherwise |
+| `MAXIMUM` | Rename + string encoding + control-flow scramble + MBA constants | Register @ max | Roblox anti-tamper bootstrap only when `target: "roblox"`; fully generic otherwise |
 
 ---
 
@@ -209,7 +209,7 @@ npm run build
 node dist/server.js
 ```
 
-Open [http://localhost:3000](http://localhost:3000) to access the obfuscation dashboard (BALANCED default, profile selector, seed controls).
+Open [http://localhost:3000](http://localhost:3000) to access the obfuscation dashboard (BALANCED default, profile selector, optional **Seed** field for byte-reproducible builds).
 
 Input caps and worker isolation:
 
@@ -224,9 +224,18 @@ Input caps and worker isolation:
 
 ```bash
 npm run obfuscate -- input.lua
+npm run obfuscate -- input.lua --profile=MAXIMUM --seed=1234 -o out.lua
 ```
 
-The CLI shares the same byte cap; raise it with `--max-size=<bytes|KB|MB>` or the `MAX_INPUT_BYTES` environment variable.
+The CLI shares the same byte cap; raise it with `--max-size=<bytes|KB|MB>` or the `MAX_INPUT_BYTES` environment variable. Optional flags:
+
+| Flag | Description |
+|------|-------------|
+| `--profile=FAST\|BALANCED\|MAXIMUM` | Protection profile (same defaults as API/UI; explicit flags like `--encode-strings`/`--scramble`/`--vm` override profile fields) |
+| `--seed=<number>` | Deterministic build seed; implies `polymorphicSeed` — CLI, UI seed field, and API `{seed}` produce **byte-identical** output (see `benchmarks/seed-parity.mjs`) |
+| `--target=generic\|roblox` | Output environment for the profile (default `generic`) |
+
+Without `--profile` the CLI keeps the legacy flag-driven behavior. Lexeme fidelity is preserved for constants that survive AST-only builds (`1e5`, `0xFF`, `1_000` print exactly as written).
 
 **Lex tokens / Parse AST:**
 
@@ -258,9 +267,12 @@ Obfuscates Luau source with a protection profile and optional deterministic seed
 ```json
 {
   "code": "local function greet(name) print('Hello ' .. name) end",
-  "profile": "BALANCED",
-  "target": "generic",
-  "polymorphicSeed": "build-2026-01"
+  "options": {
+    "profile": "BALANCED",
+    "target": "generic",
+    "seed": 1234,
+    "polymorphicSeed": "build-2026-01"
+  }
 }
 ```
 

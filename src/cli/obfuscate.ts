@@ -4,6 +4,7 @@ import { readFileSync, writeFileSync } from "fs";
 import { join } from "path";
 import { runObfuscatePipeline, PipelineLexError, PipelineParseError } from "../engine/obfuscatePipeline.js";
 import type { PipelineVmLevel } from "../engine/obfuscatePipeline.js";
+import { resolveProfile } from "../engine/profiles.js";
 import { DEFAULT_MAX_INPUT_BYTES, envInt, parseByteSize } from "../engine/inputLimits.js";
 
 const args = process.argv.slice(2);
@@ -58,24 +59,76 @@ if (sourceBytes > maxInputBytes) {
 
 const vmDebug = args.includes("--vm-debug");
 
+// Protection profile + deterministic seed (UI parity: a filled seed field
+// sends both seed and polymorphicSeed, so the CLI does the same).
+const VALID_PROFILES = ["FAST", "BALANCED", "MAXIMUM"] as const;
+const profileRaw = args.find((a) => a.startsWith("--profile="))?.slice("--profile=".length) ?? null;
+let profile: (typeof VALID_PROFILES)[number] | undefined;
+if (profileRaw !== null) {
+  if (!(VALID_PROFILES as readonly string[]).includes(profileRaw)) {
+    console.error(`Invalid --profile value: ${profileRaw} (expected FAST, BALANCED, or MAXIMUM)`);
+    process.exit(1);
+  }
+  profile = profileRaw as (typeof VALID_PROFILES)[number];
+}
+const seedRaw = args.find((a) => a.startsWith("--seed="))?.slice("--seed=".length) ?? null;
+let seed: number | undefined;
+if (seedRaw !== null) {
+  seed = Number(seedRaw);
+  if (!Number.isFinite(seed)) {
+    console.error(`Invalid --seed value: ${seedRaw} (expected a number, e.g. --seed=1234)`);
+    process.exit(1);
+  }
+}
+const targetRaw = args.find((a) => a.startsWith("--target="))?.slice("--target=".length) ?? null;
+let target: "generic" | "roblox" = "generic";
+if (targetRaw !== null) {
+  if (targetRaw !== "generic" && targetRaw !== "roblox") {
+    console.error(`Invalid --target value: ${targetRaw} (expected generic or roblox)`);
+    process.exit(1);
+  }
+  target = targetRaw;
+}
+
 let level: PipelineVmLevel = "normal";
 if (vmDebug || args.includes("--no-vm-encode")) level = "debug";
 if (maxOpt || advancedOpt || productionOpt) level = "max";
 
+const seedOpts = seed !== undefined ? { seed, polymorphicSeed: seed } : {};
+
 let output: string;
 try {
-  output = runObfuscatePipeline(source, {
-    renameLocals: !noRename,
-    preserveGlobals: !noPreserve,
-    // NOTE: --one-line is accepted but historically ignored here (always
-    // printChunk); preserved. --junk/--compress are accepted no-ops.
-    encodeStrings: encodeStringsOpt && !noEncode,
-    scramble: scrambleOpt,
-    oneLine: false,
-    vmType: vmOpt ? "stack" : "none",
-    vmLevel: level,
-    noCompression: noCompressOpt,
-  });
+  if (profile !== undefined) {
+    // Profile supplies defaults; explicitly provided flags override
+    // (same precedence as the server).
+    const base = resolveProfile({ profile, target, ...seedOpts }) as unknown as Record<string, unknown>;
+    if (vmOpt) base.vmType = "stack";
+    if (vmDebug || args.includes("--no-vm-encode")) base.vmLevel = "debug";
+    else if (maxOpt || advancedOpt || productionOpt) base.vmLevel = "max";
+    if (noRename) base.renameLocals = false;
+    if (noPreserve) base.preserveGlobals = false;
+    if (encodeStringsOpt) base.encodeStrings = true;
+    if (noEncode) base.encodeStrings = false;
+    if (scrambleOpt) base.scramble = true;
+    if (oneLineOpt) base.oneLine = true;
+    if (noCompressOpt) base.noCompression = true;
+    output = runObfuscatePipeline(source, base as any);
+  } else {
+    output = runObfuscatePipeline(source, {
+      renameLocals: !noRename,
+      preserveGlobals: !noPreserve,
+      // NOTE: --one-line is accepted but historically ignored here (always
+      // printChunk); preserved. --junk/--compress are accepted no-ops.
+      encodeStrings: encodeStringsOpt && !noEncode,
+      scramble: scrambleOpt,
+      oneLine: false,
+      vmType: vmOpt ? "stack" : "none",
+      vmLevel: level,
+      noCompression: noCompressOpt,
+      target,
+      ...seedOpts,
+    });
+  }
 } catch (err: any) {
   if (err instanceof PipelineLexError) {
     console.error("Lexer-Fehler:", err.details);

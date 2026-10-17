@@ -32,6 +32,22 @@ is the AST-only control: byte-identical before/after in every comparison.
   budget, runner lifecycle with injected factory, real-worker roundtrips, MBA
   budget); `benchmarks/server-smoke.mjs` is now self-contained (spawns the
   server; pins the 413 `bytes`/`maxBytes` envelope and the 504 timeout path).
+- fix(parser) `ed7f9d1`: `NumberLiteral.value` is now the numeric value;
+  `raw` keeps the exact lexeme (`1e5`, `0xFF`, `1_000`) so AST-only builds
+  print byte-identical constants. Previously string lexemes made the MBA pass
+  a silent no-op (`Number.isFinite` on a string). BALANCED canary unchanged
+  (len+sha verified across seeds 10001–50005).
+- fix(mba) `793981b`: FP-exact identities `((v-v)+n)`, `(n-(v-v))`,
+  `((v*0+n)+(v-v))` — the old `(v+n)-v`/`v-(v-n)` forms rounded at scale
+  (`63.2 → 63.20000000001164` in the 520-case runtime matrix). ReturnStatement
+  rewriting wrote `stmt.args` and never fired; now `values` (T-4.1.a/b).
+  MAXIMUM sets `mba: true` (profile-only; performanceTier untouched);
+  MAXIMUM re-baselined (+13–15 KB on the 580 KB fixture, same 24 lines).
+- feat(cli,ui) seed parity: CLI `--profile=`/`--seed=`/`--target=` (server
+  precedence; legacy path unchanged when absent); UI **Seed** field sends
+  `{seed, polymorphicSeed}` (random per-click `polymorphicSeed` when blank);
+  `benchmarks/seed-parity.mjs` proves CLI == API `{seed}` == API
+  `{seed,polymorphicSeed}` byte-identically (2 profiles × 3 seeds).
 
 ## Release — Phase 5 (v3.0.0) - complete
 
