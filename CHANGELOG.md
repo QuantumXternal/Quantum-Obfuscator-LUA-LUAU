@@ -8,7 +8,27 @@ Conventions: times are single-run wall ms (run-to-run variance ± several ms —
 only consistent directional deltas across all 9 fixtures count). `none` path
 is the AST-only control: byte-identical before/after in every comparison.
 
-## Hardening — Phase 1.2(e) (new fused ops, both VMs)
+## Hardening — Phase 1.2(g) (RK_OFFSET per-build + proto arity audit)
+
+- REG: RK_OFFSET is no longer a fixed 256. Default 2049 (odd, non-power-
+  of-two, above the global max K length ~402); domain [2049, 8191] for
+  per-build draws. Parameterized through RegCompiler ({rkOffset}), regEmit
+  (maxRegs boundary via chunk.rkOffset), reg-runner (decode via
+  chunk.rkOffset ?? RK_OFFSET), and the emitted threshold algebra
+  (ctx.rkOffset; variants corrected to evaluate to rkOffset for arbitrary
+  odd values). Threaded per-build by obfuscatePipeline (seeded draw, passed
+  to regCompile + generateRegVM). Hard generation-time error if K length
+  >= rkOffset (tested). K-length audit: max 402 across all fixtures x
+  standing seeds.
+- STACK: proto positional-consumer audit passed (grep for proto[...] /
+  .protos[...] returned no positional array access; all proto fields are
+  read by name via protoKeys). No migration required; proto arity (nParams)
+  already serialized and consumed by name. No code change needed in this
+  half; gate satisfied by verification.
+- BREAKS numeric-path byte-identity vs (f) by construction (RK_OFFSET
+  threshold algebra + per-build draw). Bench +/-2%.
+
+Phase 1.2(e) (new fused ops, both VMs)
 
 - REG new fused ops (reg-vm-gen.ts): FUSED_ADD_MOVE (RegOp 57) - ADD followed
   by MOVE copying the ADD result (MOVE src == ADD dest); FUSED_MUL_ADD
