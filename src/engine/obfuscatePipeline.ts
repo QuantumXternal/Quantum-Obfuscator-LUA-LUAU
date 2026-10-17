@@ -3,7 +3,8 @@ import { parseWithErrors } from "../parser/Parser.js";
 import type { Token, SourceLocation } from "../tokens.js";
 import { obfuscate } from "../obfuscator/Obfuscator.js";
 import { encodeStrings } from "../obfuscator/StringEncoder.js";
-import { scrambleControlFlow } from "../obfuscator/ControlFlowScrambler.js";
+  import { scrambleControlFlow } from "../obfuscator/ControlFlowScrambler.js";
+  import { applyMBA } from "../obfuscator/MBAEncoder.js";
 import { printChunk, printChunkOneLine } from "../obfuscator/Printer.js";
 import { compile } from "../vm/Compiler.js";
 import { regCompile } from "../vm/RegCompiler.js";
@@ -43,6 +44,8 @@ export interface PipelineOptions {
   disableFeatures?: string[];
   /** Stack VM only. Passed through to generateVM. */
   noCompression?: boolean;
+  /** Phase 4.1: apply Mixed Boolean-Arithmetic to numeric constants. */
+  mba?: boolean;
   /** Override executor-globals default (level !== "debug"). */
   executorGlobals?: boolean;
   /** Register VM only. Passed through to generateRegVM (default: level === "debug"). */
@@ -149,7 +152,12 @@ export function runObfuscatePipeline(code: string, opts: PipelineOptions): strin
   }
   opts.noVmFunctions = [...noVmFunctions];
 
-  const obfuscated = obfuscate(ast, {
+  // Phase 4.1: optional MBA constant encoding.
+  let workingAst = ast;
+  if (opts.mba) {
+    workingAst = applyMBA(workingAst, { enabled: true, seed: typeof opts.seed === "number" ? opts.seed : 0 });
+  }
+  const obfuscated = obfuscate(workingAst, {
     renameLocals: opts.renameLocals,
     preserveGlobals: opts.preserveGlobals,
   });
