@@ -826,6 +826,7 @@ const REG_OP_NAMES: string[] = [
   "F_TEST_JMP","F_EQ_JMP","F_LT_JMP","F_LE_JMP","F_TESTSET_JMP",
   "F_GGET","F_LOADKK","F_MOVE_MOVE","F_SELF_CALL","F_GGET_CALL",
   "F_LOADK_RET","F_MOVE_RET","F_ADD_MOVE","F_MUL_ADD",
+  "D0","D1","D2","D3",
 ];
 
 type HandlerGen = (n: NameMap, ctx: BuildCtx) => string;
@@ -1153,6 +1154,13 @@ registerHandler(RegOp.FUSED_MUL_ADD, (n) => {
     return `do ${n.R}[A+1]=${n.RK}(B)*${n.RK}(C);local _D2=${n.code}[${n.ip}-3];local _E2=${n.code}[${n.ip}-1];${n.R}[_D2+1]=${n.R}[A+1]+${n.RK}(_E2) end`;
   return `do local _s=${n.RK}(B)*${n.RK}(C);${n.R}[A+1]=_s;local _D2=${n.code}[${n.ip}-3];local _E2=${n.code}[${n.ip}-1];${n.R}[_D2+1]=_s+${n.RK}(_E2) end`;
 });
+
+// Phase 1.2(f): decoy opcodes - plausible arity, no-op bodies. Never emitted
+// by the compiler; exist only to pad the opcode domain.
+registerHandler(RegOp.DECOY_0, () => ``);
+registerHandler(RegOp.DECOY_1, (n) => `local _=A`);
+registerHandler(RegOp.DECOY_2, (n) => `local _a,_b=A,B`);
+registerHandler(RegOp.DECOY_3, (n) => `local _a,_b,_c=A,B,C`);
 
 function computeJumpTargets(code: number[]): Set<number> {
   const targets = new Set<number>();

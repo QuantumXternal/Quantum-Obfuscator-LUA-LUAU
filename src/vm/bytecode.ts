@@ -180,9 +180,13 @@ export const enum RegOp {
   FUSED_MOVE_RET    = 56,
   FUSED_ADD_MOVE    = 57,
   FUSED_MUL_ADD     = 58,
+  DECOY_0           = 59,
+  DECOY_1           = 60,
+  DECOY_2           = 61,
+  DECOY_3           = 62,
 }
 
-export const REG_OPCODE_COUNT = 59;
+export const REG_OPCODE_COUNT = 63;
 
 /**
  * Phase 1.2(c): sparse per-build opcode wire space (both VMs).
@@ -241,6 +245,11 @@ export const REG_OP_MASK: number[] = (() => {
   m[RegOp.CLOSEUPVAL] = 0b001;
   m[RegOp.VARARG] = 0b011;
   m[RegOp.CLOSURE] = 0b011;
+  // Phase 1.2(f): decoy opcodes - plausible arity, no-op bodies.
+  m[RegOp.DECOY_0] = 0b000;
+  m[RegOp.DECOY_1] = 0b001;
+  m[RegOp.DECOY_2] = 0b011;
+  m[RegOp.DECOY_3] = 0b111;
   return m;
 })();
 
