@@ -105,7 +105,7 @@ export function addConst(chunk: BytecodeChunk, value: Constant): number {
   return idx;
 }
 
-export const RK_OFFSET = 256;
+export const RK_OFFSET = 2049;
 
 export function RK(kIndex: number): number {
   return kIndex + RK_OFFSET;
@@ -303,6 +303,10 @@ export interface RegBytecodeChunk {
 
   isVararg: boolean;
 
+  /** Per-build RK_OFFSET (threshold separating register from constant
+   *  indices). Defaults to RK_OFFSET (2049) when unset. */
+  rkOffset?: number;
+
   protos?: RegBytecodeChunk[];
 
   upvalues?: [number, number][];
@@ -313,9 +317,10 @@ export function regEmit(chunk: RegBytecodeChunk, op: RegOp, A: number = 0, B: nu
   chunk.code.push(op, A, B, C);
   chunk.nInstructions++;
 
-  if (A >= 0 && A < RK_OFFSET) chunk.maxRegs = Math.max(chunk.maxRegs, A + 1);
-  if (B >= 0 && B < RK_OFFSET) chunk.maxRegs = Math.max(chunk.maxRegs, B + 1);
-  if (C >= 0 && C < RK_OFFSET) chunk.maxRegs = Math.max(chunk.maxRegs, C + 1);
+  const _rkOff = chunk.rkOffset ?? RK_OFFSET;
+  if (A >= 0 && A < _rkOff) chunk.maxRegs = Math.max(chunk.maxRegs, A + 1);
+  if (B >= 0 && B < _rkOff) chunk.maxRegs = Math.max(chunk.maxRegs, B + 1);
+  if (C >= 0 && C < _rkOff) chunk.maxRegs = Math.max(chunk.maxRegs, C + 1);
   return pos;
 }
 
@@ -351,7 +356,7 @@ export function regAddConst(chunk: RegBytecodeChunk, value: Constant): number {
   return idx;
 }
 
-export function createRegChunk(): RegBytecodeChunk {
+export function createRegChunk(rkOffset?: number): RegBytecodeChunk {
   return {
     K: [],
     code: [],
@@ -359,6 +364,7 @@ export function createRegChunk(): RegBytecodeChunk {
     maxRegs: 0,
     nParams: 0,
     isVararg: false,
+    rkOffset: rkOffset ?? RK_OFFSET,
   };
 }
 

@@ -154,7 +154,20 @@ export function runObfuscatePipeline(code: string, opts: PipelineOptions): strin
   }
 
   if (opts.vmType === "register") {
-    const chunk = regCompile(obfuscated);
+    // Phase 1.2(g): per-build RK_OFFSET drawn from odd non-power-of-two
+    // domain [2049, 8191], seeded by polySeed. Threaded to both regCompile
+    // and generateRegVM so compile-time and runtime thresholds agree.
+    const rkOffset = (() => {
+      let seedNum = 0;
+      if (typeof polySeed === "number") seedNum = polySeed | 0;
+      else for (let i = 0; i < String(polySeed).length; i++) seedNum = (seedNum * 31 + String(polySeed).charCodeAt(i)) | 0;
+      let v = 2049 + (Math.abs(seedNum) % 3072) * 2;
+      if (v % 2 === 0) v += 1;
+      if (v > 8191) v = 8191;
+      if (v < 2049) v = 2049;
+      return v;
+    })();
+    const chunk = regCompile(obfuscated, { rkOffset });
     opts.onBytecode?.({
       instructions: chunk.code.length / 4,
       constants: chunk.K.length,
@@ -169,6 +182,7 @@ export function runObfuscatePipeline(code: string, opts: PipelineOptions): strin
       level: opts.vmLevel as RegVMLevel,
       executorGlobals,
       polymorphicSeed: polySeed,
+      rkOffset,
       disableFeatures: disableFeatures as any[],
       ...(opts.debugTrace !== undefined ? { debugTrace: opts.debugTrace } : {}),
       ...(opts.target !== undefined ? { target: opts.target } : {}),

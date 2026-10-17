@@ -52,9 +52,9 @@ interface Ctx {
   uid: number;
 }
 
-function createCtx(parent?: Ctx): Ctx {
+function createCtx(parent?: Ctx, rkOffset?: number): Ctx {
   return {
-    chunk: createRegChunk(),
+    chunk: createRegChunk(rkOffset ?? (parent ? parent.chunk.rkOffset : RK_OFFSET)),
     locals: new Map(),
     nextReg: 0,
     freeReg: 0,
@@ -168,7 +168,8 @@ function patchJump(ctx: Ctx, jmpPC: number, targetPC: number): void {
 
 function constRK(ctx: Ctx, value: Constant): number {
   const ki = regAddConst(ctx.chunk, value);
-  if (ki < RK_OFFSET) return RK(ki);
+  const _rkOff = ctx.chunk.rkOffset ?? RK_OFFSET;
+  if (ki < _rkOff) return RK(ki);
   // Flat number[] encoding has no operand width limit, and LOADK already
   // carries full constant indices (cf. the literal sites below), so a
   // two-instruction LOADKX+EXTRAARG spill is pure overhead: an extra dispatch
@@ -671,6 +672,7 @@ function compileFunctionBody(
   child.chunk.nParams = nP;
   child.chunk.isVararg = va;
   child.chunk.maxRegs = reg;
+  child.chunk.rkOffset = ctx.chunk.rkOffset;
 
   for (const stmt of body) compileStmt(child, stmt);
 
@@ -1291,8 +1293,10 @@ function compileFuncStmt(ctx: Ctx, stmt: any): void {
   restoreFree(ctx, s);
 }
 
-export function regCompile(ast: Chunk): RegBytecodeChunk {
-  const ctx = createCtx();
+export function regCompile(ast: Chunk, options: { rkOffset?: number } = {}): RegBytecodeChunk {
+  const rkOffset = options.rkOffset ?? RK_OFFSET;
+  const ctx = createCtx(undefined, rkOffset);
+  ctx.chunk.rkOffset = rkOffset;
   ctx.chunk.isVararg = true;
   for (const stmt of ast.body) compileStmt(ctx, stmt);
 

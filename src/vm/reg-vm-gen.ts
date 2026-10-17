@@ -59,6 +59,11 @@ export interface RegVMGenOptions {
   _noWatermark?: boolean;
 
   target?: string;
+
+  /** Per-build RK_OFFSET (threshold separating register from constant
+   *  indices). When unset, drawn from [2049, 8191] (odd, non-power-of-two)
+   *  using the polymorphic seed stream. */
+  rkOffset?: number;
 }
 
 interface BuildCtx {
@@ -104,7 +109,7 @@ interface BuildCtx {
    * (empty at debug level = documented plaintext bypass).
    */
   leadSalt: Map<number, number>;
-  /** Per-build constant-table salt (v2 computed-index K layout). */
+  rkOffset: number;  /** Per-build constant-table salt (v2 computed-index K layout). */
   constSalt: number;
   /** Per-build jump-delta bias (v2 packed wire; applied at pack time). */
   jumpBias: number;
@@ -1836,24 +1841,22 @@ function buildVMRuntime(ctx: BuildCtx, assignStyle: boolean = false): string {
   if (ctx.level !== "debug") {
     rkThreshVar = randomName(3);
     rkSubVar = randomName(3);
+    const rkOffset = ctx.rkOffset;
     const rkVariant = Math.floor(rng() * 6);
     const a = Math.floor(rng() * 200) + 10;
-    const b = RK_OFFSET - a;
+    const b = rkOffset - a;
     if (rkVariant === 0) {
       L.push(`local ${rkThreshVar}=${a}+${b}`);
     } else if (rkVariant === 1) {
-      L.push(`local ${rkThreshVar}=${n.bBxor}(${RK_OFFSET ^ (a)},${a})`);
+      L.push(`local ${rkThreshVar}=${n.bBxor}(${rkOffset ^ (a)},${a})`);
     } else if (rkVariant === 2) {
-      const shift = Math.floor(rng() * 3) + 1;
-      L.push(`local ${rkThreshVar}=${RK_OFFSET >> shift}*${1 << shift}`);
+      L.push(`local ${rkThreshVar}=${rkOffset}`);
     } else if (rkVariant === 3) {
-      const rndMul = 1 + Math.floor(rng() * 100);
-      L.push(`local ${rkThreshVar}=${n.bBand}(${RK_OFFSET + rndMul * 0x200},${0x1FF})`);
+      L.push(`local ${rkThreshVar}=${rkOffset}`);
     } else if (rkVariant === 4) {
-      const m = [2, 4, 8, 16, 32, 64][Math.floor(rng() * 6)];
-      L.push(`local ${rkThreshVar}=${RK_OFFSET / m}*${m}`);
+      L.push(`local ${rkThreshVar}=${rkOffset}`);
     } else {
-      L.push(`local ${rkThreshVar}=${n.bBand}(${RK_OFFSET | (Math.floor(rng() * 256) << 16)},0xFFFF)`);
+      L.push(`local ${rkThreshVar}=${n.bBand}(${rkOffset | (Math.floor(rng() * 128) << 16)},0xFFFF)`);
     }
     L.push(`local ${rkSubVar}=${rkThreshVar}-1`);
     // v2 computed-index K access (Phase 1.1 / R-2): real entry j (0-based)
@@ -1861,7 +1864,7 @@ function buildVMRuntime(ctx: BuildCtx, assignStyle: boolean = false): string {
     // eff != 0 for #K>=2). No literal index addresses a real constant.
     L.push(`local function ${n.RK}(x) if x>=${rkThreshVar} then return ${n.K}[${n.bBxor}((x-${rkSubVar})-1,${ctx.constSalt}%#${n.K})+1] else return ${n.R}[x+1] end end`);
   } else {
-    L.push(`local function ${n.RK}(x) if x>=${RK_OFFSET} then return ${n.K}[x-${RK_OFFSET - 1}] else return ${n.R}[x+1] end end`);
+    L.push(`local function ${n.RK}(x) if x>=${ctx.rkOffset} then return ${n.K}[x-${ctx.rkOffset - 1}] else return ${n.R}[x+1] end end`);
   }
 
   const bodies = buildHandlerBodies(n, ctx, ctx.usedOps);
@@ -3729,6 +3732,21 @@ export function generateRegVM(chunk: RegBytecodeChunk, options: RegVMGenOptions 
   if (typeof seed === "string") seedRandom128(seed); else seedRandom(seed);
   resetNames();
 
+  // Phase 1.2(g): per-build RK_OFFSET. Threaded from regCompile/chunk;
+  // falls back to the domain default RK_OFFSET (2049) when unset.
+  const rkOffset = options.rkOffset ?? chunk.rkOffset ?? RK_OFFSET;
+  chunk.rkOffset = rkOffset;
+  // Hard generation-time error if any K length aliases into register space.
+  const _maxK = (() => {
+    let m = chunk.K.length;
+    const walk = (c: RegBytecodeChunk) => { m = Math.max(m, c.K.length); for (const p of c.protos || []) walk(p); };
+    walk(chunk);
+    return m;
+  })();
+  if (_maxK >= rkOffset) {
+    throw new Error(`[RegVM] K length ${_maxK} >= rkOffset ${rkOffset}; widen the offset domain`);
+  }
+
   // Operational footgun guard: these generation-time flags silently weaken
   // output (skipped guards, plaintext envelope). They are never consulted
   // at runtime by generated code; warn loudly when active.
@@ -3804,7 +3822,7 @@ export function generateRegVM(chunk: RegBytecodeChunk, options: RegVMGenOptions 
     dispatchVariant, dispatchMask, rotSeed, rotStep, rotStep2,
     argPerm: generateArgPerms(isObf), jumpBias, constSalt,
     leadSalt: isObf ? REG_LEAD_SALT : new Map(),
-  };
+  rkOffset,  };
 
   const doFusion = featureEnabled(options, "opcodeFusion", level !== "debug");
   if (doFusion) {

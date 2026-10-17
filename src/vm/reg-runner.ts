@@ -94,7 +94,8 @@ export function runReg(
   let tickCounter = 0;
   let executed = 0;
 
-  const rk = (v: number): unknown => (v >= RK_OFFSET ? K[v - RK_OFFSET] : R[v]);
+  const _rkOff = chunk.rkOffset ?? RK_OFFSET;
+  const rk = (v: number): unknown => (v >= _rkOff ? K[v - _rkOff] : R[v]);
 
   const callFn = (f: unknown, callArgs: unknown[]): unknown[] => {
     if (typeof f !== "function") throw new Error(`attempt to call a ${luaToString(f)} value`);
