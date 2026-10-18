@@ -6,7 +6,7 @@
 
 A from-scratch Luau obfuscation engine in TypeScript: complete Lexer → Parser → AST → Obfuscator → VM pipeline with no external parsing dependencies, two virtual machine architectures, a layered protection envelope, and byte-identical reproducible builds.
 
-[![Version](https://img.shields.io/badge/version-3.1.0-66bb6a?style=flat-square)](../../releases/tag/v3.1.0)
+[![Version](https://img.shields.io/badge/version-3.2.0-66bb6a?style=flat-square)](../../releases/tag/v3.2.0)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.3+-3178C6?style=flat-square&logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
 [![Node.js](https://img.shields.io/badge/Node.js-18+-339933?style=flat-square&logo=node.js&logoColor=white)](https://nodejs.org/)
 [![License](https://img.shields.io/badge/License-MIT-blue?style=flat-square)](./LICENSE)
@@ -16,14 +16,13 @@ A from-scratch Luau obfuscation engine in TypeScript: complete Lexer → Parser 
 
 ---
 
-## v3.1.0 Release Highlights
+## v3.2.0 Release Highlights
 
-- **Large-script hardening (new)** — the 580 KB acceptance fixture builds OOM-free with worker-thread isolation (timeout ⇒ `504`, crash ⇒ `500`), a 20 MB default input cap, growable bytecode serialization, chunked LZMA envelopes, and bounded output lines (192 KB). Peak RSS **−62.7%** on the 2.4 MB stress fixture.
-- **Seed parity (new)** — CLI `--profile/--seed/--target`, the Web UI seed field, and API builds are **byte-identical** for the same input+seed (`benchmarks/seed-parity.mjs`, 6/6 across profiles × seeds).
-- **MBA constants active in MAXIMUM** — floating-point-exact MBA identities and return-value rewriting; the parser keeps raw lexemes (`1e5`, `0xFF`) so AST-only builds print byte-identical constants.
-- **Executor hardening** — output runs on restricted executors: pcall-guarded `getfenv` resolvers with `_G` fallback, `loadstring or load` boot paths, and an anti-tamper probe that only fires on a **positive** hook detection (a real installed tracer) instead of false-positiving on stripped debug libraries.
-- **Adversarial re-verification** — ClydeDeobfuscator: **5/5 REFUSE**; Luraph V15: **5/5 GARBAGE** (no source recovered). See the [resistance matrix](#deobfuscation-resistance-matrix) and [SECURITY.md](./SECURITY.md).
-- **587 tests / 43 suites green**, 24/24 dual-VM execution matrix on Luau 0.742 + PUC-Lua 5.4.8.
+- **Loader line-width bound (new)** — every emitted line (artifact + decrypted runtime) is capped at 9.6 KB (`MAX_OUTPUT_LINE_BYTES`) with per-piece long-bracket fragments; the 580 KB acceptance fixture drops from a 196,617-char single line to a **9,609-char max line**.
+- **LZ4 payload compression (new)** — payloads are LZ4 block-compressed before the cipher stack and inflated in-artifact by a pure-Luau `unlz4` (chunked `table.concat` decode, **~140 ms on Luau**), with the adler32 checksum still verified over the inflated bytes. The 580 KB fixture lands at **1.38–1.44 MB** across seeds (was 2.29 MB). Pure-Luau deflate was implemented and rejected by the 200 ms boot-cost go/no-go (651 ms).
+- **Clean loader failures** — payload loads run through pcall guards (`Quantum: payload load failed`); corrupted or truncated payloads produce the single `Quantum Protection V2` error on both runtimes, and `wrapNestedVM` passes >1.5 MB sources through instead of doubling pre-decode work.
+- **Determinism retained** — same-seed builds stay byte-identical across CLI/API/UI (`benchmarks/seed-parity.mjs`, 6/6).
+- **615 tests / 46 suites green**; acceptance seeds 10001–50005 (MAXIMUM + BALANCED) all ≤ 1.45 MB with reference-matched execution on Luau 0.742 + PUC-Lua 5.4.8.
 
 ---
 

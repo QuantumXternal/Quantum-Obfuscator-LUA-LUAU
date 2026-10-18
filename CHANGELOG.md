@@ -8,6 +8,34 @@ Conventions: times are single-run wall ms (run-to-run variance ± several ms —
 only consistent directional deltas across all 9 fixtures count). `none` path
 is the AST-only control: byte-identical before/after in every comparison.
 
+## Release — v3.2.0 (loader line-width bound + LZ4 payload compression)
+
+- fix(vm) `421edf6`: every emitted line is bounded at 9.6 KB
+  (`MAX_OUTPUT_LINE_BYTES`, `limits.ts`) across artifact and decrypted-runtime
+  emitters; oversized fragments split per piece into their own long-bracket
+  literals (level chosen per piece). MEASURED (580 KB fixture, seed 10001,
+  MAXIMUM): max line 196,617 → 9,609; artifact 2,295,298 → 2,297,226 B
+  (24 → 251 lines). `tests/line-width.test.js`.
+- fix(vm) `5fa5f4a`: payload loads pcall-guarded at every exec variant of
+  `wrapCustomCipher`/`wrapNestedVM`/`wrapStubVM` — loader rejections become
+  one deterministic `Quantum: payload load failed` error (no
+  `attempt to call a nil value` tracebacks into generated code); fragment
+  literals move to dynamic long brackets (`[==[`…`]==]`, per-piece level);
+  `wrapNestedVM` > 1.5 MB pass-through guard skips the extra cipher layer
+  (defense in depth, not integrity). `tests/payload-guard.test.js`.
+- feat(vm) `06f005c`: LZ4 block compression before the S-Box/Feistel/CBC
+  stack (`lz4Compress`: greedy 4-byte hash matcher, Int32Array 1<<16 table,
+  exact-compare verification, interior step-2 refreshes) + pure-Luau `unlz4`
+  in the bootstrap (chunked 64K `table.concat` windows, nil guards that never
+  raise, cap = inflated length) + adler32 over the inflated payload.
+  Pure-Luau deflate was built first and rejected by the boot-cost gate:
+  651 ms > 200 ms on the expanded 1.83 MB runtime. MEASURED (seed 10001):
+  1,443,042 B (ratio 0.624), 162 lines, 503 ms build; unlz4 ~140 ms Luau /
+  374 ms PUC. Acceptance seeds 10001–50005 (MAXIMUM + BALANCED): 1.38–1.44 MB,
+  reference-matched execution on Luau 0.742 + PUC-Lua 5.4.8.
+  `tests/lz4-roundtrip.test.js` (roundtrip units, both-runtime fixture
+  execution, corrupted + truncated blobs → clean error). Full suite 46/615.
+
 ## Release — v3.1.0 (large-script memory + server hardening, seed parity, MBA activation)
 
 - fix(vm) `37f8e4a`→`ed1016a`: growable-buffer bytecode serializer + u16 operand
