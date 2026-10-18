@@ -76,6 +76,77 @@ export function base85Decode(str: string): Uint8Array {
   return new Uint8Array(result);
 }
 
+/**
+ * Raw LZ4 block compression (no frame header). Greedy match finder with a
+ * 2^16-entry 4-byte hash table and interior-position refreshes on matches.
+ * Output is consumed by the pure-Luau `unlz4` decoder emitted in the
+ * bootstrap template (same token layout: token, litLen ext, literals,
+ * offset LE16, matchLen ext).
+ */
+export function lz4Compress(input: Uint8Array): Uint8Array {
+  const n = input.length;
+  const out: number[] = [];
+  const MIN = 4;
+  const MAXOFF = 65535;
+  const HSIZE = 1 << 16;
+  const head = new Int32Array(HSIZE).fill(-1);
+
+  const hashAt = (i: number): number => {
+    const v = (input[i] | (input[i + 1] << 8) | (input[i + 2] << 16) | (input[i + 3] << 24)) >>> 0;
+    return (Math.imul(v, 2654435761) >>> 16) & (HSIZE - 1);
+  };
+
+  let ip = 0;
+  let anchor = 0;
+  while (ip + MIN <= n) {
+    const h = hashAt(ip);
+    const cand = head[h];
+    head[h] = ip;
+    if (
+      cand >= 0 && ip - cand <= MAXOFF &&
+      input[cand] === input[ip] && input[cand + 1] === input[ip + 1] &&
+      input[cand + 2] === input[ip + 2] && input[cand + 3] === input[ip + 3]
+    ) {
+      let len = MIN;
+      while (ip + len < n && input[cand + len] === input[ip + len]) len++;
+      const lit = ip - anchor;
+      out.push((Math.min(lit, 15) << 4) | Math.min(len - 4, 15));
+      if (lit >= 15) {
+        let r = lit - 15;
+        while (r >= 255) { out.push(255); r -= 255; }
+        out.push(r);
+      }
+      for (let i = anchor; i < ip; i++) out.push(input[i]);
+      const off = ip - cand;
+      out.push(off & 255, (off >>> 8) & 255);
+      if (len - 4 >= 15) {
+        let r = len - 4 - 15;
+        while (r >= 255) { out.push(255); r -= 255; }
+        out.push(r);
+      }
+      const mStart = ip;
+      ip += len;
+      for (let j = mStart + 1; j < ip && j + MIN <= n; j += 2) {
+        head[hashAt(j)] = j;
+      }
+      anchor = ip;
+      continue;
+    }
+    ip++;
+  }
+
+  const lit = n - anchor;
+  out.push(Math.min(lit, 15) << 4);
+  if (lit >= 15) {
+    let r = lit - 15;
+    while (r >= 255) { out.push(255); r -= 255; }
+    out.push(r);
+  }
+  for (let i = anchor; i < n; i++) out.push(input[i]);
+
+  return Uint8Array.from(out);
+}
+
 function adler32(data: Uint8Array): number {
   let a = 1, b = 0;
   const MOD = 65521;
@@ -114,7 +185,10 @@ export interface ClydeBlob {
   xorKey: number[];
   invSbox: number[];
   checksum: number;
+  /** Length of the original (uncompressed) payload in bytes. */
   origLen: number;
+  /** Length of the LZ4-compressed payload in bytes (what the blob carries). */
+  compLen: number;
   /** Phase 2.1: 4 Feistel round keys (XOR -> Feistel -> CBC). */
   feistelKeys: number[];
 }
@@ -123,6 +197,11 @@ export function encryptAndEncode(input: string, rng: () => number): ClydeBlob {
   const encoder = new TextEncoder();
   const raw = encoder.encode(input);
   const origLen = raw.length;
+
+  // v3.2: LZ4-compress before encryption; the bootstrap inflates after
+  // decrypt and verifies the checksum over the inflated payload.
+  const compressed = lz4Compress(raw);
+  const compLen = compressed.length;
 
   const checksum = adler32(raw);
 
@@ -139,9 +218,9 @@ export function encryptAndEncode(input: string, rng: () => number): ClydeBlob {
   const feistelKeys: number[] = [];
   for (let i = 0; i < 4; i++) feistelKeys.push(Math.floor(rng() * 256));
 
-  const substituted = new Uint8Array(raw.length);
-  for (let i = 0; i < raw.length; i++) {
-    substituted[i] = sbox[raw[i]];
+  const substituted = new Uint8Array(compressed.length);
+  for (let i = 0; i < compressed.length; i++) {
+    substituted[i] = sbox[compressed[i]];
   }
 
   // Feistel network (4 rounds) on byte-pairs: forward for encryption.
@@ -171,7 +250,7 @@ export function encryptAndEncode(input: string, rng: () => number): ClydeBlob {
 
   const blob = base85Encode(encrypted);
 
-  return { blob, xorKey, invSbox, checksum, origLen, feistelKeys };
+  return { blob, xorKey, invSbox, checksum, origLen, compLen, feistelKeys };
 }
 
 export function compressToBase85(input: string): string {

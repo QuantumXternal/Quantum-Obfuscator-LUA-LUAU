@@ -2,7 +2,10 @@ import { longStringLevel, splitLongLiteral } from "./limits.js";
 
 export interface BootstrapConfig {
   vmBlob: string;
+  /** Length of the original (uncompressed) payload in bytes. */
   vmOrigLen: number;
+  /** Length of the compressed payload carried inside the blob. */
+  compLen: number;
   xorKey: number[];
   invSbox: number[];
   checksum: number;
@@ -83,7 +86,7 @@ function obfuscateNum(n: number, rng: () => number): string {
 }
 
 export function generateBootstrap(config: BootstrapConfig): string {
-  const { vmBlob, vmOrigLen, xorKey, invSbox, checksum, chunkName = "Quantum", rng } = config;
+  const { vmBlob, vmOrigLen, compLen, xorKey, invSbox, checksum, chunkName = "Quantum", rng } = config;
 
   const prefixes = ["_0", "_1", "_2", "_3", "_4", "_5"];
   const suffixes = "abcdefghjkmnpqrstuvwx".split('');
@@ -100,9 +103,9 @@ export function generateBootstrap(config: BootstrapConfig): string {
 
   const nByte = N(), nGsub = N(), nPack = N(), nSub = N(), nChar = N();
   const nLoad = N(), nAssert = N(), nType = N(), nBxor = N(), nPcall = N();
-  const nTconcat = N(), nBand = N();
+  const nTconcat = N(), nBand = N(), nRshift = N();
 
-  const nDecode = N(), nDecrypt = N(), nVerify = N();
+  const nDecode = N(), nDecrypt = N(), nVerify = N(), nUnlz4 = N();
   const nKeyInteg = N(), nSboxInteg = N(), nMutate = N();
 
   const nKeyRaw = N(), nKey = N(), nKeyLen = N();
@@ -177,6 +180,7 @@ export function generateBootstrap(config: BootstrapConfig): string {
       [nSub, 'string.sub'], [nChar, 'string.char'], [nLoad, '(loadstring or load)'],
       [nAssert, 'assert'], [nType, 'type'], [nBxor, 'bit32.bxor'],
       [nPcall, 'pcall'], [nTconcat, 'table.concat'], [nBand, 'bit32.band'],
+      [nRshift, 'bit32.rshift'],
     ];
     shuffle(builtins, rng);
     let bi = 0;
@@ -297,10 +301,86 @@ export function generateBootstrap(config: BootstrapConfig): string {
     `local v=(d-33)*52200625+(e-33)*614125+(f-33)*7225+(g-33)*85+(h-33)`,
     `o[#o+1]=${nPack}(">I4",v)`,
     `end`,
-    `return ${nSub}(${nTconcat}(o),1,${vmOrigLen})`,
+    `return ${nSub}(${nTconcat}(o),1,${compLen})`,
     `end`,
   ];
   fragments.push({ code: decoderLines.join('\n'), layer: L_FUNCS });
+
+  // v3.2: raw LZ4 block inflate (post-decrypt, pre-checksum). Bounded by
+  // `cap` so corrupted streams cannot balloon memory; returns nil within a
+  // pcall-free path instead of raising, so the defensive mutate state stays
+  // the single failure route.
+  const unlz4Lines = [
+    `local function ${nUnlz4}(src,cap)`,
+    `local pos,n=1,#src`,
+    `local parts,nparts={},0`,
+    `local buf,nbuf={},0`,
+    `local prev,prevLen="",0`,
+    `local total,chunkBase=0,1`,
+    `local ch={}`,
+    `for _0i=0,255 do ch[_0i]=${nChar}(_0i) end`,
+    `local function _0flush()`,
+    `if nbuf>0 then`,
+    `prev=${nTconcat}(buf,"",1,nbuf)`,
+    `prevLen=#prev`,
+    `nparts=nparts+1`,
+    `parts[nparts]=prev`,
+    `nbuf=0`,
+    `chunkBase=total+1`,
+    `end`,
+    `end`,
+    `while pos<=n do`,
+    `local token=${nByte}(src,pos)`,
+    `pos=pos+1`,
+    `local lit=${nRshift}(token,4)`,
+    `if lit==15 then`,
+    `local b=255`,
+    `while b==255 do b=${nByte}(src,pos) or 0 pos=pos+1 lit=lit+b end`,
+    `end`,
+    `if total+lit>cap then return nil end`,
+    `if lit>0 then`,
+    `if pos+lit-1>n then return nil end`,
+    `local s0=${nSub}(src,pos,pos+lit-1)`,
+    `pos=pos+lit`,
+    `for _0i=1,lit do`,
+    `nbuf=nbuf+1`,
+    `buf[nbuf]=ch[${nByte}(s0,_0i)]`,
+    `total=total+1`,
+    `if nbuf>=65536 then _0flush() end`,
+    `end`,
+    `end`,
+    `if pos>n then break end`,
+    `local off=(${nByte}(src,pos) or 0)+(${nByte}(src,pos+1) or 0)*256`,
+    `pos=pos+2`,
+    `if off<1 or off>total then return nil end`,
+    `local mlen=${nBand}(token,15)`,
+    `if mlen==15 then`,
+    `local b=255`,
+    `while b==255 do b=${nByte}(src,pos) or 0 pos=pos+1 mlen=mlen+b end`,
+    `end`,
+    `mlen=mlen+4`,
+    `if total+mlen>cap then return nil end`,
+    `local rp=total-off+1`,
+    `for _0i=1,mlen do`,
+    `local c`,
+    `if rp>=chunkBase then`,
+    `c=buf[rp-chunkBase+1]`,
+    `else`,
+    `local rel=rp-chunkBase+prevLen+1`,
+    `c=${nSub}(prev,rel,rel)`,
+    `end`,
+    `nbuf=nbuf+1`,
+    `buf[nbuf]=c`,
+    `total=total+1`,
+    `if nbuf>=65536 then _0flush() end`,
+    `rp=rp+1`,
+    `end`,
+    `end`,
+    `_0flush()`,
+    `return ${nTconcat}(parts,"",1,nparts)`,
+    `end`,
+  ];
+  fragments.push({ code: unlz4Lines.join('\n'), layer: L_FUNCS });
 
   const fk = config.feistelKeys || [0, 0, 0, 0];
   const fkLua = `{${fk.join(",")}}`;
@@ -422,9 +502,13 @@ export function generateBootstrap(config: BootstrapConfig): string {
   ].join('\n') });
 
   cases.push({ id: stVerify, code: [
-    `if ${nVerify}(${nDec})~=${checksum} then`,
+    `local _0i=${nUnlz4}(${nDec},${vmOrigLen})`,
+    `if _0i and ${nVerify}(_0i)==${checksum} then`,
+    `${nDec}=_0i`,
+    `else`,
     `${nMutate}()`,
-    `${nDec}=${nDecrypt}(${nRaw})`,
+    `local _0o=${nUnlz4}(${nDecrypt}(${nRaw}),${vmOrigLen})`,
+    `if _0o then ${nDec}=_0o end`,
     `end`,
     `${nState}=${stLoad}`,
   ].join('\n') });

@@ -36,6 +36,7 @@ function build(blob, seed) {
   return generateBootstrap({
     vmBlob: blob,
     vmOrigLen: blob.length,
+    compLen: blob.length,
     xorKey: [17, 34, 51, 68, 85],
     invSbox,
     checksum: 12345,
