@@ -6,7 +6,7 @@ import { tmpdir as _dumpTmpdir } from "os";
 import { join as _dumpJoin } from "path";
 import { encryptAndEncode, compressToBase85, compressBytesToBase85 } from "./lzma.js";
 import { generateBootstrap } from "./bootstrap-template.js";
-import { joinBounded } from "./limits.js";
+import { joinBounded, luaQuotedFromBytes, boundCommaSeparatedLine } from "./limits.js";
 
 export type RegVMLevel = "debug" | "normal" | "max";
 
@@ -307,19 +307,10 @@ function toUTF8Bytes(s: string): number[] {
 }
 
 function luaStringLiteral(s: string): string {
-  const bytes = toUTF8Bytes(s);
-  const parts: string[] = ['"'];
-  for (const b of bytes) {
-    if (b === 34) parts.push('\\"');
-    else if (b === 92) parts.push("\\\\");
-    else if (b === 10) parts.push("\\n");
-    else if (b === 13) parts.push("\\r");
-    else if (b === 0) parts.push("\\000");
-    else if (b < 32 || b > 126) parts.push(`\\${b.toString().padStart(3, '0')}`);
-    else parts.push(String.fromCharCode(b));
-  }
-  parts.push('"');
-  return parts.join("");
+  // Byte-atomic chunked emission: giant user string constants can no longer
+  // produce a single line above MAX_OUTPUT_LINE_BYTES. Escaping is identical
+  // to the legacy emitter, so short strings stay byte-identical.
+  return luaQuotedFromBytes(toUTF8Bytes(s));
 }
 
 function luaEsc(s: string): string {
@@ -731,19 +722,7 @@ function serializeConstant(v: Constant, ctx: BuildCtx, idx: number): string {
       const encoded = encodeStringBytes(bytes, ctx, idx);
 
       if (rng() < 0.5) {
-
-        const litParts: string[] = ['"'];
-        for (const b of encoded) {
-          if (b === 92) litParts.push('\\\\');
-          else if (b === 34) litParts.push('\\"');
-          else if (b === 10) litParts.push('\\n');
-          else if (b === 13) litParts.push('\\r');
-          else if (b === 0) litParts.push('\\000');
-          else if (b < 32 || b > 126) litParts.push(`\\${b.toString().padStart(3, '0')}`);
-          else litParts.push(String.fromCharCode(b));
-        }
-        litParts.push('"');
-        return litParts.join("");
+        return luaQuotedFromBytes(encoded);
       }
       return `{${encoded.join(",")}}`;
     }
@@ -4225,6 +4204,13 @@ export function generateRegVM(chunk: RegBytecodeChunk, options: RegVMGenOptions 
 
     output = parts.join("\n");
   }
+
+  // Executor parser-compat: bound every physical line of the pre-cipher VM
+  // runtime. The artifact's own lines are bound by the envelope emitters, but
+  // the executor also parses the DECRYPTED runtime at load time — inner
+  // multi-hundred-KB table literals (constant tables, packed streams) must be
+  // wrapped at comma boundaries. Semantics-neutral; small sources untouched.
+  output = boundCommaSeparatedLine(output);
 
   // DUMP_RAW: debug-only escape hatch. Writes the PRE-CIPHER VM runtime
   // (generated code with the user's program embedded as encoded bytecode —

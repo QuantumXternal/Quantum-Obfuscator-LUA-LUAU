@@ -3,7 +3,7 @@ import { SPARSE_OPCODE_RANGE, STACK_OPCODE_COUNT } from "./bytecode.js";
 import { Lexer } from "../lexer/Lexer.js";
 import { Parser } from "../parser/Parser.js";
 import { compile as compileAST } from "./Compiler.js";
-import { splitLongLiteral, joinBounded } from "./limits.js";
+import { splitLongLiteral, joinBounded, luaQuotedFromBytes, boundCommaSeparatedLine } from "./limits.js";
 
 // Emit a (possibly very long) encoded fragment as one or more bounded-width
 // string literals joined by `..` across lines. Single-piece fragments keep
@@ -698,19 +698,10 @@ function toUTF8Bytes(s: string): number[] {
 }
 
 function luaStringLiteral(s: string): string {
-  const bytes = toUTF8Bytes(s);
-  const parts: string[] = ['"'];
-  for (const b of bytes) {
-    if (b === 34) parts.push('\\"');
-    else if (b === 92) parts.push("\\\\");
-    else if (b === 10) parts.push("\\n");
-    else if (b === 13) parts.push("\\r");
-    else if (b === 0) parts.push("\\000");
-    else if (b < 32 || b > 126) parts.push(`\\${b.toString().padStart(3, '0')}`);
-    else parts.push(String.fromCharCode(b));
-  }
-  parts.push('"');
-  return parts.join("");
+  // Byte-atomic chunked emission (see limits.luaQuotedFromBytes): giant
+  // string constants never produce an over-bound source line, and escaping
+  // matches the legacy emitter so short strings stay byte-identical.
+  return luaQuotedFromBytes(toUTF8Bytes(s));
 }
 
 function toHexLit(n: number): string {
@@ -2121,7 +2112,10 @@ export function wrapStubVM(source: string, seed?: number | string): string {
   // stays under the bound; longer artifacts break at original line
   // boundaries (a semantics-neutral whitespace swap). Byte-identical to the
   // legacy join for all artifacts under MAX_OUTPUT_LINE_BYTES.
-  return joinBounded(L).join("\n");
+  // boundCommaSeparatedLine then wraps single over-bound lines (giant table
+  // literals) at comma boundaries — the stack artifact IS the parsed
+  // executable, so its physical lines must satisfy executor parser limits.
+  return boundCommaSeparatedLine(joinBounded(L).join("\n"));
 }
 
 function vleEncode(values: number[]): number[] {
@@ -4185,7 +4179,12 @@ export function generateVM(chunk: BytecodeChunk, options: VMGenOptions = {}): st
     output = watermark + output;
   }
 
-    return output;
+    // Final line-width guarantee: the stack artifact IS the parsed
+    // executable, so wrap any residual over-bound line (giant table
+    // literals in K/code/proto data or wrap layers) at comma boundaries.
+    // Comment- and string-aware, so the watermark and embedded literals are
+    // untouched; under-bound artifacts are byte-identical.
+    return boundCommaSeparatedLine(output);
   } finally {
     _stackArityDecoysActive = false;
   }

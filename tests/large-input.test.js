@@ -36,10 +36,15 @@ describe("limits: output line bound", () => {
   });
 
   test("joinBounded keeps joined lines under the bound and loses nothing", () => {
-    const lines = Array.from({ length: 40 }, (_, i) => "l" + i + "-" + "z".repeat(30000));
+    // joinBounded only MERGES short lines; inputs are expected to be bounded
+    // already (emitters chunk literals and wrap comma lists). Single
+    // over-bound inputs pass through untouched — asserted below.
+    const lines = Array.from({ length: 40 }, (_, i) => "l" + i + "-" + "z".repeat(4000));
     const out = joinBounded(lines);
     for (const line of out) expect(line.length).toBeLessThanOrEqual(MAX_OUTPUT_LINE_BYTES);
     expect(out.join("\n").length).toBe(lines.join(" ").length);
+    const oversize = ["l0-" + "z".repeat(MAX_OUTPUT_LINE_BYTES + 50)];
+    expect(joinBounded(oversize)).toEqual(oversize);
   });
 
   test("joinBounded equals the legacy flatten while under the bound", () => {
