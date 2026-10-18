@@ -1,9 +1,11 @@
 // v3.2.0 LZ4 payload pipeline: the reg-path blob is LZ4-compressed before
 // encryption, decoded to compLen bytes, inflated by the bootstrap's pure-Luau
 // unlz4 (bounded by the original length), and only then checksum-verified.
-// Contract: every fixture executes byte-exactly on Luau + PUC; corrupted or
-// truncated blob data still produces the single clean "Quantum Protection V2"
-// error (never a nil-call traceback into generated code).
+// v3.2.1 executor-compat: failure paths now emit an inline (warn or print)
+// diagnostic ("Quantum Error: ...") before the clean "Quantum Protection V2"
+// assert. Contract: every fixture executes byte-exactly on Luau + PUC;
+// corrupted or truncated blob data still produces the single clean error
+// (never a nil-call traceback into generated code) plus the diagnostic.
 import { existsSync, mkdtempSync, writeFileSync, readFileSync } from "fs";
 import { tmpdir } from "os";
 import { join, dirname } from "path";
@@ -26,6 +28,9 @@ const { lz4Compress } = await import("../dist/vm/lzma.js");
 
 const TMP = mkdtempSync(join(tmpdir(), "lz4-roundtrip-"));
 const CLEAN = "Quantum Protection V2";
+// PUC standalone silences Lua's warn() unless -W is passed; on Luau warn is
+// absent so the (warn or print) diagnostics land on stdout instead.
+const PUC_W = ["-W"];
 
 function quiet(fn) {
   const ol = console.log;
@@ -40,10 +45,10 @@ function quiet(fn) {
   }
 }
 
-function runLua(exe, code, shim) {
+function runLua(exe, code, shim, extraArgs = []) {
   const path = join(TMP, `${Math.floor(Math.random() * 1e9)}.lua`);
   writeFileSync(path, (shim ? SHIM + "\n" : "") + code);
-  const r = spawnSync(exe, [path], { encoding: "utf8", timeout: 180000, maxBuffer: 64 * 1024 * 1024 });
+  const r = spawnSync(exe, [...extraArgs, path], { encoding: "utf8", timeout: 180000, maxBuffer: 64 * 1024 * 1024 });
   return { status: r.status, stdout: (r.stdout || "").trim(), stderr: (r.stderr || "").slice(0, 900) };
 }
 
@@ -132,32 +137,59 @@ describe("reg-path LZ4 payload corruption", () => {
 
   const t = HAS_LUAU || HAS_PUC ? test : test.skip;
 
-  t("corrupted blob reports the clean Quantum error, never a nil-call traceback", () => {
+  t("corrupted blob reports the diagnostic and the clean Quantum error, never a nil-call traceback", () => {
     const art = buildReg("print('LZ4_OK')", 424242);
     const broken = corruptBlobChar(art);
     expect(broken).not.toBe(art);
-    for (const [exe, shim] of [
-      [HAS_LUAU ? LUAU : null, false],
-      [HAS_PUC ? LUA54 : null, true],
+    for (const [exe, shim, args] of [
+      [HAS_LUAU ? LUAU : null, false, []],
+      [HAS_PUC ? LUA54 : null, true, PUC_W],
     ]) {
       if (!exe) continue;
-      const r = runLua(exe, broken, shim);
+      const r = runLua(exe, broken, shim, args);
+      const combined = r.stdout + "\n" + r.stderr;
       expect(r.status).not.toBe(0);
       expect(r.stderr).toContain(CLEAN);
-      expect(r.stderr).not.toContain("attempt to call a nil value");
-      expect(r.stdout).toBe("");
+      expect(combined).toContain("Quantum Error: LZ4 decompression failed (corrupted stream).");
+      expect(combined).not.toContain("attempt to call a nil value");
+    }
+  }, 180000);
+
+  t("blob shortened with syntax intact warns about truncation, no nil-call traceback", () => {
+    const art = buildReg("print('LZ4_OK')", 777);
+    // Remove 3 chars from inside the LAST long-bracket region (the blob), so
+    // the artifact still parses but the decoded payload is short/ragged.
+    const re = /\[(=*)\[/g;
+    let m = null;
+    let last = null;
+    while ((m = re.exec(art)) !== null) last = m;
+    expect(last).not.toBeNull();
+    const start = last.index + last[0].length;
+    const pos = start + 40;
+    const short = art.slice(0, pos) + art.slice(pos + 3);
+    expect(short).not.toBe(art);
+    for (const [exe, shim, args] of [
+      [HAS_LUAU ? LUAU : null, false, []],
+      [HAS_PUC ? LUA54 : null, true, PUC_W],
+    ]) {
+      if (!exe) continue;
+      const r = runLua(exe, short, shim, args);
+      const combined = r.stdout + "\n" + r.stderr;
+      expect(r.status).not.toBe(0);
+      expect(combined).toContain("Quantum Error: HttpGet truncated the payload.");
+      expect(combined).not.toContain("attempt to call a nil value");
     }
   }, 180000);
 
   t("truncated blob never executes or prints", () => {
     const art = buildReg("print('LZ4_OK')", 555);
     const truncated = art.slice(0, art.lastIndexOf("]") - 600);
-    for (const [exe, shim] of [
-      [HAS_LUAU ? LUAU : null, false],
-      [HAS_PUC ? LUA54 : null, true],
+    for (const [exe, shim, args] of [
+      [HAS_LUAU ? LUAU : null, false, []],
+      [HAS_PUC ? LUA54 : null, true, PUC_W],
     ]) {
       if (!exe) continue;
-      const r = runLua(exe, truncated, shim);
+      const r = runLua(exe, truncated, shim, args);
       expect(r.status).not.toBe(0);
       expect(r.stdout).toBe("");
     }

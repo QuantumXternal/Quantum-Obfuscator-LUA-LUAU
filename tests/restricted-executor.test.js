@@ -54,10 +54,17 @@ const P_DBG_NIL = "debug=nil";
 const P_DBG_STRIP = "debug={}";
 const P_LOAD_ONLY = "local __ls=loadstring load=function(s,n) return __ls(s,n) end loadstring=nil";
 const P_WORST = P_LOAD_ONLY + " getfenv=nil debug={}";
+// v3.2.1 executor-compat: a host that blocks BOTH loaders must be diagnosed
+// (inline (warn or print) before the env-check `return nil`), not silently
+// no-op. PUC standalone needs -W or Lua's warn() stays silent.
+const P_NO_LOAD = "loadstring=nil load=nil";
+const P_NO_PCALL = "pcall=nil";
+const DIAG_NO_LOAD = "Quantum Error: loadstring/load is blocked in this executor.";
+const DIAG_NO_PCALL = "Quantum Error: pcall is unavailable in this executor.";
 
-function runRT(exe, file) {
-  const r = spawnSync(exe, [file], { timeout: 60000, encoding: "utf8" });
-  return { code: r.status, out: (r.stdout || "").replace(/\r\n/g, "\n"), timeout: !!r.error };
+function runRT(exe, file, extraArgs = []) {
+  const r = spawnSync(exe, [...extraArgs, file], { timeout: 60000, encoding: "utf8" });
+  return { code: r.status, out: (r.stdout || "").replace(/\r\n/g, "\n"), err: (r.stderr || "").replace(/\r\n/g, "\n"), timeout: !!r.error };
 }
 function expectProfile3(label, artifact, prelude, withPuc) {
   const f = join(TMP, label + ".lua");
@@ -91,6 +98,28 @@ t("reg/max: load-only host via load fallback (Luau+PUC)", () => {
 }, 120000);
 t("reg/max: combined worst-case restrictions (Luau+PUC)", () => {
   expectProfile3("reg-worst", REG, P_WORST, true);
+}, 120000);
+
+// Luau CLI declares loadstring/pcall as protected globals (assignment is
+// silently ignored), so a fully stripped-loader/pcall host can only be
+// simulated on PUC-Lua; there -W un-silences Lua's warn() so the inline
+// (warn or print) diagnostic is observable.
+t("reg/max: both loaders blocked emits the diagnostic and exits cleanly, no crash (PUC)", () => {
+  const pf = join(TMP, "reg-noload.puc.lua");
+  writeFileSync(pf, SHIMTEXT + "\n" + P_NO_LOAD + "\n" + REG);
+  const rp = runRT(LUA54, pf, ["-W"]);
+  expect(rp.timeout).toBe(false);
+  expect(rp.code).toBe(0);
+  expect(rp.out + "\n" + rp.err).toContain(DIAG_NO_LOAD);
+}, 120000);
+
+t("reg/max: pcall stripped emits the diagnostic and exits cleanly, no crash (PUC)", () => {
+  const pf = join(TMP, "reg-nopcall.puc.lua");
+  writeFileSync(pf, SHIMTEXT + "\n" + P_NO_PCALL + "\n" + REG);
+  const rp = runRT(LUA54, pf, ["-W"]);
+  expect(rp.timeout).toBe(false);
+  expect(rp.code).toBe(0);
+  expect(rp.out + "\n" + rp.err).toContain(DIAG_NO_PCALL);
 }, 120000);
 
 t("stack/max: getfenv absent degrades to _G (Luau+PUC)", () => {

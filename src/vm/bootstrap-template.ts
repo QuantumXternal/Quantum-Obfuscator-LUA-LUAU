@@ -85,6 +85,125 @@ function obfuscateNum(n: number, rng: () => number): string {
   }
 }
 
+// v3.2.1 executor-compat: arithmetic-only 32-bit fallbacks. Deliberately no
+// native bitwise operators (& | ~ << >>) anywhere, so the emitted artifact
+// still parses on old Luau builds whose parser predates Lua 5.3 syntax.
+// Two independent uses:
+//  1. capture chains — `(type(bit32)=="table" and bit32.band) or ... or FB`
+//     so a stripped bit32/bit cannot take down the bootstrap itself;
+//  2. BIT32_FALLBACK_BLOCK — a self-contained `do` block that installs a
+//     full bit32 global replacement before the decrypted runtime chunk is
+//     compiled, because the inner VM references bit32.* directly.
+function arithBit(op: "and" | "xor"): string {
+  const combine = op === "and"
+    ? "if s1+s2>1 then p=p+k end"
+    : "if s1~=s2 then p=p+k end";
+  return [
+    `function(a,b)`,
+    `local M=4294967296`,
+    `local r,m=0,1`,
+    `a=a%M`,
+    `b=b%M`,
+    `while a>0 or b>0 do`,
+    `local x,y=a%16,b%16`,
+    `local p,k=0,1`,
+    `local u,v=x,y`,
+    `for t=1,4 do`,
+    `local s1,s2=u%2,v%2`,
+    combine,
+    `u=(u-s1)/2`,
+    `v=(v-s2)/2`,
+    `k=k*2`,
+    `end`,
+    `r=r+p*m`,
+    `a=(a-x)/16`,
+    `b=(b-y)/16`,
+    `m=m*16`,
+    `end`,
+    `return r`,
+    `end`,
+  ].join('\n');
+}
+
+const FALLBACK_BAND = arithBit("and");
+const FALLBACK_BXOR = arithBit("xor");
+const FALLBACK_RSHIFT =
+  `function(a,n) return math.floor((a%4294967296)/2^(n%32))%4294967296 end`;
+const FALLBACK_PACK = [
+  `function(f,v)`,
+  `local M=4294967296`,
+  `v=v%M`,
+  `return string.char(math.floor(v/16777216)%256,math.floor(v/65536)%256,math.floor(v/256)%256,v%256)`,
+  `end`,
+].join('\n');
+
+const CAP_BAND = `((type(bit32)=="table" and bit32.band) or (type(bit)=="table" and bit.band) or ${FALLBACK_BAND})`;
+const CAP_BXOR = `((type(bit32)=="table" and bit32.bxor) or (type(bit)=="table" and bit.bxor) or ${FALLBACK_BXOR})`;
+const CAP_RSHIFT = `((type(bit32)=="table" and bit32.rshift) or (type(bit)=="table" and bit.rshift) or ${FALLBACK_RSHIFT})`;
+const CAP_PACK = `(string.pack or ${FALLBACK_PACK})`;
+
+const BIT32_FALLBACK_BLOCK = [
+  `do`,
+  `if bit32==nil then`,
+  `local M=4294967296`,
+  `local XT,AT,OT={},{},{}`,
+  `for a=0,15 do`,
+  `for b=0,15 do`,
+  `local xr,ar,orr,k=0,0,0,1`,
+  `local u,v=a,b`,
+  `for t=1,4 do`,
+  `local s1,s2=u%2,v%2`,
+  `if s1~=s2 then xr=xr+k end`,
+  `if s1+s2>1 then ar=ar+k end`,
+  `if s1+s2>0 then orr=orr+k end`,
+  `u=(u-s1)/2`,
+  `v=(v-s2)/2`,
+  `k=k*2`,
+  `end`,
+  `XT[a*16+b]=xr`,
+  `AT[a*16+b]=ar`,
+  `OT[a*16+b]=orr`,
+  `end`,
+  `end`,
+  `local function fx(a,b,T)`,
+  `local r,m=0,1`,
+  `a=a%M`,
+  `b=b%M`,
+  `while a>0 or b>0 do`,
+  `local x,y=a%16,b%16`,
+  `r=r+T[x*16+y]*m`,
+  `a=(a-x)/16`,
+  `b=(b-y)/16`,
+  `m=m*16`,
+  `end`,
+  `return r`,
+  `end`,
+  `local function fold(T,...)`,
+  `local n=select("#",...)`,
+  `if n==0 then return 0 end`,
+  `local a=select(1,...)`,
+  `local b=select(2,...)`,
+  `if b==nil then return a%M end`,
+  `local r=fx(a,b,T)`,
+  `for i=3,n do r=fx(r,select(i,...),T) end`,
+  `return r`,
+  `end`,
+  `local function lsh(a,n)`,
+  `a=a%M`,
+  `for i=1,n%32 do a=(a*2)%M end`,
+  `return a`,
+  `end`,
+  `local function rsh(a,n) return math.floor((a%M)/2^(n%32))%M end`,
+  `local z={band=function(...) return fold(AT,...) end,bxor=function(...) return fold(XT,...) end,bor=function(...) return fold(OT,...) end,bnot=function(a) return (M-1)-(a%M) end,lshift=lsh,rshift=rsh,arshift=function(a,n) a=a%M if a>=M/2 then a=a-M end return math.floor(a/2^(n%32))%M end,lrotate=function(a,n) n=n%32 return (lsh(a,n)+rsh(a,32-n))%M end,rrotate=function(a,n) n=n%32 return (rsh(a,n)+lsh(a,32-n))%M end,btest=function(...) return fold(AT,...)~=0 end,extract=function(a,f,w) w=w or 1 return math.floor((a%M)/2^(f%32))%(2^w) end,replace=function(a,v,f,w) w=w or 1 local s=2^(f%32) local mw=2^w return (a%M-math.floor((a%M)/s)%mw*s)+(v%mw)*s end}`,
+  `if type(pcall)=="function" then`,
+  `pcall(function() bit32=z end)`,
+  `else`,
+  `bit32=z`,
+  `end`,
+  `end`,
+  `end`,
+].join('\n');
+
 export function generateBootstrap(config: BootstrapConfig): string {
   const { vmBlob, vmOrigLen, compLen, xorKey, invSbox, checksum, chunkName = "Quantum", rng } = config;
 
@@ -176,11 +295,11 @@ export function generateBootstrap(config: BootstrapConfig): string {
 
   {
     const builtins: [string, string][] = [
-      [nByte, 'string.byte'], [nGsub, 'string.gsub'], [nPack, 'string.pack'],
+      [nByte, 'string.byte'], [nGsub, 'string.gsub'], [nPack, CAP_PACK],
       [nSub, 'string.sub'], [nChar, 'string.char'], [nLoad, '(loadstring or load)'],
-      [nAssert, 'assert'], [nType, 'type'], [nBxor, 'bit32.bxor'],
-      [nPcall, 'pcall'], [nTconcat, 'table.concat'], [nBand, 'bit32.band'],
-      [nRshift, 'bit32.rshift'],
+      [nAssert, 'assert'], [nType, 'type'], [nBxor, CAP_BXOR],
+      [nPcall, 'pcall'], [nTconcat, 'table.concat'], [nBand, CAP_BAND],
+      [nRshift, CAP_RSHIFT],
     ];
     shuffle(builtins, rng);
     let bi = 0;
@@ -193,6 +312,12 @@ export function generateBootstrap(config: BootstrapConfig): string {
     }
   }
 
+  // Self-contained bit32 installer (see BIT32_FALLBACK_BLOCK): no dependency
+  // on any other fragment, so its shuffled position among the layer-0 groups
+  // is irrelevant. Runs before the state machine, i.e. before the decrypted
+  // runtime chunk is compiled.
+  fragments.push({ code: BIT32_FALLBACK_BLOCK, layer: 0 });
+
   const nDbgRef = N();
   const nLineRef = N();
   const chDebug = [100,101,98,117,103].map(c => obfuscateNum(c, rng)).join(',');
@@ -202,7 +327,7 @@ export function generateBootstrap(config: BootstrapConfig): string {
   const chGetfenv = [103,101,116,102,101,110,118].map(c => obfuscateNum(c, rng)).join(',');
 
   fragments.push({
-    code: `local ${nDbgRef}=(function() local _0ok,_0r=${nPcall}(function() local _0d=rawget(_G,${nChar}(${chDebug})) if not _0d then local _0g=rawget(_G,${nChar}(${chGetfenv})) if _0g then _0d=rawget(_0g(0) or {},${nChar}(${chDebug})) end end return _0d and _0d[${nChar}(${chInfo})] end) return _0ok and _0r or nil end)()`,
+    code: `local ${nDbgRef}=(function() local _0ok,_0r=(${nPcall} and ${nPcall}(function() local _0d=rawget(_G,${nChar}(${chDebug})) if not _0d then local _0g=rawget(_G,${nChar}(${chGetfenv})) if _0g then _0d=rawget(_0g(0) or {},${nChar}(${chDebug})) end end return _0d and _0d[${nChar}(${chInfo})] end)) return _0ok and _0r or nil end)()`,
     layer: spreadLayer(),
   });
   fragments.push({
@@ -295,6 +420,7 @@ export function generateBootstrap(config: BootstrapConfig): string {
     `s=${nGsub}(s,"[%s]","")`,
     `local ${nZeroExp}=${nChar}(33):rep(5)`,
     `s=${nGsub}(s,"z",${nZeroExp})`,
+    `if #s%5~=0 then return "" end`,
     `local o={}`,
     `for i=1,#s,5 do`,
     `local d,e,f,g,h=${nByte}(s,i,i+4)`,
@@ -492,23 +618,27 @@ export function generateBootstrap(config: BootstrapConfig): string {
 
   cases.push({ id: stDecode, code: [
     `${nRaw}=${nDecode}(${blobExpr})`,
+    `if #${nRaw}<${compLen} then (warn or print)("Quantum Error: HttpGet truncated the payload.") end`,
     `${nState}=${stDecrypt}`,
   ].join('\n') });
 
   cases.push({ id: stDecrypt, code: [
-    `if not ${nKeyInteg}() or not ${nSboxInteg}() then ${nMutate}() end`,
+    `if not ${nKeyInteg}() or not ${nSboxInteg}() then`,
+    `(warn or print)("Quantum Error: payload integrity check failed.")`,
+    `${nMutate}()`,
+    `end`,
     `${nDec}=${nDecrypt}(${nRaw})`,
     `${nState}=${stVerify}`,
   ].join('\n') });
 
   cases.push({ id: stVerify, code: [
     `local _0i=${nUnlz4}(${nDec},${vmOrigLen})`,
-    `if _0i and ${nVerify}(_0i)==${checksum} then`,
+    `if _0i and #_0i==${vmOrigLen} and ${nVerify}(_0i)==${checksum} then`,
     `${nDec}=_0i`,
     `else`,
     `${nMutate}()`,
     `local _0o=${nUnlz4}(${nDecrypt}(${nRaw}),${vmOrigLen})`,
-    `if _0o then ${nDec}=_0o end`,
+    `if _0o and #_0o==${vmOrigLen} and ${nVerify}(_0o)==${checksum} then ${nDec}=_0o else (warn or print)("Quantum Error: LZ4 decompression failed (corrupted stream).") end`,
     `end`,
     `${nState}=${stLoad}`,
   ].join('\n') });
@@ -519,11 +649,12 @@ export function generateBootstrap(config: BootstrapConfig): string {
     `else`,
     `${nOk},${nFn}=${nPcall}(${nLoad},${junkFnNames[0]}(${nDec}),"${chunkName}")`,
     `end`,
+    `if not ${nOk} then (warn or print)("Quantum Error: loadstring rejected the payload: "..tostring(${nFn})) end`,
     `${nState}=${stExec}`,
   ].join('\n') });
 
   cases.push({ id: stExec, code: [
-    `${nAssert}(${nOk} and ${nFn} and ${nType}(${nFn})=="function","Quantum Protection V2")`,
+    `${nAssert}(${nOk} and ${nFn} and ${nType}(${nFn})=="function" and #${nDec}==${vmOrigLen},"Quantum Protection V2")`,
     `${nResult}=${nFn}(...)`,
 
     `for _0i=1,256 do ${nSbox}[_0i]=0 end`,
@@ -552,7 +683,14 @@ export function generateBootstrap(config: BootstrapConfig): string {
 
   const nEnvCheck = N();
   assembled.push(`local ${nEnvCheck}=${nType}(${nLoad})..${nType}(${nPcall})`);
-  assembled.push(`if ${nEnvCheck}~="functionfunction" then return nil end`);
+  assembled.push(`if ${nEnvCheck}~="functionfunction" then`);
+  assembled.push(`if ${nType}(${nLoad})~="function" then`);
+  assembled.push(`(warn or print)("Quantum Error: loadstring/load is blocked in this executor.")`);
+  assembled.push(`else`);
+  assembled.push(`(warn or print)("Quantum Error: pcall is unavailable in this executor.")`);
+  assembled.push(`end`);
+  assembled.push(`return nil`);
+  assembled.push(`end`);
 
   // Roblox-only anti-debug block. Gated: generic output must not reference
   // game/Players/Kick or punish debuggers outside Roblox.

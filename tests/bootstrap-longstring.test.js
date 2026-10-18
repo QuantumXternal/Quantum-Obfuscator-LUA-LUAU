@@ -62,6 +62,14 @@ const CASES = [
   ["tail-] with interior ]]", "A]B]]C]"],
   ["tail-] with interior ]=]", "X]=]Y]"],
   ["plain", "PLAINBLOB"],
+  // Adversarial multi-piece cases: closer-like runs exactly at / across the
+  // 9600-byte piece boundary, so the splitter's tail-merge and the per-piece
+  // level escalation have to disagree correctly.
+  ["piece-boundary tail-]===", "A".repeat(9596) + "]===" + "B".repeat(2000)],
+  ["closer split across piece boundary", "A".repeat(9598) + "]===" + "B".repeat(2000)],
+  ["piece exactly 9600 ending in ]", "A".repeat(9599) + "]"],
+  ["piece exactly 9600 ending in ]===", "A".repeat(9596) + "]==="],
+  ["many interior ]=] runs, tail ]", "C]=]".repeat(2500) + "]"],
 ];
 
 for (const [name, blob] of CASES) {
