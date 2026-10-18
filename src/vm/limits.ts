@@ -22,6 +22,21 @@
 
 export const MAX_OUTPUT_LINE_BYTES = 9_600;
 
+/**
+ * Pick the smallest valid long-bracket level for embedding `s` verbatim:
+ * the literal must not contain the closer `]` + `=`*level + `]`, and its
+ * tail run must not merge with the closer (a blob ending with `]` + `=`*k
+ * would otherwise close the literal one char early). Level 0 (`[[...]]`)
+ * whenever the content allows it.
+ */
+export function longStringLevel(s: string): number {
+  let level = 0;
+  while (s.includes("]" + "=".repeat(level) + "]") || s.endsWith("]" + "=".repeat(level))) {
+    level++;
+  }
+  return level;
+}
+
 /** Split a long literal into contiguous pieces, each <= max bytes. */
 export function splitLongLiteral(s: string, max: number = MAX_OUTPUT_LINE_BYTES): string[] {
   if (s.length <= max) return [s];

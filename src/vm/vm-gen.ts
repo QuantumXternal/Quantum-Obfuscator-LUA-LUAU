@@ -3,15 +3,24 @@ import { SPARSE_OPCODE_RANGE, STACK_OPCODE_COUNT } from "./bytecode.js";
 import { Lexer } from "../lexer/Lexer.js";
 import { Parser } from "../parser/Parser.js";
 import { compile as compileAST } from "./Compiler.js";
-import { splitLongLiteral, joinBounded, luaQuotedFromBytes, boundCommaSeparatedLine } from "./limits.js";
+import { splitLongLiteral, joinBounded, luaQuotedFromBytes, boundCommaSeparatedLine, longStringLevel } from "./limits.js";
 
 // Emit a (possibly very long) encoded fragment as one or more bounded-width
-// string literals joined by `..` across lines. Single-piece fragments keep
-// the exact legacy emission (byte-identical for existing small artifacts).
+// long-bracket literals joined by `..` across lines. Fragments come from the
+// shuffled-alphabet encoder: they can contain `[`/`]`/`=` but never `"` or
+// `\`, so long brackets are exact (no escape processing) and the dynamic
+// level from longStringLevel guarantees the embedded content and its tail
+// cannot close the literal early. A fragment emitted as a single piece with
+// a plain payload stays on one line; pieces keep piece-per-line shape (the
+// `#frag` consumers only ever need the joined value).
 function emitFragmentLiteral(s: string): string {
   const pieces = splitLongLiteral(s);
-  if (pieces.length === 1) return `"${s}"`;
-  return pieces.map((p) => `"${p}"`).join("..\n");
+  const wrap = (p: string): string => {
+    const eq = "=".repeat(longStringLevel(p));
+    return `[${eq}[${p}]${eq}]`;
+  };
+  if (pieces.length === 1) return wrap(s);
+  return pieces.map(wrap).join("..\n");
 }
 
 let _rng: () => number = Math.random;
@@ -1426,20 +1435,24 @@ export function wrapCustomCipher(source: string, seed?: number | string): string
   lines.push(`for ${_liS}=${vSkip}+1,#${vOut} do ${vReal}[#${vReal}+1]=${vOut}[${_liS}] end`);
   maybeJunk(lines);
   const execVariant = Math.floor(rng() * 3);
+  // `_ok`/`_pf` are collision-proof: randomName only emits [Il1O0_] + base36
+  // suffixes. The pcall guard turns a loader rejection (executor parser
+  // limits, corrupted payload) into one deterministic clean error instead of
+  // an `attempt to call a nil value` traceback pointing into generated code.
   if (execVariant === 0) {
     // Same `do...end` rationale as wrapNestedVM execV0: never emit a
     // `(`-leading line (ambiguous-syntax call continuation with the
     // preceding line; `;` is not a Luau-legal separator after openers).
-    lines.push(`do (${vLd}(${vTc}(${vReal})))() end`);
+    lines.push(`do local _ok,_pf=pcall(${vLd},${vTc}(${vReal}),"Quantum") if not _ok or type(_pf)~="function" then error("Quantum: payload load failed",0) end _pf() end`);
   } else if (execVariant === 1) {
     const _fn = randomName(3);
-    lines.push(`local ${_fn}=${vLd}(${vTc}(${vReal}))`);
+    lines.push(`local _ok,${_fn}=pcall(${vLd},${vTc}(${vReal}),"Quantum") if not _ok or type(${_fn})~="function" then error("Quantum: payload load failed",0) end`);
     lines.push(`${_fn}()`);
   } else {
     const _src = randomName(3);
     const _fn = randomName(3);
     lines.push(`local ${_src}=${vTc}(${vReal})`);
-    lines.push(`local ${_fn}=${vLd}(${_src})`);
+    lines.push(`local _ok,${_fn}=pcall(${vLd},${_src},"Quantum") if not _ok or type(${_fn})~="function" then error("Quantum: payload load failed",0) end`);
     lines.push(`${_fn}()`);
   }
 
@@ -1447,7 +1460,19 @@ export function wrapCustomCipher(source: string, seed?: number | string): string
   return lines.join("\n");
 }
 
+const NESTED_WRAP_SIZE_LIMIT = 1_500_000;
+
 export function wrapNestedVM(source: string, seed?: number | string): string {
+  // Exposed-loader safety: on huge inputs the extra S-Box/xor/rot layer
+  // doubles pre-decode work and pins a second full copy of the artifact in
+  // executor memory during boot (the 580 KB MJ class already produced multi-
+  // MB intermediate tables). Pass the source through unwrapped past the
+  // limit — the layer is defense in depth, not integrity, and the outer
+  // envelope + stub verification still apply.
+  if (source.length > NESTED_WRAP_SIZE_LIMIT) {
+    console.warn(`[nested] skip: source ${source.length} chars > ${NESTED_WRAP_SIZE_LIMIT} (loader-safety guard)`);
+    return source;
+  }
   applySeedParam(seed);
 
   const srcBytes: number[] = [];
@@ -1747,6 +1772,8 @@ export function wrapNestedVM(source: string, seed?: number | string): string {
   L.push(emitHoneypot());
 
   const execV = Math.floor(rng() * 3);
+  // Same collision-proof guard locals as wrapCustomCipher (`[Il1O0_]`-only
+  // random names cannot produce `_ok`/`_pf`).
   if (execV === 0) {
     // Wrapped in `do...end` (never `(`-leading): a bare `(${vLd}...)()` line
     // merges with a preceding expression-ending line (e.g. a `...end)()`
@@ -1754,15 +1781,15 @@ export function wrapNestedVM(source: string, seed?: number | string): string {
     // do NOT separate statements before `(`. Demonstrated by seed 2024
     // (nested layer failed to parse on every host). `;`-separation is NOT an
     // alternative: Luau rejects `;` after `do`/`then`/`else`/`repeat`.
-    L.push(`do (${vLd}(${vTc}(${vOut})))() end`);
+    L.push(`do local _ok,_pf=pcall(${vLd},${vTc}(${vOut}),"Quantum") if not _ok or type(_pf)~="function" then error("Quantum: payload load failed",0) end _pf() end`);
   } else if (execV === 1) {
     const fn = nn(3);
-    L.push(`local ${fn}=${vLd}(${vTc}(${vOut}))`);
+    L.push(`local _ok,${fn}=pcall(${vLd},${vTc}(${vOut}),"Quantum") if not _ok or type(${fn})~="function" then error("Quantum: payload load failed",0) end`);
     L.push(`${fn}()`);
   } else {
     const srcV = nn(3), fn = nn(3);
     L.push(`local ${srcV}=${vTc}(${vOut})`);
-    L.push(`local ${fn}=${vLd}(${srcV})`);
+    L.push(`local _ok,${fn}=pcall(${vLd},${srcV},"Quantum") if not _ok or type(${fn})~="function" then error("Quantum: payload load failed",0) end`);
     L.push(`${fn}()`);
   }
 
@@ -2106,7 +2133,7 @@ export function wrapStubVM(source: string, seed?: number | string): string {
 
   L.push(`local ${a_t}={}`);
   L.push(`for _i=1,#${a_o} do ${a_t}[_i]=${a_sc}(${a_o}[_i]) end`);
-  L.push(`${a_ls}(${a_tc}(${a_t}))()`);
+  L.push(`local _ok,_pf=pcall(${a_ls},${a_tc}(${a_t}),"Quantum") if not _ok or type(_pf)~="function" then error("Quantum: payload load failed",0) end _pf()`);
 
   // Line-width policy: keep the legacy "one flat line" shape only while it
   // stays under the bound; longer artifacts break at original line

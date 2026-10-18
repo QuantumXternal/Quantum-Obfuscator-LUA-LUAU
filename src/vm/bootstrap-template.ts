@@ -1,4 +1,4 @@
-import { splitLongLiteral } from "./limits.js";
+import { longStringLevel, splitLongLiteral } from "./limits.js";
 
 export interface BootstrapConfig {
   vmBlob: string;
@@ -16,18 +16,6 @@ export interface BootstrapConfig {
    * emits this when explicitly requested via target === "roblox".
    */
   robloxAntiTamper?: boolean;
-}
-
-function longStringLevel(s: string): number {
-  // A blob ending with `]` + `=`*level overlaps with the closing delimiter
-  // (its tail merges into `]` + `=`*level + `]` and closes the literal one
-  // char early), so the tail run must be excluded too — not just the full
-  // closer appearing inside the blob.
-  let level = 0;
-  while (s.includes("]" + "=".repeat(level) + "]") || s.endsWith("]" + "=".repeat(level))) {
-    level++;
-  }
-  return level;
 }
 
 function shuffle<T>(arr: T[], rng: () => number): T[] {
