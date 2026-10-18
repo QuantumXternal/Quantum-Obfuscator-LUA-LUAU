@@ -140,7 +140,42 @@ const FALLBACK_PACK = [
 const CAP_BAND = `((type(bit32)=="table" and bit32.band) or (type(bit)=="table" and bit.band) or ${FALLBACK_BAND})`;
 const CAP_BXOR = `((type(bit32)=="table" and bit32.bxor) or (type(bit)=="table" and bit.bxor) or ${FALLBACK_BXOR})`;
 const CAP_RSHIFT = `((type(bit32)=="table" and bit32.rshift) or (type(bit)=="table" and bit.rshift) or ${FALLBACK_RSHIFT})`;
-const CAP_PACK = `(string.pack or ${FALLBACK_PACK})`;
+const CAP_PACK = `((type(string)=="table" and string.pack) or ${FALLBACK_PACK})`;
+
+/**
+ * Robust globals-root resolver emitted into the artifact. Roblox's `_G` is a
+ * script-shared DATA table and does NOT contain the standard library
+ * (official docs), so anything rooted at `_G` alone resolves every stdlib
+ * member to nil there (v3.2.1 executor incident: `attempt to index nil with
+ * 'pack'` inside the decrypted runtime). Resolution order:
+ *   1. getgenv()            - executor global environment (has stdlib)
+ *   2. getfenv(0)           - vanilla Roblox / standalone Lua global env
+ *   3. loadstring("return _G") - separate chunk, immune to local shadowing
+ *                              (the generator names can collide with `_G`);
+ *                              trusted only if it carries the stdlib
+ *   4. _G                   - only if it actually carries the stdlib
+ *   5. direct-globals snapshot - final guarantee, nil-safe by construction
+ * Self-contained: references only globals, so it can sit anywhere in a
+ * shuffled fragment layer.
+ */
+const ENV_ROOT_EXPR = `(function()
+local _0pc=pcall
+local _0ty=type
+if _0pc and _0ty then
+local _0ok,_0r=_0pc(getgenv)
+if _0ok and _0ty(_0r)=="table" then return _0r end
+_0ok,_0r=_0pc(getfenv,0)
+if _0ok and _0ty(_0r)=="table" then return _0r end
+local _0ls=loadstring or load
+if _0ty(_0ls)=="function" then
+_0ok,_0r=_0pc(_0ls,"return _G")
+if _0ok and _0ty(_0r)=="table" and _0ty(_0r["table"])=="table" then return _0r end
+end
+end
+local _0g=_G
+if _0ty and _0ty(_0g)=="table" and _0ty(_0g["table"])=="table" then return _0g end
+return {table=table,string=string,math=math,bit32=bit32,bit=bit,pcall=pcall,xpcall=xpcall,select=select,type=type,ipairs=ipairs,pairs=pairs,next=next,tostring=tostring,tonumber=tonumber,rawget=rawget,rawset=rawset,setmetatable=setmetatable,getmetatable=getmetatable,unpack=unpack,loadstring=loadstring,load=load,error=error,assert=assert,coroutine=coroutine,os=os,utf8=utf8,buffer=buffer,task=task,game=game,workspace=workspace,script=script,Instance=Instance,Enum=Enum,typeof=typeof,tick=tick,time=time,wait=wait,spawn=spawn,delay=delay,newproxy=newproxy,collectgarbage=collectgarbage,debug=debug,print=print,warn=warn,shared=shared,require=require}
+end)()`;
 
 const BIT32_FALLBACK_BLOCK = [
   `do`,
@@ -232,6 +267,7 @@ export function generateBootstrap(config: BootstrapConfig): string {
   const nRaw = N(), nDec = N();
 
   const nOk = N(), nFn = N(), nState = N(), nResult = N(), nZeroExp = N();
+  const nEnvRoot = N();
 
   const junkFnNames = [N(), N(), N(), N(), N()];
   const junkVarNames = [N(), N(), N(), N(), N(), N(), N(), N()];
@@ -318,6 +354,11 @@ export function generateBootstrap(config: BootstrapConfig): string {
   // runtime chunk is compiled.
   fragments.push({ code: BIT32_FALLBACK_BLOCK, layer: 0 });
 
+  // Globals-root for every outer `_G` consumer below. Self-contained layer-0
+  // fragment (see ENV_ROOT_EXPR) so its shuffled position among the layer-0
+  // groups is irrelevant.
+  fragments.push({ code: `local ${nEnvRoot}=${ENV_ROOT_EXPR}`, layer: 0 });
+
   const nDbgRef = N();
   const nLineRef = N();
   const chDebug = [100,101,98,117,103].map(c => obfuscateNum(c, rng)).join(',');
@@ -327,7 +368,7 @@ export function generateBootstrap(config: BootstrapConfig): string {
   const chGetfenv = [103,101,116,102,101,110,118].map(c => obfuscateNum(c, rng)).join(',');
 
   fragments.push({
-    code: `local ${nDbgRef}=(function() local _0ok,_0r=(${nPcall} and ${nPcall}(function() local _0d=rawget(_G,${nChar}(${chDebug})) if not _0d then local _0g=rawget(_G,${nChar}(${chGetfenv})) if _0g then _0d=rawget(_0g(0) or {},${nChar}(${chDebug})) end end return _0d and _0d[${nChar}(${chInfo})] end)) return _0ok and _0r or nil end)()`,
+    code: `local ${nDbgRef}=(function() local _0ok,_0r=(${nPcall} and ${nPcall}(function() local _0d=rawget(${nEnvRoot},${nChar}(${chDebug})) if not _0d then local _0g=rawget(${nEnvRoot},${nChar}(${chGetfenv})) if _0g then _0d=rawget(_0g(0) or {},${nChar}(${chDebug})) end end return _0d and _0d[${nChar}(${chInfo})] end)) return _0ok and _0r or nil end)()`,
     layer: spreadLayer(),
   });
   fragments.push({
@@ -655,7 +696,10 @@ export function generateBootstrap(config: BootstrapConfig): string {
 
   cases.push({ id: stExec, code: [
     `${nAssert}(${nOk} and ${nFn} and ${nType}(${nFn})=="function" and #${nDec}==${vmOrigLen},"Quantum Protection V2")`,
-    `${nResult}=${nFn}(...)`,
+    `local _0ec,_0ev=${nPcall}(${nFn},...)`,
+    `if not _0ec then (warn or print)("Quantum Error: inner runtime failed: "..tostring(_0ev)) end`,
+    `${nAssert}(_0ec,"Quantum Protection V2")`,
+    `${nResult}=_0ev`,
 
     `for _0i=1,256 do ${nSbox}[_0i]=0 end`,
     `for _0i=1,${nKeyLen} do ${nKey}[_0i]=0 end`,
@@ -710,9 +754,9 @@ export function generateBootstrap(config: BootstrapConfig): string {
 
     assembled.push(`${nLoad}=function() return nil end`);
 
-    assembled.push(`${nPcall}(function() local _w=rawget(_G,${nChar}(${chWarn})) if _w then for _0i=1,${floodCount} do _w(${nChar}(${floodChars})) end end end)`);
+    assembled.push(`${nPcall}(function() local _w=rawget(${nEnvRoot},${nChar}(${chWarn})) if _w then for _0i=1,${floodCount} do _w(${nChar}(${floodChars})) end end end)`);
 
-    assembled.push(`${nPcall}(function() local _g=rawget(_G,${nChar}(${chGame})) local _p=_g[${nChar}(${chGS})](_g,${nChar}(${chPlayers})) local _lp=_p[${nChar}(${chLP})] _lp[${nChar}(${chKick})](_lp) end)`);
+    assembled.push(`${nPcall}(function() local _g=rawget(${nEnvRoot},${nChar}(${chGame})) local _p=_g[${nChar}(${chGS})](_g,${nChar}(${chPlayers})) local _lp=_p[${nChar}(${chLP})] _lp[${nChar}(${chKick})](_lp) end)`);
     assembled.push(`end`);
   }
 

@@ -43,7 +43,7 @@ function runProfile(exe, prelude, shim, args = []) {
 
 test("artifact carries the bit32 installer and the string.pack fallback", () => {
   expect(REG).toContain("if bit32==nil then");
-  expect(REG).toContain("string.pack or");
+  expect(REG).toContain('type(string)=="table" and string.pack');
   expect(REG).toContain('type(bit32)=="table"');
 });
 

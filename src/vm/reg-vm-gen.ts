@@ -1654,6 +1654,32 @@ function buildHandlerBodies(n: NameMap, ctx: BuildCtx, usedOps?: Set<number>): M
   return bodies;
 }
 
+/**
+ * v4 executor hardening: robust globals-root resolver for the decrypted
+ * runtime. Roblox's `_G` is a script-shared DATA table and does NOT contain
+ * the standard library (official docs), so rooting captures at
+ * `loadstring("return _G")()` resolves every stdlib member to nil there —
+ * the v3.2.x executor incident reported exactly that as
+ * `[string "Quantum"]:43: attempt to index nil with 'pack'`.
+ * Resolution order:
+ *   1. getgenv()  - executor global environment (carries stdlib)
+ *   2. getfenv(0) - vanilla Roblox / standalone Lua global env
+ *   3. loadstring("return _G") - a SEPARATE chunk, so the read is immune to
+ *      the runtime's own locals: the generator can name a local `_G` (2-char
+ *      pool collision, seen in the wild), which would shadow the global for
+ *      any inline read. Validated for stdlib content before being trusted.
+ *   4. inline `_G` - only when it actually carries the stdlib (standalone)
+ *   5. direct-globals snapshot - final guarantee, nil-safe by construction
+ * Self-contained expression: references only globals, safe in any fragment.
+ */
+function envRootLua(): string {
+  const snapshot = CORE_GLOBALS
+    .filter(g => g !== "_G")
+    .concat(["bit"])
+    .map(g => `${g}=${g}`)
+    .join(",");
+  return `(function() local _0pc=pcall local _0ty=type if _0pc and _0ty then local _0ok,_0r=_0pc(getgenv) if _0ok and _0ty(_0r)=="table" then return _0r end _0ok,_0r=_0pc(getfenv,0) if _0ok and _0ty(_0r)=="table" then return _0r end local _0ls=loadstring or load if _0ty(_0ls)=="function" then _0ok,_0r=_0pc(_0ls,"return _G") if _0ok and _0ty(_0r)=="table" and _0ty(_0r["table"])=="table" then return _0r end end end local _0g=_G if _0ty and _0ty(_0g)=="table" and _0ty(_0g["table"])=="table" then return _0g end return {${snapshot}} end)()`;
+}
 function buildBuiltinCaptures(ctx: BuildCtx): { code: string; assignOnly: string } {
   const n = ctx.names;
 
@@ -1710,19 +1736,13 @@ function buildBuiltinCaptures(ctx: BuildCtx): { code: string; assignOnly: string
   lines.push(`do`);
   lines.push(`local ${scVar}=("")[${luaEsc("char")}]`);
 
-  const lsBoot = randomName(2);
-  // Phase 5 / Step 3: load-only hosts (loadstring absent) must not hard-crash.
-  lines.push(`local ${lsBoot}=loadstring or load`);
-  const envBootSrc = `return _G`;
-  const envBootCodes = Array.from(envBootSrc).map(c => {
-    const code = c.charCodeAt(0);
-    const m = Math.floor(rng() * 4);
-    if (m === 0) { const d = 1 + Math.floor(rng() * 20); return `${code - d}+${d}`; }
-    if (m === 1) { const d = 1 + Math.floor(rng() * 20); return `${code + d}-${d}`; }
-    if (m === 2) return `0x${code.toString(16)}`;
-    return `${code}`;
-  }).join(',');
-  lines.push(`local ${geVar}=${lsBoot}(${scVar}(${envBootCodes}))()`);
+  // v4: robust root resolver. The v3.2.x build rooted this at
+  // `loadstring("return _G")()`, which is a DATA table on Roblox with no
+  // stdlib — every member resolved nil and the first lib capture indexed
+  // nil with 'pack'. Direct-global `or` fallbacks guard partial roots.
+  lines.push(`local ${geVar}=${envRootLua()}`);
+  const zVar = randomName(2);
+  lines.push(`local ${zVar}={}`);
 
   const shuffledSimple = [...simpleCaptures];
   for (let i = shuffledSimple.length - 1; i > 0; i--) {
@@ -1730,7 +1750,7 @@ function buildBuiltinCaptures(ctx: BuildCtx): { code: string; assignOnly: string
     [shuffledSimple[i], shuffledSimple[j]] = [shuffledSimple[j], shuffledSimple[i]];
   }
   for (const [varName, globalName] of shuffledSimple) {
-    lines.push(`${varName}=${geVar}[${encName(globalName)}]`);
+    lines.push(`${varName}=${geVar}[${encName(globalName)}] or ${globalName}`);
   }
 
   const libKeys = [...libs.keys()];
@@ -1740,41 +1760,48 @@ function buildBuiltinCaptures(ctx: BuildCtx): { code: string; assignOnly: string
   }
   for (const libName of libKeys) {
     const { libVar, members } = libs.get(libName)!;
-    lines.push(`local ${libVar}=${geVar}[${encName(libName)}]`);
+    lines.push(`local ${libVar}=${geVar}[${encName(libName)}] or ${libName}`);
     for (const [varName, memberName] of members) {
-      lines.push(`${varName}=${libVar}[${encName(memberName)}]`);
+      lines.push(`${varName}=(${libVar} or ${zVar})[${encName(memberName)}]`);
     }
   }
   lines.push(`end`);
 
-  const nHg = randomName(3);
-  const checks: string[] = [
-    `${n.bType}(1)=="number"`, `${n.bType}("")=="string"`,
-    `${n.bSelect}("#",1,2,3)==3`,
-    `${n.bPcall}(function() end)`,
-    `${n.bXpcall}(function() return 1 end,function() end)`,
-    `${n.bBxor}(0,0)==0`, `${n.bBand}(255,15)==15`,
-    `${n.tPack}(1,2,3).n==3`,
-    `${n.bSelect}("#",${n.tUnpack}({7,8}))==2`,
-    `${n.bType}(${n.bTcreate}(0))=="table"`,
-    `${n.bTconcat}({"a","b"})=="ab"`,
-    `${n.bMfloor}(1.9)==1`,
-    `${n.bTostring}(42)=="42"`,
-    `${n.bRawget}({x=1},"x")==1`,
-    `${n.bType}(${n.bSetmeta})=="function"`,
-    `${n.bType}(${n.bIpairs})=="function"`,
-    `${n.bType}(${n.bGetmeta})=="function"`,
-  ];
-  for (let ci = checks.length - 1; ci > 0; ci--) {
-    const cj = Math.floor(rng() * (ci + 1));
-    [checks[ci], checks[cj]] = [checks[cj], checks[ci]];
-  }
-  const check = `local ${nHg}=${checks.join(" and ")}`;
-  const corrupt = process.env.NO_SEC === '1'
+  // v4: capability gate + soft repairs. Required captures abort with a named
+  // diagnostic (the artifact's exec stage prints it); soft captures get
+  // working stand-ins so a stripped/oddly-rooted library degrades instead of
+  // hard-crashing. The v3.2.x check block CALLED every capture to validate
+  // it — a nil capture crashed the check itself before repairs could apply.
+  const reqDiag = process.env.NO_SEC === '1'
     ? `do end`
-    : `if not ${nHg} then ${n.bTcreate}=function() return {} end;${n.tPack}=function(...) return {n=0} end;${n.bPcall}=function() return false end;${n.bSelect}=function() return 0 end;${n.bMfloor}=function(x) return x end end`;
+    : [
+      `local _0rq`,
+      `if ${n.bType}==nil then _0rq="type"`,
+      `elseif ${n.bType}(${n.bPcall})~="function" then _0rq="pcall"`,
+      `elseif ${n.bType}(${n.bSelect})~="function" then _0rq="select"`,
+      `elseif ${n.bType}(${n.tPack})~="function" then _0rq="table.pack"`,
+      `elseif ${n.bType}(${n.tUnpack})~="function" then _0rq="table.unpack"`,
+      `elseif ${n.bType}(${n.bBxor})~="function" then _0rq="bit32.bxor"`,
+      `elseif ${n.bType}(${n.bBand})~="function" then _0rq="bit32.band"`,
+      `end`,
+      `if _0rq then error("Quantum Error: global library unavailable: ".._0rq,0) end`,
+    ].join(";");
 
-  const captureCode = [...lines, check, corrupt].join("\n");
+  const softFix = process.env.NO_SEC === '1'
+    ? `do end`
+    : [
+      `if ${n.bType}(${n.bXpcall})~="function" then ${n.bXpcall}=${n.bPcall} end`,
+      `if ${n.bType}(${n.bTcreate})~="function" then ${n.bTcreate}=function() return {} end end`,
+      `if ${n.bType}(${n.bMfloor})~="function" then ${n.bMfloor}=function(_0x) return _0x end end`,
+      `if ${n.bType}(${n.bTconcat})~="function" then ${n.bTconcat}=function(_0t,_0s) local _0x="" for _0i=1,#_0t do if _0i>1 then _0x=_0x..(_0s or "") end _0x=_0x.._0t[_0i] end return _0x end end`,
+      `if ${n.bType}(${n.bTostring})~="function" then ${n.bTostring}=function(_0x) return _0x end end`,
+      `if ${n.bType}(${n.bRawget})~="function" then ${n.bRawget}=function(_0t,_0k) return _0t[_0k] end end`,
+      `if ${n.bType}(${n.bSetmeta})~="function" then ${n.bSetmeta}=function(_0t) return _0t end end`,
+      `if ${n.bType}(${n.bGetmeta})~="function" then ${n.bGetmeta}=function(_0x,_0k) if _0x and _0k then return _0x[_0k] end return nil end end`,
+      `if ${n.bType}(${n.bIpairs})~="function" then ${n.bIpairs}=function(_0t) local _0i=0 return function() _0i=_0i+1 local _0v=_0t[_0i] if _0v~=nil then return _0i,_0v end end end end`,
+    ].join(";");
+
+  const captureCode = [...lines, reqDiag, softFix].join("\n");
   return { code: captureCode, assignOnly: captureCode };
 }
 
@@ -2237,7 +2264,7 @@ function buildEnvSetup(ctx: BuildCtx): string {
   const L: string[] = [];
 
   if (ctx.level === "debug") {
-    L.push(`local ${n.genv}=_G`);
+    L.push(`local ${n.genv}=${envRootLua()}`);
     const entries = CORE_GLOBALS.map(g => `${g}=${g}`).join(",");
     L.push(`local ${n.env}=setmetatable({${entries}},{__index=function(_,k) local ok,v=pcall(function() return ${n.genv}[k] end);if ok then return v end;return nil end})`);
     if (ctx.includeExecutor) {
@@ -2260,8 +2287,9 @@ function buildEnvSetup(ctx: BuildCtx): string {
   const dec = randomName(4);
   L.push(`local function ${dec}(_t) local _s="";for _i=1,#_t do _s=_s..string.char(${n.bBxor}(_t[_i],${n.bBand}(${envKey}+(_i-1)*${envStep},0xFF))) end;return _s end`);
 
-  // Phase 5 / Step 3: loadstring-or-load fallback (load-only hosts).
-  L.push(`local ${n.genv}=(loadstring or load)(${dec}(${encS("return _G")}))()`);
+  // v4: robust root resolver — `_G` alone is a bare data table on Roblox
+  // (no stdlib), which starved the env proxy of every global it prefetches.
+  L.push(`local ${n.genv}=${envRootLua()}`);
 
   L.push(`local ${n.env}=${n.bSetmeta}({},{[${dec}(${encS("__index")})]=function(_,k) local ok,v=${n.bPcall}(function() return ${n.genv}[k] end);if ok then return v end;return nil end})`);
 
@@ -2302,8 +2330,9 @@ function buildEnvFragments(ctx: BuildCtx): { fragments: Fragment[]; forwardDecls
   forwardDecls.push(dec, n.genv, n.env);
 
   fragments.push({ code: `${dec}=function(_t) local _s="";for _i=1,#_t do _s=_s..string.char(${n.bBxor}(_t[_i],${n.bBand}(${envKey}+(_i-1)*${envStep},0xFF))) end;return _s end`, layer: 0 });
-  // Phase 5 / Step 3: loadstring-or-load fallback (load-only hosts).
-  fragments.push({ code: `${n.genv}=(loadstring or load)(${dec}(${encS("return _G")}))()`, layer: 1 });
+  // v4: robust root resolver (see ENV_ROOT_LUA) — replaces the v3.2.x
+  // `loadstring("return _G")()` root, which is stdlib-less on Roblox.
+  fragments.push({ code: `${n.genv}=${envRootLua()}`, layer: 1 });
   fragments.push({ code: `${n.env}=${n.bSetmeta}({},{[${dec}(${encS("__index")})]=function(_,k) local ok,v=${n.bPcall}(function() return ${n.genv}[k] end);if ok then return v end;return nil end})`, layer: 2 });
 
   const allGlobals = ctx.includeExecutor ? [...CORE_GLOBALS, ...EXECUTOR_GLOBALS] : [...CORE_GLOBALS];
@@ -3198,7 +3227,9 @@ function wrapCustomCipher(source: string, layerOpts?: CipherLayerOpts): string {
       return `${code}`;
     }).join(',');
 
-    const envExpr = `(function() local ${gfLocal}=getfenv;return (type(${gfLocal})==${chVar}(${fnCodes}) and ${gfLocal}(0) or _G) end)()`;
+    // v4: `_G` on Roblox is a bare data table (no stdlib) — fall back to the
+    // robust root chain, which is self-contained and nil-safe.
+    const envExpr = `(function() local ${gfLocal}=getfenv;return (type(${gfLocal})==${chVar}(${fnCodes}) and ${gfLocal}(0) or (${envRootLua()})) end)()`;
     const p = Math.floor(rng() * 3);
     if (p === 0) return `${envExpr}[${chVar}(${codes})]`;
     if (p === 1) return `(function() local _e=${envExpr};return _e end)()[${chVar}(${codes})]`;
@@ -3348,15 +3379,22 @@ function wrapCustomCipher(source: string, layerOpts?: CipherLayerOpts): string {
     { op: OP_STR, code: `${vmRes}[${vmIns}[2]]=${vmEs}[${vmDk}(${vmIns}[3])]` },
     { op: OP_ENV, code: (() => {
 
-      const envSrc = `return _G`;
-      const envCodes = Array.from(envSrc).map(c => {
+      // v4: "return _G" hands back Roblox's stdlib-less DATA table — the
+      // loaded chunk now prefers getgenv()/getfenv(0), validates that the
+      // result actually carries the stdlib (table.table), and falls back to
+      // the robust root chain otherwise. nEv must always end up a table:
+      // downstream `nTb`/`nBt` indexing is unconditional.
+      const envSrc = `return getgenv and getgenv() or (getfenv and getfenv(0)) or _G`;
+      const envCoder = (s: string) => Array.from(s).map(c => {
         const code = c.charCodeAt(0);
         const m = Math.floor(rng() * 3);
         if (m === 0) { const d = 1 + Math.floor(rng() * 50); return `${code - d}+${d}`; }
         if (m === 1) { const d = 1 + Math.floor(rng() * 50); return `${code + d}-${d}`; }
         return `${code}`;
       }).join(',');
-      return `${vmRes}[${vmIns}[2]]=${nLdBoot}(${nCh}(${envCodes}))()`;
+      const envCodes = envCoder(envSrc);
+      const tblCodes = envCoder("table");
+      return `${vmRes}[${vmIns}[2]]=(function() local _0l=${nLdBoot} if type(_0l)=="function" then local _0c=_0l(${nCh}(${envCodes})) if type(_0c)=="function" then local _0e=_0c() if type(_0e)=="table" and type(_0e[${nCh}(${tblCodes})])=="table" then return _0e end end end return (${envRootLua()}) end)()`;
     })() },
     { op: OP_IDX, code: `${vmRes}[${vmIns}[2]]=${vmRes}[${vmIns}[3]][${vmDk}(${vmIns}[4])]` },
     { op: OP_IOR, code: `${vmRes}[${vmIns}[2]]=${vmRes}[${vmIns}[3]][${vmDk}(${vmIns}[4])] or ${vmRes}[${vmIns}[3]][${vmDk}(${vmIns}[5])]` },

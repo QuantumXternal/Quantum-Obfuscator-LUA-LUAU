@@ -175,8 +175,11 @@ test("stack artifact has no unguarded getfenv(0) calls", () => {
   expect(bare).not.toMatch(/getfenv\(0\)/);
 });
 
-test("reg runtime boots loadstring with load fallback", () => {
+test("reg runtime roots globals robustly (chain + load fallback) with no blind loadstring calls", () => {
   const raw = genRegNoCipher("max");
-  expect(raw).toMatch(/loadstring or load/);
+  expect(raw).toContain("getgenv");
+  expect(raw).toContain('_0pc(getfenv,0)');
+  expect(raw).toContain('_0pc(_0ls,"return _G")');
+  expect(raw).toContain("Quantum Error: global library unavailable: ");
   expect(raw).not.toMatch(/[^r]loadstring\(/);
 });
