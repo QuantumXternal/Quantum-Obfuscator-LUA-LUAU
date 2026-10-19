@@ -124,6 +124,41 @@ print("final", n)
   expect(r.stdout).toBe("read\t5\nfinal\t6\n");
 });
 
+t("lifted factories are string-encoded (and MBA) like the main body", () => {
+  const warnings = [];
+  const code =
+    HARNESS +
+    `
+local cfg = { label = "hud" }
+local function paint()
+  local weight = 2 + 3
+  print("frame-paint", cfg.label, "secret-token", weight)
+end
+rs.RenderStepped:Connect(paint)
+
+cfg.label = "changed"
+for _, fn in ipairs(calls) do fn() end
+`;
+  const out = runObfuscatePipeline(code, {
+    ...BASE,
+    encodeStrings: true,
+    mba: true,
+    onWarning: (m) => warnings.push(m),
+  });
+  const marker = out.indexOf("--[[\n__________");
+  expect(marker).toBeGreaterThan(0);
+  const prefix = out.slice(0, marker);
+  expect(prefix).toMatch(/__qmr_/);
+  // Callback literals must not survive in the plaintext prefix.
+  expect(prefix).not.toContain("secret-token");
+  expect(prefix).not.toContain("frame-paint");
+  expect(prefix).not.toContain('"hud"');
+  expect(warnings).toEqual([]);
+  const r = runLuau(out);
+  expect(r.stderr).toBe("");
+  expect(r.stdout).toBe("frame-paint\tchanged\tsecret-token\t5\n");
+});
+
 t("unresolved global callback is left alone with a warning", () => {
   const warnings = [];
   const code = HARNESS + "\nrs.RenderStepped:Connect(print)\n";

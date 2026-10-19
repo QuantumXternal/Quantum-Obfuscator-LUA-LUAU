@@ -1856,6 +1856,12 @@ function buildVMRuntime(ctx: BuildCtx, assignStyle: boolean = false): string {
 
   const nTwVm = ctx.level !== "debug" ? randomName(2) : "_tw";
   L.push(`local ${nTwVm};do local _t=${n.env}["task"];if _t then ${nTwVm}=_t["wait"] end end`);
+  // Retired-instruction counter for the periodic yield heartbeat. The opcode
+  // index is a logical PC (it jumps backward in loops and starts at 1), so a
+  // position-based modulo either never fires in loops or yields on entry; a
+  // monotonic counter yields once per N executed instructions instead.
+  const nHc = ctx.level !== "debug" ? randomName(2) : "_hc";
+  L.push(`local ${nHc}=0`);
   L.push(`local ${ctx.names.csVar}=${ctx.constSalt}`);
 
   let rkThreshVar = '';
@@ -2089,7 +2095,11 @@ function buildVMRuntime(ctx: BuildCtx, assignStyle: boolean = false): string {
   }
 
   if (doMut) {
-    L.push(`if ${n.ip}%${60000 + Math.floor(rng() * 40001)}<4 and ${nTwVm} then ${nTwVm}() end`);
+    // Yield periodically by retired instruction count, not by opcode index.
+    // pcall keeps the VM alive in non-yieldable threads (RenderStepped
+    // callbacks, engine metamethods), where task.wait raises
+    // "thread is not yieldable"; in yieldable threads pcall still yields.
+    L.push(`${nHc}=${nHc}+1;if ${nHc}>=${60000 + Math.floor(rng() * 40001)} then ${nHc}=0;if ${nTwVm} then ${n.bPcall}(${nTwVm}) end end`);
   }
 
   if (doMut && process.env.NO_SEC !== '1') {
@@ -3545,7 +3555,7 @@ function wrapCustomCipher(source: string, layerOpts?: CipherLayerOpts): string {
   cfStates.push({ id: ST_DECODE, nextId: ST_RLE, lines: [
     `${nDec}={};${nCnt}=0`,
     `for _i=1,#${nDt},4 do`,
-    `if _i%${30000 + Math.floor(rng() * 20001)}==1 and ${nTw} then ${nTw}() end`,
+    `if _i%${30000 + Math.floor(rng() * 20001)}==0 and ${nTw} then ${nCPcall}(${nTw}) end`,
     `local _p1,_p2,_p3,_p4=${nBy}(${nDt},_i,_i+3)`,
     `local a,b,c,d=${nLUT}[_p1],${nLUT}[_p2],${nLUT}[_p3],${nLUT}[_p4]`,
     `${nCnt}=${nCnt}+1;${nDec}[${nCnt}]=${nBxor}(${nIv}[${nBor}(${nLsh}(a,2),${nRsh}(b,4))+1],${nBand}(${cSeed}+(${nCnt}-1)*${cStep},0xFF))`,
@@ -3570,7 +3580,7 @@ function wrapCustomCipher(source: string, layerOpts?: CipherLayerOpts): string {
     `${nOut}={};local _oc=0;local _ln=#${nRle};for _i=1,_ln,${BATCH} do _oc=_oc+1;local _e=_i+${BATCH-1};if _e>_ln then _e=_ln end;${nOut}[_oc]=${nCh}(${nTU}(${nRle},_i,_e)) end`,
     `else`,
     `local _lz={};local _lp=1;local _lc=0;local _rn=#${nRle}`,
-    `while _lp<=_rn do if _lp%${35000 + Math.floor(rng() * 30001)}==1 and ${nTw} then ${nTw}() end;local _ct=${nRle}[_lp];_lp=_lp+1;if _ct<128 then local _n=_ct+1;for _i=1,_n do _lc=_lc+1;_lz[_lc]=${nRle}[_lp];_lp=_lp+1 end elseif _ct<192 then local _ll=_ct-124;local _lo=${nRle}[_lp]+1;_lp=_lp+1;local _ls=_lc;for _j=1,_ll do _lc=_lc+1;_lz[_lc]=_lz[_ls-_lo+_j] end else local _ll=_ct-188;local _lo=${nRle}[_lp]*256+${nRle}[_lp+1];_lp=_lp+2;local _ls=_lc;for _j=1,_ll do _lc=_lc+1;_lz[_lc]=_lz[_ls-_lo+_j] end end end`,
+    `while _lp<=_rn do if _lp%${35000 + Math.floor(rng() * 30001)}==0 and ${nTw} then ${nCPcall}(${nTw}) end;local _ct=${nRle}[_lp];_lp=_lp+1;if _ct<128 then local _n=_ct+1;for _i=1,_n do _lc=_lc+1;_lz[_lc]=${nRle}[_lp];_lp=_lp+1 end elseif _ct<192 then local _ll=_ct-124;local _lo=${nRle}[_lp]+1;_lp=_lp+1;local _ls=_lc;for _j=1,_ll do _lc=_lc+1;_lz[_lc]=_lz[_ls-_lo+_j] end else local _ll=_ct-188;local _lo=${nRle}[_lp]*256+${nRle}[_lp+1];_lp=_lp+2;local _ls=_lc;for _j=1,_ll do _lc=_lc+1;_lz[_lc]=_lz[_ls-_lo+_j] end end end`,
     `${nTmpChk}=0;for _i=1,_lc do ${nTmpChk}=(${nTmpChk}+_lz[_i])%${tamperPrime} end`,
     `${nOut}={};local _oc=0;for _i=1,_lc,${BATCH} do _oc=_oc+1;local _e=_i+${BATCH-1};if _e>_lc then _e=_lc end;${nOut}[_oc]=${nCh}(${nTU}(_lz,_i,_e)) end`,
     `end`,

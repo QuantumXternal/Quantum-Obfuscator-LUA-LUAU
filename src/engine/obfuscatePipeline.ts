@@ -185,6 +185,29 @@ export function runObfuscatePipeline(code: string, opts: PipelineOptions): strin
     autoMangled = bypass.mangled;
   }
 
+  // Phase 3.3(b): obfuscate the auto-bypassed frame factories with the same
+  // string-encoding and MBA passes as the main body. The extracted @no-vm
+  // prefix is excluded: it already went through these passes before
+  // extraction, so re-applying would double-transform it. Control-flow
+  // scrambling is deliberately skipped here — these factories run every
+  // frame and a CFF state machine would reintroduce per-frame overhead.
+  if (autoPrefixStatements.length > 0) {
+    if (opts.encodeStrings) {
+      const autoChunk: Chunk = { type: "Chunk", loc: ast.loc, body: autoPrefixStatements };
+      autoPrefixStatements = encodeStrings(
+        autoChunk,
+        opts.seed !== undefined ? { enabled: true, seed: opts.seed } : { enabled: true },
+      ).body as Statement[];
+    }
+    if (opts.mba) {
+      const autoChunk: Chunk = { type: "Chunk", loc: ast.loc, body: autoPrefixStatements };
+      autoPrefixStatements = applyMBA(
+        autoChunk,
+        { enabled: true, seed: typeof opts.seed === "number" ? opts.seed : 0 },
+      ).body as Statement[];
+    }
+  }
+
   if (opts.encodeStrings) {
     ast = encodeStrings(ast, opts.seed !== undefined ? { enabled: true, seed: opts.seed } : { enabled: true });
   }
