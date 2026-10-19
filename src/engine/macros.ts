@@ -68,7 +68,7 @@ export function scanMacroDirectives(code: string): MacroDirectives {
 
 export type Mangler = (sourceName: string, index: number) => string;
 
-export function makeSeedMangler(seed: number | string): Mangler {
+export function makeSeedMangler(seed: number | string, prefix: string = "qmv"): Mangler {
   let h = 0;
   if (typeof seed === "number") {
     h = seed | 0;
@@ -76,7 +76,7 @@ export function makeSeedMangler(seed: number | string): Mangler {
     for (let i = 0; i < seed.length; i++) h = (h * 31 + seed.charCodeAt(i)) | 0;
   }
   const base = (Math.abs(h) >>> 0).toString(36);
-  return (_source, index) => `__qmv_${base}_${index.toString(36)}`;
+  return (_source, index) => `__${prefix}_${base}_${index.toString(36)}`;
 }
 
 export interface ExtractedFunction {
@@ -114,14 +114,14 @@ function forEachChild(node: AnyNode, cb: (child: AnyNode) => void): void {
   }
 }
 
-function isShadowed(name: string, scopes: Set<string>[]): boolean {
+export function isShadowed(name: string, scopes: Set<string>[]): boolean {
   for (const s of scopes) if (s.has(name)) return true;
   return false;
 }
 
 type IdHandler = (id: Identifier, scopes: Set<string>[]) => void;
 
-function paramNames(params: Param[]): Set<string> {
+export function paramNames(params: Param[]): Set<string> {
   const s = new Set<string>();
   for (const p of params) s.add(p.name);
   return s;
@@ -220,7 +220,7 @@ function walkExpression(expr: Expression, scopes: Set<string>[], onId: IdHandler
   walkStatement(expr as unknown as Statement, scopes, onId);
 }
 
-function freeVariables(fn: FunctionExpression): Set<string> {
+export function freeVariables(fn: FunctionExpression): Set<string> {
   const free = new Set<string>();
   walkBlock(fn.body, [paramNames(fn.params)], (id, scopes) => {
     if (!isShadowed(id.name, scopes)) free.add(id.name);

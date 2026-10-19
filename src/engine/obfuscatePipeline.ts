@@ -14,6 +14,7 @@ import type { VMGenLevel } from "../vm/vm-gen.js";
 import { generateRegVM } from "../vm/reg-vm-gen.js";
 import type { RegVMLevel } from "../vm/reg-vm-gen.js";
 import { extractNoVmFunctions, makeSeedMangler, rootCopyLua, scanMacroDirectives } from "./macros.js";
+import { autoBypassRenderStepped } from "./render-bypass.js";
 import type { Chunk, Statement } from "../ast/types.js";
 
 export type PipelineVmType = "none" | "stack" | "register";
@@ -147,14 +148,6 @@ export function runObfuscatePipeline(code: string, opts: PipelineOptions): strin
   }
   let ast = parsed.ast;
 
-  if (opts.encodeStrings) {
-    ast = encodeStrings(ast, opts.seed !== undefined ? { enabled: true, seed: opts.seed } : { enabled: true });
-  }
-
-  if (opts.scramble) {
-    ast = scrambleControlFlow(ast, opts.seed !== undefined ? { enabled: true, seed: opts.seed } : { enabled: true });
-  }
-
   // Phase 3.2: macro directives. --@quantum:no-vm records the function named
   // on the following line; --@quantum:light-vm / --@quantum:secure select the
   // VM family for the whole file (secure wins ties). Directives are
@@ -163,12 +156,6 @@ export function runObfuscatePipeline(code: string, opts: PipelineOptions): strin
   const noVmFunctions = new Set<string>(opts.noVmFunctions ?? []);
   for (const n of directives.noVmFunctions) noVmFunctions.add(n);
   opts.noVmFunctions = [...noVmFunctions];
-
-  // Phase 4.1: optional MBA constant encoding.
-  let workingAst = ast;
-  if (opts.mba) {
-    workingAst = applyMBA(workingAst, { enabled: true, seed: typeof opts.seed === "number" ? opts.seed : 0 });
-  }
 
   // Phase 3.1: resolve performance tier to vmType/vmLevel.
   if (opts.performanceTier) {
@@ -182,6 +169,36 @@ export function runObfuscatePipeline(code: string, opts: PipelineOptions): strin
   const executorGlobals = opts.executorGlobals ?? opts.vmLevel !== "debug";
   const polySeed = opts.polymorphicSeed ?? opts.seed ?? Date.now();
 
+  // Phase 3.3: RenderStepped auto-bypass. Detect hot-frame connections and
+  // lift their callbacks into plain top-level factories before string
+  // encoding / control-flow scrambling, so the frame path never enters the
+  // VM. Stable captures are copied by value; captures reassigned elsewhere
+  // are read through injected getter closures; callbacks that write a
+  // captured local stay in the VM (a value/getter capture cannot propagate
+  // the write back to the original variable).
+  let autoPrefixStatements: Statement[] = [];
+  let autoMangled: string[] = [];
+  if (opts.vmType !== "none") {
+    const bypass = autoBypassRenderStepped(ast, makeSeedMangler(polySeed, "qmr"), opts.onWarning);
+    ast = bypass.ast;
+    autoPrefixStatements = bypass.prefixStatements;
+    autoMangled = bypass.mangled;
+  }
+
+  if (opts.encodeStrings) {
+    ast = encodeStrings(ast, opts.seed !== undefined ? { enabled: true, seed: opts.seed } : { enabled: true });
+  }
+
+  if (opts.scramble) {
+    ast = scrambleControlFlow(ast, opts.seed !== undefined ? { enabled: true, seed: opts.seed } : { enabled: true });
+  }
+
+  // Phase 4.1: optional MBA constant encoding.
+  let workingAst = ast;
+  if (opts.mba) {
+    workingAst = applyMBA(workingAst, { enabled: true, seed: typeof opts.seed === "number" ? opts.seed : 0 });
+  }
+
   // Phase 3.2(b): extract --@quantum:no-vm functions from the AST before
   // obfuscation. They are AST-obfuscated independently and hoisted as a plain
   // prefix (plus a root mirror) ahead of the VM artifact.
@@ -193,6 +210,8 @@ export function runObfuscatePipeline(code: string, opts: PipelineOptions): strin
     prefixStatements = extraction.prefixStatements;
     extractedMangled = extraction.extracted.map((e) => e.mangled);
   }
+  prefixStatements = [...autoPrefixStatements, ...prefixStatements];
+  extractedMangled = [...autoMangled, ...extractedMangled];
 
   const obfuscated = obfuscate(workingAst, {
     renameLocals: opts.renameLocals,
@@ -206,7 +225,10 @@ export function runObfuscatePipeline(code: string, opts: PipelineOptions): strin
       renameLocals: opts.renameLocals,
       preserveGlobals: opts.preserveGlobals,
     });
-    macroPrefix = (opts.oneLine ? printChunkOneLine(obfuscatedPrefix) : printChunk(obfuscatedPrefix));
+    // Prefixes can contain whole lifted frame callbacks; print them
+    // multiline even in oneLine mode so executor line-length limits are not
+    // exceeded by a single synthetic factory statement.
+    macroPrefix = printChunk(obfuscatedPrefix);
     macroPrefix += "\n" + rootCopyLua(extractedMangled) + "\n";
   }
 

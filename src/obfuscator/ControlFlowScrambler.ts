@@ -261,6 +261,10 @@ function transformStatement(
       const stVar = `_st${seed.value}`;
       const transformedBody = stmt.body || [];
       for (let i = 0; i < transformedBody.length; i++) transformedBody[i] = transformStatement(transformedBody[i]!, seed);
+      // Lua requires `return` (and loop-control) to be the last statement in
+      // a block, so a trailing return cannot be followed by `_st = 1`.
+      const tail = transformedBody[transformedBody.length - 1] as { type?: string } | undefined;
+      const canFallThrough = !tail || (tail.type !== "ReturnStatement" && tail.type !== "BreakStatement" && tail.type !== "ContinueStatement");
       (stmt as any).body = [
         { type: "LocalStatement", vars: [{ name: stVar }], values: [{ type: "NumberLiteral", value: 0, loc: stmt.loc } as any], loc: stmt.loc } as any,
         {
@@ -270,7 +274,12 @@ function transformStatement(
             {
               type: "IfStatement",
               condition: { type: "BinaryExpression", operator: "==", left: { type: "Identifier", name: stVar, loc: stmt.loc } as any, right: { type: "NumberLiteral", value: 0, loc: stmt.loc } as any, loc: stmt.loc } as any,
-              thenBody: [...transformedBody, { type: "AssignmentStatement", vars: [{ name: stVar }], values: [{ type: "NumberLiteral", value: 1, loc: stmt.loc } as any], loc: stmt.loc } as any],
+              thenBody: [
+                ...transformedBody,
+                ...(canFallThrough
+                  ? [{ type: "AssignmentStatement", vars: [{ type: "Identifier", name: stVar, loc: stmt.loc } as any], values: [{ type: "NumberLiteral", value: 1, loc: stmt.loc } as any], loc: stmt.loc } as any]
+                  : []),
+              ],
               elseifClauses: [{ condition: { type: "BinaryExpression", operator: "==", left: { type: "Identifier", name: stVar, loc: stmt.loc } as any, right: { type: "NumberLiteral", value: 1, loc: stmt.loc } as any, loc: stmt.loc } as any, body: [{ type: "BreakStatement", loc: stmt.loc } as any] }],
               elseBody: [{ type: "BreakStatement", loc: stmt.loc } as any],
               loc: stmt.loc,
