@@ -1849,6 +1849,7 @@ function buildVMRuntime(ctx: BuildCtx, assignStyle: boolean = false): string {
 
   const nTwVm = ctx.level !== "debug" ? randomName(2) : "_tw";
   L.push(`local ${nTwVm};do local _t=${n.env}["task"];if _t then ${nTwVm}=_t["wait"] end end`);
+  L.push(`local ${ctx.names.csVar}=${ctx.constSalt}`);
 
   let rkThreshVar = '';
   let rkSubVar = '';
@@ -1891,7 +1892,7 @@ function buildVMRuntime(ctx: BuildCtx, assignStyle: boolean = false): string {
   // (see hot-loop benchmark in the 1.1 report).
   if (rkThreshVar) {
     const rkEsc = n.RK.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const rkRe = new RegExp(rkEsc + '\\(([A-Z])\\)', 'g');
+    const rkRe = new RegExp(rkEsc + '\\(([A-Za-z_][A-Za-z0-9_]*)\\)', 'g');
     for (const [sOp, body] of bodies) {
       void sOp;
       const inlined = body.replace(rkRe, (_m, v) =>
@@ -2021,7 +2022,6 @@ function buildVMRuntime(ctx: BuildCtx, assignStyle: boolean = false): string {
   const preWhileIdx = L.length;
   L.push(`local _kr=0`);
   L.push(`local _rotKey=${Math.floor(rng() * 65536)}`);
-  L.push(`local ${ctx.names.csVar}=${ctx.constSalt}`);
   L.push(`local _skk=0`);
   L.push(`local _sip=0`);
   L.push(`local _ssync=0`);
