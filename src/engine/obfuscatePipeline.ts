@@ -13,10 +13,21 @@ import { generateVM } from "../vm/vm-gen.js";
 import type { VMGenLevel } from "../vm/vm-gen.js";
 import { generateRegVM } from "../vm/reg-vm-gen.js";
 import type { RegVMLevel } from "../vm/reg-vm-gen.js";
+import { extractNoVmFunctions, makeSeedMangler, rootCopyLua, scanMacroDirectives } from "./macros.js";
+import type { Chunk, Statement } from "../ast/types.js";
 
 export type PipelineVmType = "none" | "stack" | "register";
 export type PipelineVmLevel = "debug" | "normal" | "max";
 export type PerformanceTier = "turbo" | "balanced" | "maximum";
+
+/** --@quantum:secure force-feature bundle ("Intense VM Structure"). */
+const SECURE_FORCE_FEATURES = [
+  "vmNesting",
+  "controlFlowFlattening",
+  "deadCodeInjection",
+  "handlerNoise",
+  "fakeHandlers",
+] as const;
 
 export interface PipelineOptions {
   renameLocals: boolean;
@@ -64,6 +75,10 @@ export interface PipelineOptions {
   onBytecode?: (info: { instructions: number; constants: number; protos: number; maxRegs: number }) => void;
   /** Phase 3.2: function names to exclude from VM virtualization (macro). */
   noVmFunctions?: string[];
+  /** Phase 3.2(b): register-VM feature gates forced ON (e.g. secure directive). */
+  forceFeatures?: string[];
+  /** Phase 3.2(b): advisory sink for macro decisions (vetoes, fallbacks). */
+  onWarning?: (message: string) => void;
 }
 
 export class PipelineLexError extends Error {
@@ -140,17 +155,13 @@ export function runObfuscatePipeline(code: string, opts: PipelineOptions): strin
     ast = scrambleControlFlow(ast, opts.seed !== undefined ? { enabled: true, seed: opts.seed } : { enabled: true });
   }
 
-  // Phase 3.2: macro directive --@quantum:no-vm. Pre-scan raw source for the
-  // directive immediately preceding a function declaration; record the
-  // function name so it can be excluded from virtualization.
+  // Phase 3.2: macro directives. --@quantum:no-vm records the function named
+  // on the following line; --@quantum:light-vm / --@quantum:secure select the
+  // VM family for the whole file (secure wins ties). Directives are
+  // authoritative and override performanceTier/vmType/vmLevel.
+  const directives = scanMacroDirectives(code);
   const noVmFunctions = new Set<string>(opts.noVmFunctions ?? []);
-  const lines = code.split(/\r?\n/);
-  for (let i = 0; i < lines.length - 1; i++) {
-    if (/--@\s*quantum\s*:\s*no-vm/i.test(lines[i])) {
-      const m = lines[i + 1].match(/(?:local\s+)?function\s+([A-Za-z_]\w*)/);
-      if (m) noVmFunctions.add(m[1]);
-    }
-  }
+  for (const n of directives.noVmFunctions) noVmFunctions.add(n);
   opts.noVmFunctions = [...noVmFunctions];
 
   // Phase 4.1: optional MBA constant encoding.
@@ -158,10 +169,6 @@ export function runObfuscatePipeline(code: string, opts: PipelineOptions): strin
   if (opts.mba) {
     workingAst = applyMBA(workingAst, { enabled: true, seed: typeof opts.seed === "number" ? opts.seed : 0 });
   }
-  const obfuscated = obfuscate(workingAst, {
-    renameLocals: opts.renameLocals,
-    preserveGlobals: opts.preserveGlobals,
-  });
 
   // Phase 3.1: resolve performance tier to vmType/vmLevel.
   if (opts.performanceTier) {
@@ -169,8 +176,39 @@ export function runObfuscatePipeline(code: string, opts: PipelineOptions): strin
     else if (opts.performanceTier === "balanced") { opts.vmType = "stack"; opts.vmLevel = "normal"; }
     else { opts.vmType = "register"; opts.vmLevel = "max"; }
   }
+  if (directives.fileDirective === "secure") { opts.vmType = "register"; opts.vmLevel = "max"; }
+  else if (directives.fileDirective === "light-vm") { opts.vmType = "stack"; opts.vmLevel = "normal"; }
+
   const executorGlobals = opts.executorGlobals ?? opts.vmLevel !== "debug";
   const polySeed = opts.polymorphicSeed ?? opts.seed ?? Date.now();
+
+  // Phase 3.2(b): extract --@quantum:no-vm functions from the AST before
+  // obfuscation. They are AST-obfuscated independently and hoisted as a plain
+  // prefix (plus a root mirror) ahead of the VM artifact.
+  let extractedMangled: string[] = [];
+  let prefixStatements: Statement[] = [];
+  if (opts.vmType !== "none" && noVmFunctions.size > 0) {
+    const extraction = extractNoVmFunctions(workingAst, noVmFunctions, makeSeedMangler(polySeed), opts.onWarning);
+    workingAst = extraction.ast;
+    prefixStatements = extraction.prefixStatements;
+    extractedMangled = extraction.extracted.map((e) => e.mangled);
+  }
+
+  const obfuscated = obfuscate(workingAst, {
+    renameLocals: opts.renameLocals,
+    preserveGlobals: opts.preserveGlobals,
+  });
+
+  let macroPrefix = "";
+  if (prefixStatements.length > 0) {
+    const prefixChunk: Chunk = { type: "Chunk", loc: ast.loc, body: prefixStatements };
+    const obfuscatedPrefix = obfuscate(prefixChunk, {
+      renameLocals: opts.renameLocals,
+      preserveGlobals: opts.preserveGlobals,
+    });
+    macroPrefix = (opts.oneLine ? printChunkOneLine(obfuscatedPrefix) : printChunk(obfuscatedPrefix));
+    macroPrefix += "\n" + rootCopyLua(extractedMangled) + "\n";
+  }
 
   if (opts.vmType === "stack") {
     const chunk = compile(obfuscated);
@@ -180,7 +218,7 @@ export function runObfuscatePipeline(code: string, opts: PipelineOptions): strin
       protos: chunk.protos?.length ?? 0,
       maxRegs: 0,
     });
-    return generateVM(chunk, {
+    return macroPrefix + generateVM(chunk, {
       level: opts.vmLevel as VMGenLevel,
       executorGlobals,
       noCompression: opts.noCompression,
@@ -220,16 +258,21 @@ export function runObfuscatePipeline(code: string, opts: PipelineOptions): strin
     if (opts.vmLevel === "debug" && !disableFeatures.includes("controlFlowFlattening")) {
       disableFeatures.push("controlFlowFlattening");
     }
-    return generateRegVM(chunk, {
+    const forceFeatures = [...(opts.forceFeatures ?? [])];
+    if (directives.fileDirective === "secure") {
+      for (const f of SECURE_FORCE_FEATURES) if (!forceFeatures.includes(f)) forceFeatures.push(f);
+    }
+    return macroPrefix + generateRegVM(chunk, {
       level: opts.vmLevel as RegVMLevel,
       executorGlobals,
       polymorphicSeed: polySeed,
       rkOffset: finalRkOffset,
       disableFeatures: disableFeatures as any[],
+      ...(forceFeatures.length > 0 ? { forceFeatures: forceFeatures as any[] } : {}),
       ...(opts.debugTrace !== undefined ? { debugTrace: opts.debugTrace } : {}),
       ...(opts.target !== undefined ? { target: opts.target } : {}),
     });
   }
 
-  return opts.oneLine ? printChunkOneLine(obfuscated) : printChunk(obfuscated);
+  return macroPrefix + (opts.oneLine ? printChunkOneLine(obfuscated) : printChunk(obfuscated));
 }
