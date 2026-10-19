@@ -105,6 +105,8 @@ interface BuildCtx {
   rotStep: number;
   rotStep2: number;
   usedOps?: Set<number>;
+  /** Belt-and-braces: disable the RK `and/or` inline if a proto K ever holds false. */
+  hasFalsyConstants?: boolean;
   argPerm: number[][];
   /**
    * Phase 1.2(d): per-op leading salt-word count for normal packed units
@@ -227,7 +229,7 @@ function resetNames(): void { _nameCounter = 0; }
 function randomName(len: number = 6): string {
 
   const pool1 = "abcdefghijklmnopqrstuvwxyzDEFGHIJKLMNOPQRSTUVWXYZ";
-  const pool2 = "_abcdefghijklmnopqrstuvwxyz";
+  const pool2 = "abcdefghijklmnopqrstuvwxyz";
 
   const id = _nameCounter++;
 
@@ -243,8 +245,8 @@ function randomName(len: number = 6): string {
     return c1 + c2;
   }
 
-  let name = "_";
-  for (let i = 0; i < Math.min(len, 2); i++) {
+  let name = "";
+  for (let i = 0; i < Math.max(len, 3); i++) {
     name += pool1[Math.floor(rng() * pool1.length)];
   }
   return name;
@@ -880,7 +882,7 @@ registerHandler(RegOp.MUL, (n) => `${n.R}[A+1]=${n.RK}(B)*${n.RK}(C)`);
 registerHandler(RegOp.DIV, (n) => `${n.R}[A+1]=${n.RK}(B)/${n.RK}(C)`);
 registerHandler(RegOp.MOD, (n) => `${n.R}[A+1]=${n.RK}(B)%${n.RK}(C)`);
 registerHandler(RegOp.POW, (n) => `${n.R}[A+1]=${n.RK}(B)^${n.RK}(C)`);
-registerHandler(RegOp.IDIV, (n) => `${n.R}[A+1]=${n.bMfloor}(${n.RK}(B)/${n.RK}(C))`);
+registerHandler(RegOp.IDIV, (n) => `${n.R}[A+1]=${n.RK}(B)//${n.RK}(C)`);
 
 registerHandler(RegOp.UNM, (n) => `${n.R}[A+1]=-${n.R}[B+1]`);
 registerHandler(RegOp.NOT, (n) => `${n.R}[A+1]=not ${n.R}[B+1]`);
@@ -888,7 +890,7 @@ registerHandler(RegOp.LEN, (n) => `${n.R}[A+1]=#${n.R}[B+1]`);
 
 registerHandler(RegOp.CONCAT, (n) =>
   `do if C-B<=1 then ${n.R}[A+1]=${n.R}[B+1]..${n.R}[C+1] ` +
-  `else local _t={};for _i=B,C do _t[#_t+1]=${n.R}[_i+1] end;${n.R}[A+1]=${n.bTconcat}(_t) end end`);
+  `else local _s=${n.R}[C+1];for _i=C-1,B,-1 do _s=${n.R}[_i+1].._s end;${n.R}[A+1]=_s end end`);
 
 registerHandler(RegOp.JMP, (n) =>
   `${n.kk}=${n.kk}+(B-${n.jbias});${n.ip}=${n.poff}[${n.kk}] or (#${n.code}+1)`);
@@ -911,26 +913,26 @@ registerHandler(RegOp.TESTSET, (n) =>
 registerHandler(RegOp.CALL, (n) => {
 
   const storeR = () =>
-    `if C==0 then for _i=1,r.n do ${n.R}[A+_i]=r[_i] end;${n.top}=A+r.n ` +
-    `else for _i=1,C-1 do ${n.R}[A+_i]=r[_i] end end`;
-  return `do local f=${n.R}[A+1];local r;` +
-    `if B==1 then r=${n.tPack}(f()) ` +
-    `elseif B==2 then r=${n.tPack}(f(${n.R}[A+2])) ` +
-    `elseif B==3 then r=${n.tPack}(f(${n.R}[A+2],${n.R}[A+3])) ` +
-    `elseif B==0 then r=${n.tPack}(f(${n.tUnpack}(${n.R},A+2,${n.top}))) ` +
-    `else r=${n.tPack}(f(${n.tUnpack}(${n.R},A+2,A+B))) end;` +
+    `if C==0 then for _i=1,_pk.n do ${n.R}[A+_i]=_pk[_i] end;${n.top}=A+_pk.n ` +
+    `else for _i=1,C-1 do ${n.R}[A+_i]=_pk[_i] end end`;
+  return `do local _fn=${n.R}[A+1];local _pk;` +
+    `if B==1 then _pk=${n.tPack}(_fn()) ` +
+    `elseif B==2 then _pk=${n.tPack}(_fn(${n.R}[A+2])) ` +
+    `elseif B==3 then _pk=${n.tPack}(_fn(${n.R}[A+2],${n.R}[A+3])) ` +
+    `elseif B==0 then _pk=${n.tPack}(_fn(${n.tUnpack}(${n.R},A+2,${n.top}))) ` +
+    `else _pk=${n.tPack}(_fn(${n.tUnpack}(${n.R},A+2,A+B))) end;` +
     `${storeR()} end`;
 });
 
 registerHandler(RegOp.TAILCALL, (n) =>
   // v2 closure dispatch: run-level returns are packed (tPack) so the
   // dispatcher can propagate them via unpack; bare form returns {n=0}.
-  `do local f=${n.R}[A+1];` +
-  `if B==1 then return ${n.tPack}(f()) ` +
-  `elseif B==2 then return ${n.tPack}(f(${n.R}[A+2])) ` +
-  `elseif B==3 then return ${n.tPack}(f(${n.R}[A+2],${n.R}[A+3])) ` +
-  `elseif B==0 then return ${n.tPack}(f(${n.tUnpack}(${n.R},A+2,${n.top}))) ` +
-  `else return ${n.tPack}(f(${n.tUnpack}(${n.R},A+2,A+B))) end end`);
+  `do local _fn=${n.R}[A+1];` +
+  `if B==1 then return ${n.tPack}(_fn()) ` +
+  `elseif B==2 then return ${n.tPack}(_fn(${n.R}[A+2])) ` +
+  `elseif B==3 then return ${n.tPack}(_fn(${n.R}[A+2],${n.R}[A+3])) ` +
+  `elseif B==0 then return ${n.tPack}(_fn(${n.tUnpack}(${n.R},A+2,${n.top}))) ` +
+  `else return ${n.tPack}(_fn(${n.tUnpack}(${n.R},A+2,A+B))) end end`);
 
 registerHandler(RegOp.RETURN, (n) =>
   `do if B==0 then return ${n.tPack}(${n.tUnpack}(${n.R},A+1,${n.top})) ` +
@@ -946,9 +948,9 @@ registerHandler(RegOp.FORLOOP, (n) =>
   `else if idx>=lim then ${n.kk}=${n.kk}+(B-${n.jbias});${n.ip}=${n.poff}[${n.kk}] or (#${n.code}+1);${n.R}[A+4]=idx end end end`);
 
 registerHandler(RegOp.TFORLOOP, (n) =>
-  `do local f=${n.R}[A+1];local s=${n.R}[A+2];local v=${n.R}[A+3];` +
-  `local r={f(s,v)};for _i=1,C do ${n.R}[A+3+_i]=r[_i] end;` +
-  `if r[1]~=nil then ${n.R}[A+3]=r[1];${n.kk}=${n.kk}+1;${n.ip}=${n.poff}[${n.kk}] or (#${n.code}+1) end end`);
+  `do local _fn=${n.R}[A+1];local _st=${n.R}[A+2];local _vl=${n.R}[A+3];` +
+  `local _pk={_fn(_st,_vl)};for _i=1,C do ${n.R}[A+3+_i]=_pk[_i] end;` +
+  `if _pk[1]~=nil then ${n.R}[A+3]=_pk[1];${n.kk}=${n.kk}+1;${n.ip}=${n.poff}[${n.kk}] or (#${n.code}+1) end end`);
 
 registerHandler(RegOp.ITERPREP, (n) =>
   `do local it=${n.R}[A+1];if ${n.bType}(it)=="table" then ` +
@@ -992,21 +994,21 @@ registerHandler(RegOp.CLOSURE, (n, ctx) => {
 });
 
 registerHandler(RegOp.PCALL, (n) =>
-  `do local f=${n.R}[A+1];local r;` +
-  `if B==1 then r=${n.tPack}(${n.bPcall}(f)) ` +
-  `elseif B==2 then r=${n.tPack}(${n.bPcall}(f,${n.R}[A+2])) ` +
-  `elseif B==3 then r=${n.tPack}(${n.bPcall}(f,${n.R}[A+2],${n.R}[A+3])) ` +
-  `else r=${n.tPack}(${n.bPcall}(f,${n.tUnpack}(${n.R},A+2,A+B))) end;` +
-  `if C==0 then for _i=1,r.n do ${n.R}[A+_i]=r[_i] end;${n.top}=A+r.n ` +
-  `else for _i=1,C-1 do ${n.R}[A+_i]=r[_i] end end end`);
+  `do local _fn=${n.R}[A+1];local _pk;` +
+  `if B==1 then _pk=${n.tPack}(${n.bPcall}(_fn)) ` +
+  `elseif B==2 then _pk=${n.tPack}(${n.bPcall}(_fn,${n.R}[A+2])) ` +
+  `elseif B==3 then _pk=${n.tPack}(${n.bPcall}(_fn,${n.R}[A+2],${n.R}[A+3])) ` +
+  `else _pk=${n.tPack}(${n.bPcall}(_fn,${n.tUnpack}(${n.R},A+2,A+B))) end;` +
+  `if C==0 then for _i=1,_pk.n do ${n.R}[A+_i]=_pk[_i] end;${n.top}=A+_pk.n ` +
+  `else for _i=1,C-1 do ${n.R}[A+_i]=_pk[_i] end end end`);
 
 registerHandler(RegOp.XPCALL, (n) =>
-  `do local f=${n.R}[A+1];local eh=${n.R}[A+2];local r;` +
-  `if B<=2 then r=${n.tPack}(${n.bXpcall}(f,eh)) ` +
-  `elseif B==3 then r=${n.tPack}(${n.bXpcall}(f,eh,${n.R}[A+3])) ` +
-  `else r=${n.tPack}(${n.bXpcall}(f,eh,${n.tUnpack}(${n.R},A+3,A+B))) end;` +
-  `if C==0 then for _i=1,r.n do ${n.R}[A+_i]=r[_i] end;${n.top}=A+r.n ` +
-  `else for _i=1,C-1 do ${n.R}[A+_i]=r[_i] end end end`);
+  `do local _fn=${n.R}[A+1];local eh=${n.R}[A+2];local _pk;` +
+  `if B<=2 then _pk=${n.tPack}(${n.bXpcall}(_fn,eh)) ` +
+  `elseif B==3 then _pk=${n.tPack}(${n.bXpcall}(_fn,eh,${n.R}[A+3])) ` +
+  `else _pk=${n.tPack}(${n.bXpcall}(_fn,eh,${n.tUnpack}(${n.R},A+3,A+B))) end;` +
+  `if C==0 then for _i=1,_pk.n do ${n.R}[A+_i]=_pk[_i] end;${n.top}=A+_pk.n ` +
+  `else for _i=1,C-1 do ${n.R}[A+_i]=_pk[_i] end end end`);
 
 registerHandler(RegOp.FUSED_TEST_JMP, (n) => {
   const v = Math.floor(rng() * 3);
@@ -1059,7 +1061,7 @@ registerHandler(RegOp.FUSED_GGET, (n, ctx) => {
   if (v === 0)
     return `do local _A2=${n.code}[${n.ip}-3];local _C2=${n.code}[${n.ip}-1];local _g=${n.env}[${kacc}];${nilG}${n.R}[A+1]=_g;${n.R}[_A2+1]=_g[${n.RK}(_C2)] end`;
   if (v === 1)
-    return `do local _A2=${n.code}[${n.ip}-3];local _C2=${n.code}[${n.ip}-1];local _g=${n.env}[${kacc}];${nilG}${n.R}[A+1]=_g;${n.R}[_A2+1]=_g[${n.RK}(_C2)];local f=${n.R}[_A2+1] end`;
+    return `do local _A2=${n.code}[${n.ip}-3];local _C2=${n.code}[${n.ip}-1];local _g=${n.env}[${kacc}];${nilG}${n.R}[A+1]=_g;${n.R}[_A2+1]=_g[${n.RK}(_C2)];local _fn=${n.R}[_A2+1] end`;
   return `do local _g=${n.env}[${kacc}];${nilG}${n.R}[A+1]=_g;local _k=${n.RK}(${n.code}[${n.ip}-1]);${n.R}[${n.code}[${n.ip}-3]+1]=_g[_k] end`;
 });
 
@@ -1082,16 +1084,16 @@ registerHandler(RegOp.FUSED_SELF_CALL, (n) => {
   const v = Math.floor(rng() * 2);
   const callBody =
     `local _B2=${n.code}[${n.ip}-2];local _C2=${n.code}[${n.ip}-1];` +
-    `local r;` +
-    `if _B2==2 then r=${n.tPack}(f(${n.R}[A+2])) ` +
-    `elseif _B2==3 then r=${n.tPack}(f(${n.R}[A+2],${n.R}[A+3])) ` +
-    `elseif _B2==0 then r=${n.tPack}(f(${n.tUnpack}(${n.R},A+2,${n.top}))) ` +
-    `else r=${n.tPack}(f(${n.tUnpack}(${n.R},A+2,A+_B2))) end;` +
-    `if _C2==0 then for _i=1,r.n do ${n.R}[A+_i]=r[_i] end;${n.top}=A+r.n ` +
-    `else for _i=1,_C2-1 do ${n.R}[A+_i]=r[_i] end end`;
+    `local _pk;` +
+    `if _B2==2 then _pk=${n.tPack}(_fn(${n.R}[A+2])) ` +
+    `elseif _B2==3 then _pk=${n.tPack}(_fn(${n.R}[A+2],${n.R}[A+3])) ` +
+    `elseif _B2==0 then _pk=${n.tPack}(_fn(${n.tUnpack}(${n.R},A+2,${n.top}))) ` +
+    `else _pk=${n.tPack}(_fn(${n.tUnpack}(${n.R},A+2,A+_B2))) end;` +
+    `if _C2==0 then for _i=1,_pk.n do ${n.R}[A+_i]=_pk[_i] end;${n.top}=A+_pk.n ` +
+    `else for _i=1,_C2-1 do ${n.R}[A+_i]=_pk[_i] end end`;
   if (v === 0)
-    return `do ${n.R}[A+2]=${n.R}[B+1];local f=${n.R}[B+1][${n.RK}(C)];${n.R}[A+1]=f;${callBody} end`;
-  return `do local _s=${n.R}[B+1];${n.R}[A+2]=_s;local f=_s[${n.RK}(C)];${n.R}[A+1]=f;${callBody} end`;
+    return `do ${n.R}[A+2]=${n.R}[B+1];local _fn=${n.R}[B+1][${n.RK}(C)];${n.R}[A+1]=_fn;${callBody} end`;
+  return `do local _s=${n.R}[B+1];${n.R}[A+2]=_s;local _fn=_s[${n.RK}(C)];${n.R}[A+1]=_fn;${callBody} end`;
 });
 
 registerHandler(RegOp.FUSED_GGET_CALL, (n) => {
@@ -1100,17 +1102,17 @@ registerHandler(RegOp.FUSED_GGET_CALL, (n) => {
   const readSlot2 = `local _A2=${n.code}[${n.ip}-7];local _C2=${n.code}[${n.ip}-5]`;
   const readSlot3 = `local _A3=${n.code}[${n.ip}-3];local _B3=${n.code}[${n.ip}-2];local _C3=${n.code}[${n.ip}-1]`;
   const gget = v === 0
-    ? `local _g=${n.env}[${n.K}[B+1]];${n.R}[A+1]=_g;local f=_g[${n.RK}(_C2)];${n.R}[_A2+1]=f`
-    : `local _g=${n.env}[${n.K}[B+1]];${n.R}[A+1]=_g;${n.R}[_A2+1]=_g[${n.RK}(_C2)];local f=${n.R}[_A2+1]`;
+    ? `local _g=${n.env}[${n.K}[B+1]];${n.R}[A+1]=_g;local _fn=_g[${n.RK}(_C2)];${n.R}[_A2+1]=_fn`
+    : `local _g=${n.env}[${n.K}[B+1]];${n.R}[A+1]=_g;${n.R}[_A2+1]=_g[${n.RK}(_C2)];local _fn=${n.R}[_A2+1]`;
   const callBody =
-    `local r;` +
-    `if _B3==1 then r=${n.tPack}(f()) ` +
-    `elseif _B3==2 then r=${n.tPack}(f(${n.R}[_A3+2])) ` +
-    `elseif _B3==3 then r=${n.tPack}(f(${n.R}[_A3+2],${n.R}[_A3+3])) ` +
-    `elseif _B3==0 then r=${n.tPack}(f(${n.tUnpack}(${n.R},_A3+2,${n.top}))) ` +
-    `else r=${n.tPack}(f(${n.tUnpack}(${n.R},_A3+2,_A3+_B3))) end;` +
-    `if _C3==0 then for _i=1,r.n do ${n.R}[_A3+_i]=r[_i] end;${n.top}=_A3+r.n ` +
-    `else for _i=1,_C3-1 do ${n.R}[_A3+_i]=r[_i] end end`;
+    `local _pk;` +
+    `if _B3==1 then _pk=${n.tPack}(_fn()) ` +
+    `elseif _B3==2 then _pk=${n.tPack}(_fn(${n.R}[_A3+2])) ` +
+    `elseif _B3==3 then _pk=${n.tPack}(_fn(${n.R}[_A3+2],${n.R}[_A3+3])) ` +
+    `elseif _B3==0 then _pk=${n.tPack}(_fn(${n.tUnpack}(${n.R},_A3+2,${n.top}))) ` +
+    `else _pk=${n.tPack}(_fn(${n.tUnpack}(${n.R},_A3+2,_A3+_B3))) end;` +
+    `if _C3==0 then for _i=1,_pk.n do ${n.R}[_A3+_i]=_pk[_i] end;${n.top}=_A3+_pk.n ` +
+    `else for _i=1,_C3-1 do ${n.R}[_A3+_i]=_pk[_i] end end`;
   return `do ${readSlot2};${readSlot3};${gget};${callBody} end`;
 });
 
@@ -1597,6 +1599,11 @@ function collectUsedOpcodes(chunk: { code: number[]; protos?: { code: number[]; 
   return used;
 }
 
+function chunkHasFalsyConstants(chunk: RegBytecodeChunk): boolean {
+  if (chunk.K.some((v) => v === false)) return true;
+  return (chunk.protos ?? []).some(chunkHasFalsyConstants);
+}
+
 function generateHandlerNoise(n: NameMap, op: number): string {
 
   const savedState = _rngState;
@@ -1890,7 +1897,7 @@ function buildVMRuntime(ctx: BuildCtx, assignStyle: boolean = false): string {
   // (table reads only) and its argument is always a plain local, so
   // duplicating evaluation is semantics-preserving. Measured, not assumed
   // (see hot-loop benchmark in the 1.1 report).
-  if (rkThreshVar) {
+  if (rkThreshVar && !ctx.hasFalsyConstants) {
     const rkEsc = n.RK.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const rkRe = new RegExp(rkEsc + '\\(([A-Za-z_][A-Za-z0-9_]*)\\)', 'g');
     for (const [sOp, body] of bodies) {
@@ -2028,9 +2035,9 @@ function buildVMRuntime(ctx: BuildCtx, assignStyle: boolean = false): string {
   L.push(`while ${n.kk}<=#${n.poff} and ${n.ip}<=#${n.code} do`);
   L.push(`_kr=_kr+1`);
   L.push(`if _kr%256==0 then _rotKey=bit32.bxor(_rotKey,_kr*31+${Math.floor(rng() * 65536)}) end`);
-  L.push(`if _kr%256==0 then local _oldEff=${ctx.names.csVar}%#${n.K}; ${ctx.names.csVar}=bit32.bxor(${ctx.names.csVar},_kr*31+${Math.floor(rng() * 65536)}); local _newEff=${ctx.names.csVar}%#${n.K}; if _oldEff~=_newEff then local _nk={}; for _ji=0,#${n.K}-1 do _nk[bit32.bxor(_ji,_newEff)+1]=${n.K}[bit32.bxor(_ji,_oldEff)+1] end; for _ji=1,#${n.K} do ${n.K}[_ji]=_nk[_ji] end end end`);
+  L.push(`if _kr%256==0 and #${n.K}>0 then local _oldEff=${ctx.names.csVar}%#${n.K}; ${ctx.names.csVar}=bit32.bxor(${ctx.names.csVar},_kr*31+${Math.floor(rng() * 65536)}); local _newEff=${ctx.names.csVar}%#${n.K}; if _oldEff~=_newEff then local _nk={}; for _ji=0,#${n.K}-1 do _nk[bit32.bxor(_ji,_newEff)+1]=${n.K}[bit32.bxor(_ji,_oldEff)+1] end; ${n.K}=_nk end end`);
   L.push(`_ssync=_ssync+1;if _ssync>=64 then _skk=${n.kk};_sip=${n.ip};_ssync=0 end`);
-  L.push(`if _kr%256==0 and (${n.kk}~=_skk or ${n.ip}~=_sip) then ${n.R}[1]=bit32.bxor((${n.R}[1] or 0),1) end`);
+  L.push(`if _kr%256==0 and (${n.kk}~=_skk or ${n.ip}~=_sip) then if ${n.bType}(${n.R}[1])=="number" then ${n.R}[1]=bit32.bxor(${n.R}[1],1) end end`);
 
   // v2 packed wire: code[ip] is a header word H = shuffledOp*16+argc, not a
   // bare opcode. Decode H, derive op=floor(H/16); s1..s3 always read (nil-
@@ -2087,19 +2094,18 @@ function buildVMRuntime(ctx: BuildCtx, assignStyle: boolean = false): string {
 
   if (doMut && process.env.NO_SEC !== '1') {
     const secInterval = 500 + Math.floor(rng() * 1500);
-    const secVar = randomName(3);
     const secCheckVariant = Math.floor(rng() * 3);
 
-    // Phase 2.2: polymorphic corruption (do not crash). On detection, subtly
-    // corrupt VM state (flip a register bit, nudge a jump target) so the
-    // script runs but yields wrong results. Probes: hook detection
-    // (debug.gethook), env scan (_G integrity via rawget), timing.
-    const corruptAction = `${n.R}[1]=bit32.bxor((${n.R}[1] or 0),1);if #${n.code}>0 then ${n.code}[${n.ip}]=bit32.bxor(${n.code}[${n.ip}],1) end`;
+    // Phase 2.2: polymorphic corruption (do not crash). Executor-safe:
+    // only probe when the host actually exposes a Roblox-like `game`, so
+    // clean Lua hosts and executor sandboxes are never flagged; corruption
+    // is type-guarded so it cannot raise from bit32 on a non-number.
+    const corruptAction = `if ${n.bType}(${n.R}[1])=="number" then ${n.R}[1]=bit32.bxor(${n.R}[1],1) end`;
 
     if (secCheckVariant === 0 || secCheckVariant === 1) {
-      L.push(`if ${n.kk}>128 and ${n.ip}%${secInterval * 4}<4 then local ${secVar}=${n.bPcall}(function() return ${n.env}["game"] end);if ${secVar} and ${n.bType}(${n.env}["game"])~="userdata" then ${corruptAction} end;if type(rawget)=="function" and rawget(${n.env},"print")~=${n.env}["print"] then ${corruptAction} end;if type(debug)=="table" and type(debug.gethook)=="function" then local ok,hh=pcall(debug.gethook) if ok and hh~=nil then ${corruptAction} end end end`);
+      L.push(`if ${n.kk}>128 and ${n.ip}%${secInterval * 4}<4 then local _ok,_g=${n.bPcall}(function() return ${n.env}["game"] end);if _ok and _g~=nil and ${n.bType}(_g)~="userdata" then ${corruptAction} end end`);
     } else {
-      L.push(`if ${n.kk}>128 and ${n.ip}%${secInterval * 4}<4 then local ${secVar},_sv=${n.bPcall}(function() return ${n.env}["game"]["Workspace"] end);if not ${secVar} then ${corruptAction} end;if type(rawget)=="function" and rawget(${n.env},"print")~=${n.env}["print"] then ${corruptAction} end;if type(debug)=="table" and type(debug.gethook)=="function" then local ok,hh=pcall(debug.gethook) if ok and hh~=nil then ${corruptAction} end end end`);
+      L.push(`if ${n.kk}>128 and ${n.ip}%${secInterval * 4}<4 then local _ok,_g=${n.bPcall}(function() return ${n.env}["game"] end);if _ok and _g~=nil then local _ok2=${n.bPcall}(function() return _g["Workspace"] end);if not _ok2 then ${corruptAction} end end end`);
     }
   }
 
@@ -3984,6 +3990,10 @@ export function generateRegVM(chunk: RegBytecodeChunk, options: RegVMGenOptions 
   }
 
   if (level !== "debug") {
+    if (chunkHasFalsyConstants(chunk)) {
+      ctx.hasFalsyConstants = true;
+      if (_tel()) console.log(`[RegVM] Falsy K constant detected: RK inlining disabled`);
+    }
     const used = collectUsedOpcodes(chunk);
 
     used.add(RegOp.NOP as number);

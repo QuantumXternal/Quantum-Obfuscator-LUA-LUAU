@@ -2725,7 +2725,7 @@ function buildHandlerTemplates(n: NameMap, doNonLinearJumps: boolean = false, pr
 
   h[47] = `function() local nr=${code}[${ip}];${ip}=${ip}+1;local base=${callBases}[${callBaseTop}];${callBaseTop}=${callBaseTop}-1;local f=${stack}[base+1];local na=${stackTop}-base-1;local args={};for i=1,na do args[i]=${stack}[base+1+i] end;${stackTop}=base;if type(f)~="function" then local mm=${getMM}(f,"__call");if mm then table.insert(args,1,f);na=na+1;f=mm else error("attempt to call a "..type(f).." value") end end;local r;if na==0 then r=table.pack(f()) else r=table.pack(f(table.unpack(args,1,na))) end;local rn=nr<0 and r.n or nr;for i=1,rn do ${push}(r[i]) end end`;
 
-  h[48] = `function() local b,a=${pop}(),${pop}();${push}(${arithMM}(a,b,function(x,y) return math.floor(x/y) end,"__idiv")) end`;
+  h[48] = `function() local b,a=${pop}(),${pop}();${push}(${arithMM}(a,b,function(x,y) return x//y end,"__idiv")) end`;
 
   h[49] = `function() local slot=${code}[${ip}];${ip}=${ip}+1;local box=${localBoxes}[slot];if box then ${locals}[slot]=box[1];${localBoxes}[slot]=nil end end`;
 
@@ -2769,13 +2769,10 @@ function buildHandlerTemplates(n: NameMap, doNonLinearJumps: boolean = false, pr
   // dispatch, exactly as unfused h[13] via generated arithMM.
   h[69] = `function() local a=${code}[${ip}];${ip}=${ip}+1;local b=${code}[${ip}];${ip}=${ip}+1;local c=${code}[${ip}];${ip}=${ip}+1;${setLocal}(c,${getLocal}(a)%${getLocal}(b)) end`;
 
-  // Stage 14: fused IDIV super-op (opcode 70). Unlike the raw-operator
-  // family, this DELEGATES to generated arithMM with the same
-  // math.floor(x/y) lambda as unfused h[48]: a raw math.floor(a/b) call
-  // could not dispatch __idiv on table operands (function call, not an
-  // operator). Numbers fast-path, pcall coercion, __idiv lookup, and the
-  // x//0 -> inf leniency are therefore identical to h[48] by construction.
-  h[70] = `function() local a=${code}[${ip}];${ip}=${ip}+1;local b=${code}[${ip}];${ip}=${ip}+1;local c=${code}[${ip}];${ip}=${ip}+1;${setLocal}(c,${arithMM}(${getLocal}(a),${getLocal}(b),function(x,y) return math.floor(x/y) end,"__idiv")) end`;
+  // Stage 14: fused IDIV super-op (opcode 70). Delegates to generated
+  // arithMM with the same native `//` lambda as unfused h[48], preserving
+  // integer/float subtype, division-by-zero errors, and __idiv dispatch.
+  h[70] = `function() local a=${code}[${ip}];${ip}=${ip}+1;local b=${code}[${ip}];${ip}=${ip}+1;local c=${code}[${ip}];${ip}=${ip}+1;${setLocal}(c,${arithMM}(${getLocal}(a),${getLocal}(b),function(x,y) return x//y end,"__idiv")) end`;
   h[71] = `function() local a=${code}[${ip}];${ip}=${ip}+1;local b=${code}[${ip}];${ip}=${ip}+1;local c=${code}[${ip}];${ip}=${ip}+1;${setLocal}(c,${getLocal}(a)^${getLocal}(b)) end`;
   h[72] = `function() local a=${code}[${ip}];${ip}=${ip}+1;local c=${code}[${ip}];${ip}=${ip}+1;${setLocal}(c,-${getLocal}(a)) end`;
   // Phase 1.2(f): decoy opcodes - plausible arity, no-op bodies.

@@ -570,7 +570,17 @@ function compileExprRK(ctx: Ctx, exp: Expression): number {
       regEmit(ctx.chunk, RegOp.LOADNIL, tmp, 0);
       return tmp;
     }
-    case "BooleanLiteral": return constRK(ctx, exp.value);
+    case "BooleanLiteral": {
+      // false must never enter K: the generator inlines constant reads as
+      // `(x>=thr and K[...] or R[x+1])`, and a falsy K entry falls through
+      // to the register branch (nil). Materialize it as a register instead.
+      if (!exp.value) {
+        const tmp = allocTemp(ctx);
+        regEmit(ctx.chunk, RegOp.LOADBOOL, tmp, 0, 0);
+        return tmp;
+      }
+      return constRK(ctx, true);
+    }
     case "NumberLiteral":  return constRK(ctx, Number(exp.value));
     case "StringLiteral":  return constRK(ctx, exp.value);
     case "Identifier": {
@@ -580,7 +590,11 @@ function compileExprRK(ctx: Ctx, exp: Expression): number {
         return tmp;
       }
       if (exp.name === "true") return constRK(ctx, true);
-      if (exp.name === "false") return constRK(ctx, false);
+      if (exp.name === "false") {
+        const tmp = allocTemp(ctx);
+        regEmit(ctx.chunk, RegOp.LOADBOOL, tmp, 0, 0);
+        return tmp;
+      }
       const reg = ctx.locals.get(exp.name);
       const _rkOff = ctx.chunk.rkOffset ?? RK_OFFSET;
       if (reg !== undefined && reg < _rkOff) return reg;
