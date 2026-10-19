@@ -162,7 +162,7 @@ function transformStatement(
       }
       clauses.push({
         condition: { type: "BooleanLiteral", value: false, loc: stmt.loc } as any,
-        body: [{ type: "ExpressionStatement", expression: { type: "CallExpression", callee: { type: "Identifier", name: "print", loc: stmt.loc } as any, args: [], loc: stmt.loc } as any, loc: stmt.loc } as any],
+        body: [{ type: "DoStatement", body: [], loc: stmt.loc } as any],
       });
       if (stmt.elseBody) {
         const elseBody = stmt.elseBody;

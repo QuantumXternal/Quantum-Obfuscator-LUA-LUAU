@@ -162,11 +162,36 @@ function transformStatement(stmt: any, rng: () => number, varName: string): any 
   return stmt;
 }
 
+function collectIdentifierNames(node: any, out: Set<string>): void {
+  if (!node || typeof node !== "object") return;
+  if (Array.isArray(node)) {
+    for (const item of node) collectIdentifierNames(item, out);
+    return;
+  }
+  if (node.type === "Identifier" && typeof node.name === "string") out.add(node.name);
+  for (const key of Object.keys(node)) {
+    if (key === "loc") continue;
+    const value = node[key];
+    if (value && typeof value === "object") collectIdentifierNames(value, out);
+  }
+}
+
+function pickMbaVarName(ast: Chunk, rng: () => number): string {
+  const usedNames = new Set<string>();
+  collectIdentifierNames(ast, usedNames);
+  if (!usedNames.has("_mba")) return "_mba";
+  let varName = "_mba";
+  do {
+    varName = "_mba_" + Math.floor(rng() * 0xFFFFFF).toString(16);
+  } while (usedNames.has(varName));
+  return varName;
+}
+
 export function applyMBA(ast: Chunk, options: MBAOptions = {}): Chunk {
   if (options.enabled === false) return ast;
   const rng = mulberry32(options.seed ?? 0);
   // Inject a seed variable declaration at the top of the chunk.
-  const varName = "_mba";
+  const varName = pickMbaVarName(ast, rng);
   const seedVal = Math.floor(rng() * 1000000);
   const seedDecl: Statement = { type: "LocalStatement", vars: [{ name: varName }], values: [{ type: "NumberLiteral", value: seedVal, loc: ast.loc } as any], loc: ast.loc } as any;
   const newBody = ast.body.map((s) => transformStatement(s, rng, varName));

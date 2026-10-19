@@ -163,11 +163,12 @@ function genRegNoCipher(level) {
   }
 }
 
-test("reg probe uses positive hook detection, not stripped-lib corruption", () => {
+test("reg anti-tamper probes game/Workspace without stripped-debug introspection", () => {
   const raw = genRegNoCipher("max");
-  expect(raw).toContain('type(debug.gethook)=="function"');
-  expect(raw).toContain("pcall(debug.gethook)");
-  expect(raw).not.toContain('type(debug.gethook)~="function"');
+  expect(raw).not.toContain("gethook");
+  expect(raw).toContain('["game"]');
+  expect(raw).toMatch(/~="userdata"|\["Workspace"\]/);
+  expect(raw).toMatch(/if [A-Za-z_][A-Za-z0-9_]*\([A-Za-z_][A-Za-z0-9_]*\[1\]\)=="number" then/);
 });
 
 test("stack artifact has no unguarded getfenv(0) calls", () => {
