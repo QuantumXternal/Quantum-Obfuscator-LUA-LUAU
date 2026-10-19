@@ -6,6 +6,7 @@ import { tmpdir as _dumpTmpdir } from "os";
 import { join as _dumpJoin } from "path";
 import { encryptAndEncode, compressToBase85, compressBytesToBase85 } from "./lzma.js";
 import { generateBootstrap } from "./bootstrap-template.js";
+import { bit32InstallerLua } from "./bit32-fallback.js";
 import { joinBounded, luaQuotedFromBytes, boundCommaSeparatedLine } from "./limits.js";
 
 export type RegVMLevel = "debug" | "normal" | "max";
@@ -4018,6 +4019,9 @@ export function generateRegVM(chunk: RegBytecodeChunk, options: RegVMGenOptions 
     const envSetup = buildEnvSetup(ctx);
     const vmRuntime = buildVMRuntime(ctx);
     const parts: string[] = [];
+    // v4: literal `bit32.*` uses below resolve against THIS chunk's env; make
+    // sure it carries a working bit32 before anything else runs.
+    parts.push(bit32InstallerLua());
     parts.push(builtinCaps.code);
     parts.push(envSetup);
     parts.push(vmRuntime);
@@ -4094,6 +4098,11 @@ export function generateRegVM(chunk: RegBytecodeChunk, options: RegVMGenOptions 
     }
 
     const parts: string[] = [];
+    // v4: first statement of the inner runtime — literal `bit32.*` references
+    // in the capture/env/VM fragments resolve against this chunk's env, which
+    // an executor's loader may have stripped of bit32 (outer capture chains
+    // can pass via getgenv/getfenv while the chunk env itself has none).
+    parts.push(bit32InstallerLua());
     parts.push(...declLines);
 
     if (level === "max") {

@@ -42,9 +42,20 @@ function runProfile(exe, prelude, shim, args = []) {
 }
 
 test("artifact carries the bit32 installer and the string.pack fallback", () => {
-  expect(REG).toContain("if bit32==nil then");
+  // Outer installer keeps a local ref (consumed by the stExec env injection),
+  // so the emitted shape is `local <ref>=bit32` + `<ref>==nil` guard.
+  expect(REG).toMatch(/local (\w+)=bit32\s+if \1==nil then/);
+  expect(REG).toMatch(/pcall\(function\(\) bit32=(\w+) end\)/);
   expect(REG).toContain('type(string)=="table" and string.pack');
   expect(REG).toContain('type(bit32)=="table"');
+});
+
+test("artifact injects the resolved env (bit32-carrying) into the inner chunk", () => {
+  expect(REG).toContain("local _0in=nil");
+  expect(REG).toMatch(/_0in=\{bit32=\w+\}/);
+  expect(REG).toContain("(setfenv,");
+  expect(REG).toMatch(/"@q","t",\{\w+_?\w*=true\}\)/);
+  expect(REG).toMatch(/if\s+\w+\((\w+)\)=="table"\s+and\s+\1\[\w+\(/);
 });
 
 // The Luau CLI marks bit32/loadstring/pcall as protected globals (assignment

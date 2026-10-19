@@ -1,4 +1,5 @@
 import { longStringLevel, splitLongLiteral } from "./limits.js";
+import { bit32InstallerLua } from "./bit32-fallback.js";
 
 export interface BootstrapConfig {
   vmBlob: string;
@@ -91,7 +92,7 @@ function obfuscateNum(n: number, rng: () => number): string {
 // Two independent uses:
 //  1. capture chains — `(type(bit32)=="table" and bit32.band) or ... or FB`
 //     so a stripped bit32/bit cannot take down the bootstrap itself;
-//  2. BIT32_FALLBACK_BLOCK — a self-contained `do` block that installs a
+//  2. bit32-fallback.ts installer — a self-contained block that installs a
 //     full bit32 global replacement before the decrypted runtime chunk is
 //     compiled, because the inner VM references bit32.* directly.
 function arithBit(op: "and" | "xor"): string {
@@ -177,68 +178,6 @@ if _0ty and _0ty(_0g)=="table" and _0ty(_0g["table"])=="table" then return _0g e
 return {table=table,string=string,math=math,bit32=bit32,bit=bit,pcall=pcall,xpcall=xpcall,select=select,type=type,ipairs=ipairs,pairs=pairs,next=next,tostring=tostring,tonumber=tonumber,rawget=rawget,rawset=rawset,setmetatable=setmetatable,getmetatable=getmetatable,unpack=unpack,loadstring=loadstring,load=load,error=error,assert=assert,coroutine=coroutine,os=os,utf8=utf8,buffer=buffer,task=task,game=game,workspace=workspace,script=script,Instance=Instance,Enum=Enum,typeof=typeof,tick=tick,time=time,wait=wait,spawn=spawn,delay=delay,newproxy=newproxy,collectgarbage=collectgarbage,debug=debug,print=print,warn=warn,shared=shared,require=require}
 end)()`;
 
-const BIT32_FALLBACK_BLOCK = [
-  `do`,
-  `if bit32==nil then`,
-  `local M=4294967296`,
-  `local XT,AT,OT={},{},{}`,
-  `for a=0,15 do`,
-  `for b=0,15 do`,
-  `local xr,ar,orr,k=0,0,0,1`,
-  `local u,v=a,b`,
-  `for t=1,4 do`,
-  `local s1,s2=u%2,v%2`,
-  `if s1~=s2 then xr=xr+k end`,
-  `if s1+s2>1 then ar=ar+k end`,
-  `if s1+s2>0 then orr=orr+k end`,
-  `u=(u-s1)/2`,
-  `v=(v-s2)/2`,
-  `k=k*2`,
-  `end`,
-  `XT[a*16+b]=xr`,
-  `AT[a*16+b]=ar`,
-  `OT[a*16+b]=orr`,
-  `end`,
-  `end`,
-  `local function fx(a,b,T)`,
-  `local r,m=0,1`,
-  `a=a%M`,
-  `b=b%M`,
-  `while a>0 or b>0 do`,
-  `local x,y=a%16,b%16`,
-  `r=r+T[x*16+y]*m`,
-  `a=(a-x)/16`,
-  `b=(b-y)/16`,
-  `m=m*16`,
-  `end`,
-  `return r`,
-  `end`,
-  `local function fold(T,...)`,
-  `local n=select("#",...)`,
-  `if n==0 then return 0 end`,
-  `local a=select(1,...)`,
-  `local b=select(2,...)`,
-  `if b==nil then return a%M end`,
-  `local r=fx(a,b,T)`,
-  `for i=3,n do r=fx(r,select(i,...),T) end`,
-  `return r`,
-  `end`,
-  `local function lsh(a,n)`,
-  `a=a%M`,
-  `for i=1,n%32 do a=(a*2)%M end`,
-  `return a`,
-  `end`,
-  `local function rsh(a,n) return math.floor((a%M)/2^(n%32))%M end`,
-  `local z={band=function(...) return fold(AT,...) end,bxor=function(...) return fold(XT,...) end,bor=function(...) return fold(OT,...) end,bnot=function(a) return (M-1)-(a%M) end,lshift=lsh,rshift=rsh,arshift=function(a,n) a=a%M if a>=M/2 then a=a-M end return math.floor(a/2^(n%32))%M end,lrotate=function(a,n) n=n%32 return (lsh(a,n)+rsh(a,32-n))%M end,rrotate=function(a,n) n=n%32 return (rsh(a,n)+lsh(a,32-n))%M end,btest=function(...) return fold(AT,...)~=0 end,extract=function(a,f,w) w=w or 1 return math.floor((a%M)/2^(f%32))%(2^w) end,replace=function(a,v,f,w) w=w or 1 local s=2^(f%32) local mw=2^w return (a%M-math.floor((a%M)/s)%mw*s)+(v%mw)*s end}`,
-  `if type(pcall)=="function" then`,
-  `pcall(function() bit32=z end)`,
-  `else`,
-  `bit32=z`,
-  `end`,
-  `end`,
-  `end`,
-].join('\n');
-
 export function generateBootstrap(config: BootstrapConfig): string {
   const { vmBlob, vmOrigLen, compLen, xorKey, invSbox, checksum, chunkName = "Quantum", rng } = config;
 
@@ -268,6 +207,8 @@ export function generateBootstrap(config: BootstrapConfig): string {
 
   const nOk = N(), nFn = N(), nState = N(), nResult = N(), nZeroExp = N();
   const nEnvRoot = N();
+  const nB32Ref = N();
+  const nNeedle = N() + "_" + N();
 
   const junkFnNames = [N(), N(), N(), N(), N()];
   const junkVarNames = [N(), N(), N(), N(), N(), N(), N(), N()];
@@ -348,11 +289,12 @@ export function generateBootstrap(config: BootstrapConfig): string {
     }
   }
 
-  // Self-contained bit32 installer (see BIT32_FALLBACK_BLOCK): no dependency
+  // Self-contained bit32 installer (see bit32-fallback.ts): no dependency
   // on any other fragment, so its shuffled position among the layer-0 groups
   // is irrelevant. Runs before the state machine, i.e. before the decrypted
-  // runtime chunk is compiled.
-  fragments.push({ code: BIT32_FALLBACK_BLOCK, layer: 0 });
+  // runtime chunk is compiled. The local ref is consumed by the stExec env
+  // injection below.
+  fragments.push({ code: bit32InstallerLua(nB32Ref), layer: 0 });
 
   // Globals-root for every outer `_G` consumer below. Self-contained layer-0
   // fragment (see ENV_ROOT_EXPR) so its shuffled position among the layer-0
@@ -694,8 +636,46 @@ export function generateBootstrap(config: BootstrapConfig): string {
     `${nState}=${stExec}`,
   ].join('\n') });
 
+  const chInjString = [115,116,114,105,110,103].map(c => obfuscateNum(c, rng)).join(',');
+  const chInjPack = [112,97,99,107].map(c => obfuscateNum(c, rng)).join(',');
+  const chInjB32 = [98,105,116,51,50].map(c => obfuscateNum(c, rng)).join(',');
+
   cases.push({ id: stExec, code: [
     `${nAssert}(${nOk} and ${nFn} and ${nType}(${nFn})=="function" and #${nDec}==${vmOrigLen},"Quantum Protection V2")`,
+    // v4 executor hardening: the inner chunk may be compiled with the
+    // executor's default env, which can lack bit32 AND ignore the outer
+    // installer (observed: literal bit32.* -> `attempt to index a nil value
+    // (global 'bit32')`). Give the inner chunk our resolved env (bit32
+    // guaranteed) when the host supports it: setfenv first, else a 4th-arg
+    // `load` (probe decides whether the env argument is honored — Luau
+    // ignores extra args, so a failed probe falls through to plain load).
+    `do`,
+    `local _0in=nil`,
+    `if ${nType}(setmetatable)=="function" then`,
+    `_0in={bit32=${nB32Ref}}`,
+    `local _0ss=${nEnvRoot}[${nChar}(${chInjString})]`,
+    `if ${nType}(_0ss)=="table" and ${nType}(_0ss[${nChar}(${chInjPack})])~="function" then _0in["string"]=setmetatable({pack=${nPack}},{__index=_0ss}) end`,
+    `_0in=setmetatable(_0in,{__index=${nEnvRoot}})`,
+    `end`,
+    `if _0in~=nil then`,
+    `if ${nType}(setfenv)=="function" then`,
+    `${nPcall}(setfenv,${nFn},_0in)`,
+    `else`,
+    `local _0po,_0pf=${nPcall}(${nLoad},"return ${nNeedle}","@q","t",{${nNeedle}=true})`,
+    `if _0po and ${nType}(_0pf)=="function" and _0pf()==true then`,
+    `local _0eo,_0e2=${nPcall}(${nLoad},${nDec},"${chunkName}","t",_0in)`,
+    `if _0eo and ${nType}(_0e2)=="function" then ${nFn}=_0e2 end`,
+    `end`,
+    `end`,
+    `end`,
+    // The inner runtime reads globals through its own resolved env root
+    // (getgenv -> getfenv -> _G), which bypasses the chunk env we just
+    // injected. If that root lacks bit32 (executor-stripped), the inner's
+    // literal bit32.* still dies. Seed the resolved root with our fallback
+    // whenever the name is absent; existing libs are never clobbered.
+    // Inlined (no fixed-name locals here: N() may emit any `_[0-5]<letter>`).
+    `if ${nType}(${nEnvRoot})=="table" and ${nEnvRoot}[${nChar}(${chInjB32})]==nil then ${nPcall}(function() ${nEnvRoot}[${nChar}(${chInjB32})]=${nB32Ref} end) end`,
+    `end`,
     `local _0ec,_0ev=${nPcall}(${nFn},...)`,
     `if not _0ec then (warn or print)("Quantum Error: inner runtime failed: "..tostring(_0ev)) end`,
     `${nAssert}(_0ec,"Quantum Protection V2")`,

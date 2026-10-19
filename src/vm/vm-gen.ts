@@ -4,6 +4,7 @@ import { Lexer } from "../lexer/Lexer.js";
 import { Parser } from "../parser/Parser.js";
 import { compile as compileAST } from "./Compiler.js";
 import { splitLongLiteral, joinBounded, luaQuotedFromBytes, boundCommaSeparatedLine, longStringLevel } from "./limits.js";
+import { bit32InstallerLua } from "./bit32-fallback.js";
 
 // Emit a (possibly very long) encoded fragment as one or more bounded-width
 // long-bracket literals joined by `..` across lines. Fragments come from the
@@ -4122,6 +4123,10 @@ export function generateVM(chunk: BytecodeChunk, options: VMGenOptions = {}): st
   const dC = randomName(3);
   const dP = randomName(3);
   const parts: string[] = [];
+  // v4: first statement of the inner runtime — resolveK/handler literals use
+  // `bit32.*` directly against this chunk's env, which the loading host may
+  // have stripped (outer envs can still be rich while the chunk env is not).
+  parts.push(bit32InstallerLua());
   parts.push(envSetup);
   parts.push(vmFunction);
 
