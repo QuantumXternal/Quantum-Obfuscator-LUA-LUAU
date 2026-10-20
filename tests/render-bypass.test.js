@@ -14,6 +14,7 @@ const HAS_LUAU = existsSync(LUAU);
 const t = HAS_LUAU ? test : test.skip;
 
 const { runObfuscatePipeline } = await import("../dist/engine/obfuscatePipeline.js");
+const { makeSeedMangler } = await import("../dist/engine/macros.js");
 
 let counter = 0;
 function runLuau(code) {
@@ -159,6 +160,43 @@ for _, fn in ipairs(calls) do fn() end
   expect(r.stdout).toBe("frame-paint\tchanged\tsecret-token\t5\n");
 });
 
+t("hoists callback decodes out of the hot path with light-tier CFF", () => {
+  const warnings = [];
+  const code =
+    HARNESS +
+    `
+local cfg = { label = "hud" }
+local function paint()
+  print("frame-paint", cfg.label)
+end
+rs.RenderStepped:Connect(paint)
+for _, fn in ipairs(calls) do fn() end
+`;
+  const out = runObfuscatePipeline(code, {
+    ...BASE,
+    renameLocals: false,
+    encodeStrings: true,
+    scramble: true,
+    mba: false,
+    onWarning: (m) => warnings.push(m),
+  });
+  const marker = out.indexOf("--[[\n__________");
+  expect(marker).toBeGreaterThan(0);
+  const prefix = out.slice(0, marker);
+  const decoder = makeSeedMangler(BASE.polymorphicSeed, "ad")("dec", 0);
+  const table = makeSeedMangler(BASE.polymorphicSeed, "hs")("h", 0);
+  expect(prefix).toContain(`local ${table} = {}`);
+  expect(prefix).toMatch(new RegExp(`${table}\\[1\\] = ${decoder}\\(`));
+  const callback = prefix.slice(prefix.indexOf("return function"));
+  expect(callback).not.toContain(`${decoder}(`);
+  expect(prefix).toContain("os.clock()");
+  expect(prefix).not.toContain("while true do");
+  expect(warnings).toEqual([]);
+  const r = runLuau(out);
+  expect(r.stderr).toBe("");
+  expect(r.stdout).toBe("frame-paint\thud\n");
+});
+
 t("unresolved global callback is left alone with a warning", () => {
   const warnings = [];
   const code = HARNESS + "\nrs.RenderStepped:Connect(print)\n";
@@ -262,6 +300,47 @@ print("stop", dragging, dragCount)
   const r = runLuau(out);
   expect(r.stderr).toBe("");
   expect(r.stdout).toBe("built\tpanel\tFrame\ndrag\ttrue\t1\nstop\tfalse\t1\n");
+});
+
+t("nested method self stays bound to its own receiver inside lifted UI", () => {
+  const warnings = [];
+  const code =
+    UI_HARNESS +
+    `
+local InstanceNew = Instance.new
+local UI = {}
+
+function UI:Create()
+  local frame = InstanceNew("Frame")
+  local label = InstanceNew("TextLabel")
+  frame.Name = "panel"
+  label.Name = "label"
+
+  local Dropdown = {}
+  Dropdown.__index = Dropdown
+  function Dropdown:Update()
+    self.state = "updated"
+  end
+  function Dropdown:Set(value)
+    self.value = value
+    self:Update()
+  end
+
+  local dropdown = setmetatable({}, Dropdown)
+  frame.Dropdown = dropdown
+  return frame, dropdown
+end
+
+local frame, dropdown = UI:Create()
+dropdown:Set(7)
+print("self", dropdown.value, dropdown.state, frame.state, frame.Name)
+`;
+  const out = runObfuscatePipeline(code, { ...BASE, onWarning: (m) => warnings.push(m) });
+  expect(warnings).toEqual([]);
+  expect(out).toMatch(/__qmr_/);
+  const r = runLuau(out);
+  expect(r.stderr).toBe("");
+  expect(r.stdout).toBe("self\t7\tupdated\tnil\tpanel\n");
 });
 
 t("light Instance.new users are not auto-lifted", () => {

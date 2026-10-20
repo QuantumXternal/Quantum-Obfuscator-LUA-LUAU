@@ -3,6 +3,8 @@ import { parseWithErrors } from "../parser/Parser.js";
 import type { Token, SourceLocation } from "../tokens.js";
 import { obfuscate } from "../obfuscator/Obfuscator.js";
 import { encodeStrings } from "../obfuscator/StringEncoder.js";
+import { hoistFactoryStrings } from "../obfuscator/PrefixStringHoist.js";
+import { scrambleNativePrefix } from "../obfuscator/PrefixControlFlow.js";
   import { scrambleControlFlow } from "../obfuscator/ControlFlowScrambler.js";
   import { applyMBA } from "../obfuscator/MBAEncoder.js";
 import { printChunk, printChunkOneLine } from "../obfuscator/Printer.js";
@@ -178,26 +180,50 @@ export function runObfuscatePipeline(code: string, opts: PipelineOptions): strin
   // the write back to the original variable).
   let autoPrefixStatements: Statement[] = [];
   let autoMangled: string[] = [];
+  let autoFactoryNames = new Set<string>();
+  let autoHeavyFactoryNames = new Set<string>();
   if (opts.vmType !== "none") {
     const bypass = autoBypassRenderStepped(ast, makeSeedMangler(polySeed, "qmr"), opts.onWarning);
     ast = bypass.ast;
     autoPrefixStatements = bypass.prefixStatements;
     autoMangled = bypass.mangled;
+    autoFactoryNames = new Set(bypass.lifted.map((l) => l.factory));
+    autoHeavyFactoryNames = new Set(bypass.lifted.filter((l) => l.heavy).map((l) => l.factory));
   }
 
   // Phase 3.3(b): obfuscate the auto-bypassed frame factories with the same
   // string-encoding and MBA passes as the main body. The extracted @no-vm
   // prefix is excluded: it already went through these passes before
   // extraction, so re-applying would double-transform it. Control-flow
-  // scrambling is deliberately skipped here — these factories run every
-  // frame and a CFF state machine would reintroduce per-frame overhead.
+  // hardening is tiered: heavy UI factories get block-level state machines;
+  // frame factories only get opaque predicates and dead junk branches so the
+  // hot path stays flat.
   if (autoPrefixStatements.length > 0) {
     if (opts.encodeStrings) {
       const autoChunk: Chunk = { type: "Chunk", loc: ast.loc, body: autoPrefixStatements };
-      autoPrefixStatements = encodeStrings(
-        autoChunk,
-        opts.seed !== undefined ? { enabled: true, seed: opts.seed } : { enabled: true },
-      ).body as Statement[];
+      const autoDecoderName = makeSeedMangler(polySeed, "ad")("dec", 0);
+      autoPrefixStatements = encodeStrings(autoChunk, {
+        enabled: true,
+        ...(opts.seed !== undefined ? { seed: opts.seed } : {}),
+        decoderName: autoDecoderName,
+      }).body as Statement[];
+      // Decode each unique literal once when the factory is created instead
+      // of on every callback invocation. The decoder remains in place and is
+      // called by the hoisted initializer.
+      const hoistMangle = makeSeedMangler(polySeed, "hs");
+      autoPrefixStatements = hoistFactoryStrings(autoPrefixStatements, {
+        decoderName: autoDecoderName,
+        factoryNames: autoFactoryNames,
+        mangle: (i) => hoistMangle("h", i),
+      }).statements;
+    }
+    if (opts.scramble) {
+      autoPrefixStatements = scrambleNativePrefix(autoPrefixStatements, {
+        seed: typeof opts.seed === "number" ? opts.seed : 0,
+        factoryNames: autoFactoryNames,
+        heavyFactories: autoHeavyFactoryNames,
+        maxFlattened: 1000,
+      }).statements;
     }
     if (opts.mba) {
       const autoChunk: Chunk = { type: "Chunk", loc: ast.loc, body: autoPrefixStatements };

@@ -102,6 +102,15 @@ class ScopeManager {
     return newName;
   }
 
+  // Method syntax carries an implicit parameter literally named `self`; it
+  // cannot be renamed without rewriting the syntax. Register it as a binding
+  // so it shadows outer locals, but keep the name unchanged.
+  declarePreservedSelf(): void {
+    const prev = this.flat.get("self");
+    this.undoStack[this.undoStack.length - 1]!.push({ name: "self", prev });
+    this.flat.set("self", "self");
+  }
+
   resolve(name: string): string {
     if (!isValidIdentifier(name)) return name;
     if (this.opts.preserveGlobals && PRESERVED_GLOBALS.has(name)) return name;
@@ -140,6 +149,7 @@ function transformStatement(stmt: Statement | LastStatement, scope: ScopeManager
     case "FunctionStatement": {
       const name = transformFuncName(stmt.name, scope);
       scope.pushScope();
+      if (stmt.name.method) scope.declarePreservedSelf();
       const params = stmt.params.map((p) => ({
         ...p,
         name: p.variadic ? "..." : scope.declare(p.name),

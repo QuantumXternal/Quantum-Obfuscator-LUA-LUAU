@@ -28,6 +28,7 @@ import type {
   Chunk,
   Expression,
   FunctionExpression,
+  FunctionStatement,
   Identifier,
   LastStatement,
   LocalFunctionStatement,
@@ -127,6 +128,16 @@ export function paramNames(params: Param[]): Set<string> {
   return s;
 }
 
+// `function obj:method(...)` has an implicit `self` parameter that is not
+// present in `params`. Every scope analysis must treat it as a local, or a
+// nested method's `self` leaks out to an outer binding and gets rewritten by
+// the local renamer.
+export function functionScopeNames(node: FunctionStatement): Set<string> {
+  const s = paramNames(node.params ?? []);
+  if (node.name?.method) s.add("self");
+  return s;
+}
+
 function walkBlock(body: (Statement | LastStatement)[], scopes: Set<string>[], onId: IdHandler): void {
   for (const stmt of body) walkStatement(stmt, scopes, onId);
 }
@@ -171,7 +182,7 @@ function walkStatement(node: Statement | LastStatement | Expression, scopes: Set
     }
     case "FunctionStatement":
       walkExpression(node.name.base as Expression, scopes, onId);
-      walkBlock(node.body, [...scopes, paramNames(node.params)], onId);
+      walkBlock(node.body, [...scopes, functionScopeNames(node)], onId);
       return;
     case "LocalFunctionStatement": {
       const frame = paramNames(node.params);

@@ -42,7 +42,7 @@ import type {
   LastStatement,
 } from "../ast/types.js";
 import type { Mangler } from "./macros.js";
-import { freeVariables, isShadowed, paramNames } from "./macros.js";
+import { freeVariables, functionScopeNames, isShadowed, paramNames } from "./macros.js";
 
 type AnyNode = { type: string; [key: string]: any };
 
@@ -87,7 +87,7 @@ export interface RenderBypassResult {
   ast: Chunk;
   prefixStatements: Statement[];
   mangled: string[];
-  lifted: { name: string; captures: string[]; kind: string }[];
+  lifted: { name: string; captures: string[]; kind: string; factory: string; heavy: boolean }[];
   vetoed: { name: string; reason: string }[];
   warnings: string[];
 }
@@ -295,7 +295,7 @@ function collectWrites(fn: FunctionExpression, captures: Set<string>): Set<strin
         return;
       }
       case "FunctionStatement": {
-        const inner = [...scopes, paramNames(node.params)];
+        const inner = [...scopes, functionScopeNames(node)];
         for (const st of node.body ?? []) stmt(st, inner);
         return;
       }
@@ -586,7 +586,7 @@ function validateCaptureWrites(fn: FunctionExpression, captures: Set<string>): s
       }
       case "FunctionStatement": {
         expr(node.name?.base, scopes);
-        const inner = [...scopes, paramNames(node.params ?? [])];
+        const inner = [...scopes, functionScopeNames(node)];
         for (const st of node.body ?? []) stmt(st, inner);
         return;
       }
@@ -803,7 +803,7 @@ function rewriteCaptureWrites(fn: FunctionExpression, setters: Map<string, strin
       }
       case "FunctionStatement": {
         node.name.base = expr(node.name.base, scopes);
-        const inner = [...scopes, paramNames(node.params ?? [])];
+        const inner = [...scopes, functionScopeNames(node)];
         for (let i = 0; i < (node.body ?? []).length; i++) node.body[i] = stmt(node.body[i], inner);
         return node;
       }
@@ -969,7 +969,7 @@ function rewriteReads(fn: FunctionExpression, rewrites: Map<string, string>): vo
       }
       case "FunctionStatement": {
         node.name.base = expr(node.name.base, scopes);
-        const inner = [...scopes, paramNames(node.params ?? [])];
+        const inner = [...scopes, functionScopeNames(node)];
         for (let i = 0; i < (node.body ?? []).length; i++) node.body[i] = stmt(node.body[i], inner);
         return node;
       }
@@ -1069,7 +1069,7 @@ export function autoBypassRenderStepped(
 ): RenderBypassResult {
   const warnings: string[] = [];
   const vetoed: { name: string; reason: string }[] = [];
-  const lifted: { name: string; captures: string[]; kind: string }[] = [];
+  const lifted: { name: string; captures: string[]; kind: string; factory: string; heavy: boolean }[] = [];
   const prefixStatements: Statement[] = [];
   const mangled: string[] = [];
   const sites: Site[] = [];
@@ -1454,7 +1454,7 @@ export function autoBypassRenderStepped(
     visible: Map<string, Binding>,
     name: string,
     kind: string,
-    opts?: { allowCaptureWrites?: boolean },
+    opts?: { allowCaptureWrites?: boolean; heavy?: boolean },
   ): { call: any } | null {
     const free = freeVariables(fn);
     const captures = [...free].filter((n) => visible.has(n) && n !== "self").sort();
@@ -1514,6 +1514,8 @@ export function autoBypassRenderStepped(
         ...written.filter((n) => !mutableSet.has(n)).map((n) => `${n}~`),
       ],
       kind,
+      factory: mangledName,
+      heavy: !!opts?.heavy,
     });
     const args: any[] = stable.map((n) => idExpr(n, fn.loc));
     for (let i = 0; i < mutable.length; i++) {
@@ -1545,7 +1547,7 @@ export function autoBypassRenderStepped(
     };
   }
 
-  function liftDecl(decl: FnDecl, opts?: { allowCaptureWrites?: boolean }): boolean {
+  function liftDecl(decl: FnDecl, opts?: { allowCaptureWrites?: boolean; heavy?: boolean }): boolean {
     if (liftedDecls.has(decl)) return true;
     const free = freeVariables(decl.fn);
     const captures = [...free]
@@ -1692,7 +1694,7 @@ export function autoBypassRenderStepped(
     });
   for (const c of uiCandidates) {
     if (isInsideRange(c.decl)) continue;
-    if (liftDecl(c.decl, { allowCaptureWrites: true })) {
+    if (liftDecl(c.decl, { allowCaptureWrites: true, heavy: true })) {
       const loc = c.decl.stmt?.loc;
       if (loc?.start?.offset !== undefined && loc?.end?.offset !== undefined) {
         liftedRanges.push({ start: loc.start.offset, end: loc.end.offset });

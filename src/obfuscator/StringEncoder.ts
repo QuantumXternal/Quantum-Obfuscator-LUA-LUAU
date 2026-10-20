@@ -427,6 +427,11 @@ export interface StringEncoderOptions {
   // remaining literals stay plain, bounding worst-case instruction growth
   // for scripts with thousands of small strings. Default 65536.
   maxTotalBytes?: number;
+
+  // Deterministic decoder name for callers that need to identify the
+  // generated decoder (e.g. to hoist decode calls out of hot callbacks).
+  // Omitted = random name derived from `seed`/Math.random as before.
+  decoderName?: string;
 }
 
 function mulberry32(seed: number): () => number {
@@ -453,7 +458,7 @@ export function encodeStrings(ast: Chunk, options: StringEncoderOptions = {}): C
   if (!enabled) return ast;
 
   const rng = options.seed !== undefined ? mulberry32(options.seed) : Math.random;
-  const decoderName = `_quantumDec_${randomSuffix(rng, 6)}`;
+  const decoderName = options.decoderName ?? `_quantumDec_${randomSuffix(rng, 6)}`;
   const loc = ast.body[0]?.loc ?? { start: { line: 1, column: 1, offset: 0 }, end: { line: 1, column: 1, offset: 0 } };
   const decoders = makeDecoderStatements(key, loc, decoderName, rng);
 
