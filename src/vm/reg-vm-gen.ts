@@ -2335,6 +2335,21 @@ const EXECUTOR_GLOBALS = [
   "getstack",
 ];
 
+interface LoadWrapperNames {
+  o: string; ty: string; sf: string; pc: string; f: string;
+  c: string; n: string; m: string; v: string; e: string;
+  ge: string; gf: string; gok: string; gr: string;
+}
+
+function loadWrapperNames(): LoadWrapperNames {
+  return {
+    o: randomName(3), ty: randomName(3), sf: randomName(3), pc: randomName(3),
+    f: randomName(4), c: randomName(2), n: randomName(2), m: randomName(2),
+    v: randomName(2), e: randomName(2),
+    ge: randomName(2), gf: randomName(2), gok: randomName(2), gr: randomName(2),
+  };
+}
+
 function buildEnvSetup(ctx: BuildCtx): string {
   const n = ctx.names;
   const L: string[] = [];
@@ -2348,6 +2363,9 @@ function buildEnvSetup(ctx: BuildCtx): string {
         L.push(`do local ok,v=pcall(function() return ${n.genv}["${g}"] end);if ok and v~=nil then ${n.env}["${g}"]=v end end`);
       }
     }
+    const w = loadWrapperNames();
+    const fnLit = JSON.stringify("function");
+    L.push(`do local ${w.o}=${n.env}[${JSON.stringify("loadstring")}];local ${w.ty}=${n.env}[${JSON.stringify("type")}];if ${w.ty} and ${w.ty}(${w.o})~=${fnLit} then ${w.o}=${n.env}[${JSON.stringify("load")}] end;if ${w.ty} and ${w.ty}(${w.o})==${fnLit} then local ${w.sf}=${n.env}[${JSON.stringify("setfenv")}];local ${w.pc}=${n.env}[${JSON.stringify("pcall")}];local ${w.gf}=${n.env}[${JSON.stringify("getgenv")}];if ${w.ty}(${w.gf})~=${fnLit} then ${w.gf}=${n.genv}[${JSON.stringify("getgenv")}] end;local ${w.ge};if ${w.ty}(${w.gf})==${fnLit} and ${w.ty}(${w.pc})==${fnLit} then local ${w.gok},${w.gr}=${w.pc}(${w.gf});if ${w.gok} and ${w.ty}(${w.gr})=="table" then ${w.ge}=${w.gr} end end;if not ${w.ge} then ${w.ge}=${n.genv} end;local function ${w.f}(${w.c},${w.n},${w.m}) local ${w.v},${w.e}=${w.o}(${w.c},${w.n},${w.m},${w.ge});if ${w.ty}(${w.v})==${fnLit} and ${w.sf} and ${w.pc} and ${w.ty}(${w.sf})==${fnLit} and ${w.ty}(${w.pc})==${fnLit} and ${w.ty}(${w.ge})=="table" then ${w.pc}(${w.sf},${w.v},${w.ge}) end;return ${w.v},${w.e} end;${n.env}[${JSON.stringify("loadstring")}]=${w.f};${n.env}[${JSON.stringify("load")}]=${w.f} end end`);
     return L.join("\n") + "\n";
   }
 
@@ -2431,6 +2449,15 @@ function buildEnvFragments(ctx: BuildCtx): { fragments: Fragment[]; forwardDecls
 
   fragments.push({ code: `do local _u=${dec}(${encS("unpack")});if not ${n.env}[_u] then local _t=${n.env}[${dec}(${encS("table")})];if _t then ${n.env}[_u]=_t[_u] end end end`, layer: 3 });
   fragments.push({ code: `do local _ls=${dec}(${encS("loadstring")});if not ${n.env}[_ls] then ${n.env}[_ls]=${n.env}[${dec}(${encS("load")})] end end`, layer: 3 });
+
+  // Keep executor loaders bound to getgenv(): a loaded UI file must see the
+  // same globals as the main chunk, including executors that return a chunk
+  // in the wrong env. The wrapper never executes the chunk and forwards the
+  // original error values unchanged.
+  const lw = loadWrapperNames();
+  const gs = (s: string): string => `${dec}(${encS(s)})`;
+  const fnLit = gs("function");
+  fragments.push({ code: `do local ${lw.o}=${n.env}[${gs("loadstring")}];local ${lw.ty}=${n.env}[${gs("type")}];if ${lw.ty} and ${lw.ty}(${lw.o})~=${fnLit} then ${lw.o}=${n.env}[${gs("load")}] end;if ${lw.ty} and ${lw.ty}(${lw.o})==${fnLit} then local ${lw.sf}=${n.env}[${gs("setfenv")}];local ${lw.pc}=${n.env}[${gs("pcall")}];local ${lw.gf}=${n.env}[${gs("getgenv")}];if ${lw.ty}(${lw.gf})~=${fnLit} then ${lw.gf}=${n.genv}[${gs("getgenv")}] end;local ${lw.ge};if ${lw.ty}(${lw.gf})==${fnLit} and ${lw.ty}(${lw.pc})==${fnLit} then local ${lw.gok},${lw.gr}=${lw.pc}(${lw.gf});if ${lw.gok} and ${lw.ty}(${lw.gr})=="table" then ${lw.ge}=${lw.gr} end end;if not ${lw.ge} then ${lw.ge}=${n.genv} end;local function ${lw.f}(${lw.c},${lw.n},${lw.m}) local ${lw.v},${lw.e}=${lw.o}(${lw.c},${lw.n},${lw.m},${lw.ge});if ${lw.ty}(${lw.v})==${fnLit} and ${lw.sf} and ${lw.pc} and ${lw.ty}(${lw.sf})==${fnLit} and ${lw.ty}(${lw.pc})==${fnLit} and ${lw.ty}(${lw.ge})=="table" then ${lw.pc}(${lw.sf},${lw.v},${lw.ge}) end;return ${lw.v},${lw.e} end;${n.env}[${gs("loadstring")}]=${lw.f};${n.env}[${gs("load")}]=${lw.f} end end`, layer: 4 });
 
   if (process.env.DEBUG_VM === '1') {
     const critGlobals = ["string","table","math","pcall","type","tostring","pairs","ipairs","next","rawget","setmetatable","getmetatable","bit32","select","xpcall","loadstring","error","warn","print","game","workspace"];

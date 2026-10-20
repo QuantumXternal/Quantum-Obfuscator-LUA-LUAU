@@ -29,7 +29,8 @@ function isValidIdentifier(name: string): boolean {
   return /^[a-zA-Z_][a-zA-Z0-9_]*$/.test(name) && !KEYWORDS.has(name);
 }
 
-function generateName(index: number): string {
+function generateName(index: number, style: "short" | "hex"): string {
+  if (style === "hex") return `_0x${index.toString(16)}`;
   if (index < 26) return String.fromCharCode(97 + index);
   let s = "";
   let n = index;
@@ -47,12 +48,15 @@ export interface ObfuscatorOptions {
   preserveGlobals?: boolean;
 
   seed?: number;
+
+  nameStyle?: "short" | "hex";
 }
 
 const DEFAULT_OPTIONS: Required<ObfuscatorOptions> = {
   renameLocals: true,
   preserveGlobals: true,
   seed: 0,
+  nameStyle: "short",
 };
 
 export function obfuscate(ast: Chunk, options: ObfuscatorOptions = {}): Chunk {
@@ -94,7 +98,7 @@ class ScopeManager {
     if (this.opts.preserveGlobals && PRESERVED_GLOBALS.has(name)) return name;
     let newName: string;
     do {
-      newName = generateName(this.nameCounter++);
+      newName = generateName(this.nameCounter++, this.opts.nameStyle);
     } while (KEYWORDS.has(newName));
     const prev = this.flat.get(name);
     this.undoStack[this.undoStack.length - 1]!.push({ name, prev });

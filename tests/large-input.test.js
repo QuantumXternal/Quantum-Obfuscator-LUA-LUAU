@@ -174,7 +174,12 @@ describe("StringEncoder: large-input budget", () => {
     expect(call).not.toBeNull();
     const bytes = call.args[0].fields.map((f) => Number(f.value.value));
     const key = Number(call.args[1].value);
-    const text = String.fromCharCode(...bytes.map((b) => b ^ key));
+    const step = 1 + (key % 11);
+    const offset = (key * 17 + 29) & 0xff;
+    const text = Buffer.from(bytes.map((b, i) => {
+      const rolling = (key + i * step) & 0xff;
+      return ((b - offset) & 0xff) ^ rolling;
+    })).toString("utf8");
     expect(text).toBe("abc");
   });
 });

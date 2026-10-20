@@ -5,6 +5,7 @@ import { obfuscate } from "../obfuscator/Obfuscator.js";
 import { encodeStrings } from "../obfuscator/StringEncoder.js";
 import { hoistFactoryStrings } from "../obfuscator/PrefixStringHoist.js";
 import { scrambleNativePrefix } from "../obfuscator/PrefixControlFlow.js";
+import { renameLocalMethods } from "../obfuscator/LocalMethodRenamer.js";
   import { scrambleControlFlow } from "../obfuscator/ControlFlowScrambler.js";
   import { applyMBA } from "../obfuscator/MBAEncoder.js";
 import { printChunk, printChunkOneLine } from "../obfuscator/Printer.js";
@@ -134,6 +135,35 @@ export function checkTruncatedInput(tokens: Token[]): { message: string; loc: So
  *   stack: compile + generateVM | register: regCompile + generateRegVM | none: print.
  * Throws PipelineLexError on lex errors and PipelineParseError on parse errors.
  */
+const PREFIX_LOADER_WRAPPER = String.raw`
+local _0q_orig = loadstring or load
+if type(_0q_orig) == "function" then
+  local function _0q_wrap(_0q_code, _0q_name, _0q_mode)
+    local _0q_env
+    if type(getgenv) == "function" then
+      local _0q_ok
+      _0q_ok, _0q_env = pcall(getgenv)
+      if not _0q_ok then _0q_env = nil end
+    end
+    local _0q_fn, _0q_err = _0q_orig(_0q_code, _0q_name, _0q_mode, _0q_env)
+    if type(_0q_fn) == "function" and type(_0q_env) == "table" and type(setfenv) == "function" then
+      pcall(setfenv, _0q_fn, _0q_env)
+    end
+    return _0q_fn, _0q_err
+  end
+  loadstring = _0q_wrap
+  load = _0q_wrap
+end
+`;
+
+function prefixLoaderWrapperStatements(): Statement[] {
+  const lr = lex(PREFIX_LOADER_WRAPPER);
+  if (lr.errors.length > 0) throw new PipelineLexError(lr.errors);
+  const parsed = parseWithErrors(lr.tokens);
+  if (parsed.errors.length > 0) throw new PipelineParseError(parsed.errors);
+  return parsed.ast.body as Statement[];
+}
+
 export function runObfuscatePipeline(code: string, opts: PipelineOptions): string {
   const { tokens, errors: lexErrors } = lex(code);
   if (lexErrors.length > 0) {
@@ -190,6 +220,18 @@ export function runObfuscatePipeline(code: string, opts: PipelineOptions): strin
     autoFactoryNames = new Set(bypass.lifted.map((l) => l.factory));
     autoHeavyFactoryNames = new Set(bypass.lifted.filter((l) => l.heavy).map((l) => l.factory));
   }
+
+  // Prefix method names are still readable in the lifted factories. Rename
+  // only statically-resolved methods declared on local tables, using one map
+  // for both the VM body and the lifted prefix, before the two chunks are
+  // obfuscated independently. Unsafe/escaped/aliased methods stay untouched.
+  const methodPrefixChunk: Chunk = { type: "Chunk", loc: ast.loc, body: autoPrefixStatements };
+  const methodRename = renameLocalMethods([ast, methodPrefixChunk], {
+    onWarning: opts.onWarning,
+    internalCallees: autoFactoryNames,
+  });
+  ast = methodRename.chunks[0]!;
+  autoPrefixStatements = methodRename.chunks[1]!.body as Statement[];
 
   // Phase 3.3(b): obfuscate the auto-bypassed frame factories with the same
   // string-encoding and MBA passes as the main body. The extracted @no-vm
@@ -260,6 +302,9 @@ export function runObfuscatePipeline(code: string, opts: PipelineOptions): strin
     extractedMangled = extraction.extracted.map((e) => e.mangled);
   }
   prefixStatements = [...autoPrefixStatements, ...prefixStatements];
+  if (prefixStatements.length > 0) {
+    prefixStatements = [...prefixLoaderWrapperStatements(), ...prefixStatements];
+  }
   extractedMangled = [...autoMangled, ...extractedMangled];
 
   const obfuscated = obfuscate(workingAst, {
@@ -273,6 +318,7 @@ export function runObfuscatePipeline(code: string, opts: PipelineOptions): strin
     const obfuscatedPrefix = obfuscate(prefixChunk, {
       renameLocals: opts.renameLocals,
       preserveGlobals: opts.preserveGlobals,
+      nameStyle: "hex",
     });
     // Prefixes can contain whole lifted frame callbacks; print them
     // multiline even in oneLine mode so executor line-length limits are not

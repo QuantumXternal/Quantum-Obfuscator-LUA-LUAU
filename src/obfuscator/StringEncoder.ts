@@ -8,17 +8,23 @@ import type {
   TableField,
 } from "../ast/types.js";
 import type { SourceLocation } from "../tokens.js";
+import { lex } from "../lexer/Lexer.js";
+import { parse } from "../parser/Parser.js";
 
 function makeLoc(start: SourceLocation["start"], end: SourceLocation["end"]): SourceLocation {
   return { start, end };
 }
 
 function encodeString(str: string, key: number): number[] {
-  const result: number[] = [];
-  for (let i = 0; i < str.length; i++) {
-    result.push(str.charCodeAt(i) ^ key);
-  }
-  return result;
+  const bytes = Array.from(Buffer.from(str, "utf8"));
+  const k = key & 0xff;
+  const step = 1 + (k % 11);
+  const offset = (k * 17 + 29) & 0xff;
+  return bytes.map((b, i) => (((b ^ ((k + i * step) & 0xff)) + offset) & 0xff));
+}
+
+function utf8ByteLength(str: string): number {
+  return Buffer.byteLength(str, "utf8");
 }
 
 function makeDecodeCall(
@@ -55,177 +61,32 @@ function makeDecodeCall(
 }
 
 function makeDecoderStatements(
-  key: number,
-  loc: SourceLocation,
+  _key: number,
+  _loc: SourceLocation,
   decoderName: string,
   rng: () => number = Math.random,
 ): Statement[] {
   const cacheName = `_c_${randomSuffix(rng, 4)}`;
-
-  const cacheStmt: Statement = {
-    type: "LocalStatement",
-    vars: [{ name: cacheName, type: undefined }],
-    values: [{ type: "TableConstructor", fields: [], loc }],
-    loc,
-  };
-
-  const ifCacheStmt: Statement = {
-    type: "IfStatement",
-    condition: {
-      type: "IndexExpression",
-      object: { type: "Identifier", name: cacheName, loc },
-      index: { type: "Identifier", name: "t", loc },
-      loc,
-    },
-    thenBody: [
-      {
-        type: "ReturnStatement",
-        values: [
-          {
-            type: "IndexExpression",
-            object: { type: "Identifier", name: cacheName, loc },
-            index: { type: "Identifier", name: "t", loc },
-            loc,
-          },
-        ],
-        loc,
-      },
-    ],
-    elseifClauses: [],
-    loc,
-  };
-
-  const sTableStmt: Statement = {
-    type: "LocalStatement",
-    vars: [{ name: "s", type: undefined }],
-    values: [{ type: "TableConstructor", fields: [], loc }],
-    loc,
-  };
-
-  const forLoopStmt: Statement = {
-    type: "ForNumericStatement",
-    var: { type: "Identifier", name: "i", loc },
-    start: { type: "NumberLiteral", value: 1, loc },
-    end: {
-      type: "UnaryExpression",
-      operator: "#",
-      argument: { type: "Identifier", name: "t", loc },
-      loc,
-    },
-    body: [
-      {
-        type: "AssignmentStatement",
-        vars: [
-          {
-            type: "IndexExpression",
-            object: { type: "Identifier", name: "s", loc },
-            index: { type: "Identifier", name: "i", loc },
-            loc,
-          },
-        ],
-        values: [
-          {
-            type: "CallExpression",
-            callee: {
-              type: "MemberExpression",
-              object: { type: "Identifier", name: "string", loc },
-              property: "char",
-              loc,
-            },
-            args: [
-              {
-                type: "CallExpression",
-                callee: {
-                  type: "MemberExpression",
-                  object: { type: "Identifier", name: "bit32", loc },
-                  property: "bxor",
-                  loc,
-                },
-                args: [
-                  {
-                    type: "IndexExpression",
-                    object: { type: "Identifier", name: "t", loc },
-                    index: { type: "Identifier", name: "i", loc },
-                    loc,
-                  },
-                  { type: "Identifier", name: "k", loc },
-                ],
-                loc,
-              },
-            ],
-            loc,
-          },
-        ],
-        loc,
-      },
-    ],
-    loc,
-  };
-
-  const concatStmt: Statement = {
-    type: "LocalStatement",
-    vars: [{ name: "res", type: undefined }],
-    values: [
-      {
-        type: "CallExpression",
-        callee: {
-          type: "MemberExpression",
-          object: { type: "Identifier", name: "table", loc },
-          property: "concat",
-          loc,
-        },
-        args: [{ type: "Identifier", name: "s", loc }],
-        loc,
-      },
-    ],
-    loc,
-  };
-
-  const cacheAssignStmt: Statement = {
-    type: "AssignmentStatement",
-    vars: [
-      {
-        type: "IndexExpression",
-        object: { type: "Identifier", name: cacheName, loc },
-        index: { type: "Identifier", name: "t", loc },
-        loc,
-      },
-    ],
-    values: [{ type: "Identifier", name: "res", loc }],
-    loc,
-  };
-
-  const returnStmt: LastStatement = {
-    type: "ReturnStatement",
-    values: [{ type: "Identifier", name: "res", loc }],
-    loc,
-  };
-
-  const decoderFunc: Statement = {
-    type: "LocalStatement",
-    vars: [{ name: decoderName, type: undefined }],
-    values: [
-      {
-        type: "FunctionExpression",
-        params: [
-          { type: "Param", name: "t", variadic: false, loc },
-          { type: "Param", name: "k", variadic: false, loc },
-        ],
-        body: [
-          ifCacheStmt,
-          sTableStmt,
-          forLoopStmt,
-          concatStmt,
-          cacheAssignStmt,
-          returnStmt,
-        ],
-        loc,
-      },
-    ],
-    loc,
-  };
-
-  return [cacheStmt, decoderFunc];
+  const src = [
+    `local ${cacheName} = {}`,
+    `local function ${decoderName}(t, k)`,
+    `  if ${cacheName}[t] then return ${cacheName}[t] end`,
+    `  local kb = math.floor(tonumber(k) or 0) % 256`,
+    `  local step = 1 + (kb % 11)`,
+    `  local off = (kb * 17 + 29) % 256`,
+    `  local s = {}`,
+    `  for i = 1, #t do`,
+    `    local rk = (kb + (i - 1) * step) % 256`,
+    `    local c = math.floor((math.floor(tonumber(t[i]) or 0) % 256 - off) % 256) % 256`,
+    `    local v = math.floor(tonumber(bit32.bxor(c, math.floor(tonumber(rk) or 0) % 256)) or 0) % 256`,
+    `    s[i] = string.char(math.floor(tonumber(v) or 0) % 256)`,
+    `  end`,
+    `  local res = table.concat(s)`,
+    `  ${cacheName}[t] = res`,
+    `  return res`,
+    `end`,
+  ].join("\n");
+  return parse(lex(src).tokens).body as Statement[];
 }
 
 interface EncodeBudget {
@@ -239,9 +100,11 @@ function transformExpression(exp: Expression, key: number, decoderName: string, 
     // Budget gate: long literals stay plain (a per-byte table for an
     // N-byte literal compiles to O(N) instructions/constants and is what
     // sank large embedded assets); the total budget bounds instruction
-    // growth for scripts with thousands of small strings.
-    if (exp.value.length > budget.maxLen || exp.value.length > budget.remaining) return exp;
-    budget.remaining -= exp.value.length;
+    // growth for scripts with thousands of small strings. Budget in UTF-8
+    // bytes because that is what the decoder reconstructs.
+    const byteLen = utf8ByteLength(exp.value);
+    if (byteLen > budget.maxLen || byteLen > budget.remaining) return exp;
+    budget.remaining -= byteLen;
     const bytes = encodeString(exp.value, key);
     return makeDecodeCall(bytes, key, exp.loc, decoderName) as Expression;
   }
@@ -417,10 +280,10 @@ export interface StringEncoderOptions {
   // builds, caching, and snapshot tests. Omitted = legacy random behavior.
   seed?: number;
 
-  // Longest string (UTF-16 code units, matching encodeString) that gets
-  // encoded into a byte table. Longer literals stay plain: an N-byte table
-  // compiles to O(N) VM instructions/constants (embedded assets, base85
-  // blobs), which is the documented large-input failure mode. Default 64.
+  // Longest string (UTF-8 bytes, matching encodeString) that gets encoded
+  // into a byte table. Longer literals stay plain: an N-byte table compiles
+  // to O(N) VM instructions/constants (embedded assets, base85 blobs), which
+  // is the documented large-input failure mode. Default 64.
   maxStringLength?: number;
 
   // Total encoded-string bytes allowed per build. Once exhausted, the

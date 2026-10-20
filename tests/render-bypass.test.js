@@ -88,7 +88,7 @@ for _, fn in ipairs(calls) do fn() end
   const out = runObfuscatePipeline(code, { ...BASE, onWarning: (m) => warnings.push(m) });
   expect(out).toMatch(/__qmr_/);
   expect(out.indexOf("__qmr_")).toBeLessThan(out.indexOf("Quantum Protection V2"));
-  expect(warnings).toEqual([]);
+  expect(warnings.filter((m) => !m.startsWith("method rename skipped:"))).toEqual([]);
   const r = runLuau(out);
   expect(r.stderr).toBe("");
   expect(r.stdout).toBe("stable\tchanged\ndirect\tchanged\ninline\tchanged\nloop\tchanged\n");

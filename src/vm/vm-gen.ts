@@ -2366,6 +2366,11 @@ function buildEnvSetup(
         code += `do local ok,v=pcall(function() return ${genv}["${g}"] end);if ok and v~=nil then ${env}["${g}"]=v end end\n`;
       }
     }
+    const lo = randomName(3), lty = randomName(3), lsf = randomName(3), lpc = randomName(3);
+    const lw = randomName(4), lc = randomName(2), ln = randomName(2), lm = randomName(2);
+    const lv = randomName(2), le = randomName(2), lgf = randomName(3), lge = randomName(2), lgok = randomName(2), lgr = randomName(2);
+    const fnLit = JSON.stringify("function");
+    code += `do local ${lo}=${env}[${JSON.stringify("loadstring")}];local ${lty}=${env}[${JSON.stringify("type")}];if ${lty} and ${lty}(${lo})~=${fnLit} then ${lo}=${env}[${JSON.stringify("load")}] end;if ${lty} and ${lty}(${lo})==${fnLit} then local ${lsf}=${env}[${JSON.stringify("setfenv")}];local ${lpc}=${env}[${JSON.stringify("pcall")}];local ${lgf}=${env}[${JSON.stringify("getgenv")}];if ${lty}(${lgf})~=${fnLit} then ${lgf}=${genv}[${JSON.stringify("getgenv")}] end;local ${lge};if ${lty}(${lgf})==${fnLit} and ${lty}(${lpc})==${fnLit} then local ${lgok},${lgr}=${lpc}(${lgf});if ${lgok} and ${lty}(${lgr})=="table" then ${lge}=${lgr} end end;if not ${lge} then ${lge}=${genv} end;local function ${lw}(${lc},${ln},${lm}) local ${lv},${le}=${lo}(${lc},${ln},${lm},${lge});if ${lty}(${lv})==${fnLit} and ${lsf} and ${lpc} and ${lty}(${lsf})==${fnLit} and ${lty}(${lpc})==${fnLit} and ${lty}(${lge})=="table" then ${lpc}(${lsf},${lv},${lge}) end;return ${lv},${le} end;${env}[${JSON.stringify("loadstring")}]=${lw};${env}[${JSON.stringify("load")}]=${lw} end end\n`;
     return code;
   }
 
@@ -2497,6 +2502,13 @@ function buildEnvSetup(
   const encLookup = (s: string) => `${collatzDec}({${collatzEncodeString(s, collatzSeed).join(",")}})`;
   lines.push(`if not ${bRG}(${env},${encLookup("unpack")}) then local _t=${bRG}(${env},${encLookup("table")});if _t then ${bRS}(${env},${encLookup("unpack")},_t[${encLookup("unpack")}]) end end`);
   lines.push(`if not ${bRG}(${env},${encLookup("loadstring")}) then ${bRS}(${env},${encLookup("loadstring")},${bRG}(${env},${encLookup("load")})) end`);
+
+  // Bind executor-loaded chunks to getgenv(), preserving loader return values.
+  const lw = randomName(4), lc = randomName(2), ln = randomName(2), lm = randomName(2);
+  const lv = randomName(2), le = randomName(2), lsf = randomName(3), lpc = randomName(3);
+  const lgf = randomName(3), lge = randomName(2), lgok = randomName(2), lgr = randomName(2);
+  const fnLit = luaEsc("function");
+  lines.push(`do local _lo=${bRG}(${env},${encLookup("loadstring")});if ${bTY}(_lo)~=${fnLit} then _lo=${bRG}(${env},${encLookup("load")}) end;if ${bTY}(_lo)==${fnLit} then local ${lsf}=${bRG}(${env},${encLookup("setfenv")});local ${lpc}=${bRG}(${env},${encLookup("pcall")});local ${lgf}=${bRG}(${env},${encLookup("getgenv")});if ${bTY}(${lgf})~=${fnLit} then ${lgf}=${bRG}(${genv},${encLookup("getgenv")}) end;local ${lge};if ${bTY}(${lgf})==${fnLit} then local ${lgok},${lgr}=${bPC}(${lgf});if ${lgok} and ${bTY}(${lgr})==${tblEsc} then ${lge}=${lgr} end end;if not ${lge} then ${lge}=${genv} end;local function ${lw}(${lc},${ln},${lm}) local ${lv},${le}=_lo(${lc},${ln},${lm},${lge});if ${bTY}(${lv})==${fnLit} and ${bTY}(${lsf})==${fnLit} and ${bTY}(${lpc})==${fnLit} and ${bTY}(${lge})==${tblEsc} then ${lpc}(${lsf},${lv},${lge}) end;return ${lv},${le} end;${bRS}(${env},${encLookup("loadstring")},${lw});${bRS}(${env},${encLookup("load")},${lw}) end end`);
 
   if (level === "max") {
     const dbV = randomName(3);
