@@ -442,6 +442,64 @@ function returnedFunction(factory: FunctionExpression): FunctionExpression | nul
   return null;
 }
 
+function hasGotoOrLabel(node: any): boolean {
+  if (!node || typeof node !== "object") return false;
+  if (Array.isArray(node)) return node.some((item) => hasGotoOrLabel(item));
+  if (node.type === "GotoStatement" || node.type === "LabelStatement") return true;
+  for (const key of Object.keys(node)) {
+    if (key === "loc" || key === "type") continue;
+    if (hasGotoOrLabel(node[key])) return true;
+  }
+  return false;
+}
+
+export interface NativeFunctionCffOptions {
+  seed?: number;
+  functionNames: Set<string>;
+  maxFlattened?: number;
+}
+
+export interface NativeFunctionCffResult {
+  statements: Statement[];
+  transformed: number;
+  flattened: number;
+}
+
+export function scrambleNativeFunctions(
+  statements: Statement[],
+  options: NativeFunctionCffOptions,
+): NativeFunctionCffResult {
+  const state: CffState = {
+    seed: options.seed ?? 0,
+    names: 0,
+    flattened: 0,
+    maxFlattened: options.maxFlattened ?? 600,
+  };
+  let transformed = 0;
+
+  for (const stmt of statements) {
+    if (stmt.type !== "AssignmentStatement") continue;
+    if (stmt.vars.length !== 1) continue;
+    const target = stmt.vars[0]!;
+    if (target.type !== "Identifier" || !options.functionNames.has(target.name)) continue;
+    const value = stmt.values[0];
+    if (value?.type !== "FunctionExpression") continue;
+    if (hasGotoOrLabel(value.body)) continue;
+
+    const loc = value.loc;
+    const opaque = uniqueName(state, "o");
+    const junk = uniqueName(state, "j");
+    value.body.unshift(
+      localStmt(junk, num(0, loc), loc),
+      localStmt(opaque, bin(">=", call("clock", [], loc), num(0, loc), loc), loc),
+    );
+    transformBlock(value.body, state, true, opaque, junk);
+    transformed++;
+  }
+
+  return { statements, transformed, flattened: state.flattened };
+}
+
 export function scrambleNativePrefix(
   statements: Statement[],
   options: NativePrefixCffOptions,

@@ -27,6 +27,15 @@ function utf8ByteLength(str: string): number {
   return Buffer.byteLength(str, "utf8");
 }
 
+export function encodeStringExpression(
+  value: string,
+  key: number,
+  loc: SourceLocation,
+  decoderName: string
+): Expression {
+  return makeDecodeCall(encodeString(value, key), key, loc, decoderName);
+}
+
 function makeDecodeCall(
   bytes: number[],
   key: number,

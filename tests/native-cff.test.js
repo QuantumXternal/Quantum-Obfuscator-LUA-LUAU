@@ -16,7 +16,7 @@ const t = HAS_LUAU ? test : test.skip;
 const { lex } = await import("../dist/lexer/Lexer.js");
 const { parse } = await import("../dist/parser/Parser.js");
 const { printChunk } = await import("../dist/obfuscator/Printer.js");
-const { scrambleNativePrefix } = await import("../dist/obfuscator/PrefixControlFlow.js");
+const { scrambleNativePrefix, scrambleNativeFunctions } = await import("../dist/obfuscator/PrefixControlFlow.js");
 
 const TMP = mkdtempSync(join(tmpdir(), "native-cff-"));
 let counter = 0;
@@ -38,6 +38,15 @@ function cff(src, heavy = ["f"], names = ["f"], seed = 7) {
     seed,
     factoryNames: new Set(names),
     heavyFactories: new Set(heavy),
+  });
+  return { result, code: printChunk({ ...ast, body: result.statements }) };
+}
+
+function directCff(src, names = ["hot"], seed = 11) {
+  const ast = parse(lex(src).tokens);
+  const result = scrambleNativeFunctions(ast.body, {
+    seed,
+    functionNames: new Set(names),
   });
   return { result, code: printChunk({ ...ast, body: result.statements }) };
 }
@@ -268,4 +277,54 @@ g()(true)
   const r = runLuau(code);
   expect(r.stderr).toBe("");
   expect(r.stdout).toBe("ui\nframe\n");
+});
+
+t("direct Turbo CFF flattens branches, locals, and early returns", () => {
+  const { result, code } = directCff(`
+hot = function(mode)
+  local out = ""
+  if mode == 1 then
+    out = "a"
+  elseif mode == 2 then
+    out = "b"
+  else
+    out = "c"
+  end
+  if mode == "early" then
+    return out .. "!"
+  end
+  return out
+end
+print(hot(1))
+print(hot(2))
+print(hot(3))
+print(hot("early"))
+`);
+  expect(result.transformed).toBe(1);
+  expect(result.flattened).toBe(2);
+  expect(code).toContain("while true do");
+  const r = runLuau(code);
+  expect(r.stderr).toBe("");
+  expect(r.stdout).toBe("a\nb\nc\nc!\n");
+});
+
+t("direct Turbo CFF keeps loop control bound and preserves results", () => {
+  const { result, code } = directCff(`
+hot = function()
+  local sum = 0
+  for i = 1, 5 do
+    if i == 3 then continue end
+    sum = sum + i
+  end
+  while sum < 20 do
+    sum = sum + 1
+  end
+  return sum
+end
+print(hot())
+`);
+  expect(result.transformed).toBe(1);
+  const r = runLuau(code);
+  expect(r.stderr).toBe("");
+  expect(r.stdout).toBe("20\n");
 });

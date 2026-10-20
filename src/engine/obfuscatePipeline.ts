@@ -6,6 +6,8 @@ import { encodeStrings } from "../obfuscator/StringEncoder.js";
 import { renameLocalMethods } from "../obfuscator/LocalMethodRenamer.js";
 import { scrambleControlFlow } from "../obfuscator/ControlFlowScrambler.js";
 import { applyMBA } from "../obfuscator/MBAEncoder.js";
+import { hideNativeGlobals } from "../obfuscator/NativeGlobalHider.js";
+import { scrambleNativeFunctions } from "../obfuscator/PrefixControlFlow.js";
 import { printChunk, printChunkOneLine } from "../obfuscator/Printer.js";
 import { adaptRkOffset } from "../vm/reg-offset.js";
 import { compile } from "../vm/Compiler.js";
@@ -14,6 +16,7 @@ import { generateVM } from "../vm/vm-gen.js";
 import type { VMGenLevel } from "../vm/vm-gen.js";
 import { generateRegVM } from "../vm/reg-vm-gen.js";
 import type { RegVMLevel } from "../vm/reg-vm-gen.js";
+import { bit32InstallerLua } from "../vm/bit32-fallback.js";
 import { prependOutputHeader } from "../vm/watermark.js";
 import { applyFunctionMacroTiers, extractNativeFunctions, makeSeedMangler, rootCopyLua } from "./macros.js";
 import type { Chunk, Statement } from "../ast/types.js";
@@ -125,16 +128,36 @@ export function checkTruncatedInput(tokens: Token[]): { message: string; loc: So
 const PREFIX_LOADER_WRAPPER = String.raw`
 local _0q_orig = loadstring or load
 if type(_0q_orig) == "function" then
-  local function _0q_wrap(_0q_code, _0q_name, _0q_mode)
-    local _0q_env
-    if type(getgenv) == "function" then
-      local _0q_ok
-      _0q_ok, _0q_env = pcall(getgenv)
-      if not _0q_ok then _0q_env = nil end
+  local function _0q_wrap(_0q_code, _0q_name, _0q_mode, _0q_arg_env)
+    local _0q_env = _0q_arg_env
+    if type(_0q_env) ~= "table" then
+      _0q_env = nil
+      if type(getgenv) == "function" then
+        local _0q_ok
+        _0q_ok, _0q_env = pcall(getgenv)
+        if not _0q_ok or type(_0q_env) ~= "table" then _0q_env = nil end
+      end
+      if _0q_env == nil and type(getfenv) == "function" then
+        local _0q_ok
+        _0q_ok, _0q_env = pcall(getfenv, 0)
+        if not _0q_ok or type(_0q_env) ~= "table" then _0q_env = nil end
+      end
+      if _0q_env == nil and type(_G) == "table" then _0q_env = _G end
     end
-    local _0q_fn, _0q_err = _0q_orig(_0q_code, _0q_name, _0q_mode, _0q_env)
-    if type(_0q_fn) == "function" and type(_0q_env) == "table" and type(setfenv) == "function" then
-      pcall(setfenv, _0q_fn, _0q_env)
+    local _0q_fn, _0q_err
+    if _0q_env ~= nil then
+      _0q_fn, _0q_err = _0q_orig(_0q_code, _0q_name, _0q_mode, _0q_env)
+    else
+      _0q_fn, _0q_err = _0q_orig(_0q_code, _0q_name, _0q_mode)
+    end
+    if type(_0q_fn) == "function" and _0q_env ~= nil then
+      local _0q_set = false
+      if type(setfenv) == "function" then
+        _0q_set = pcall(setfenv, _0q_fn, _0q_env)
+      end
+      if not _0q_set and type(debug) == "table" and type(debug.setupvalue) == "function" then
+        pcall(debug.setupvalue, _0q_fn, 1, _0q_env)
+      end
     end
     return _0q_fn, _0q_err
   end
@@ -143,12 +166,16 @@ if type(_0q_orig) == "function" then
 end
 `;
 
-function prefixLoaderWrapperStatements(): Statement[] {
-  const lr = lex(PREFIX_LOADER_WRAPPER);
+function statementsFromLua(src: string): Statement[] {
+  const lr = lex(src);
   if (lr.errors.length > 0) throw new PipelineLexError(lr.errors);
   const parsed = parseWithErrors(lr.tokens);
   if (parsed.errors.length > 0) throw new PipelineParseError(parsed.errors);
   return parsed.ast.body as Statement[];
+}
+
+function prefixLoaderWrapperStatements(): Statement[] {
+  return statementsFromLua(PREFIX_LOADER_WRAPPER);
 }
 
 export function runObfuscatePipeline(code: string, opts: PipelineOptions): string {
@@ -182,6 +209,7 @@ export function runObfuscatePipeline(code: string, opts: PipelineOptions): strin
   const debugNative = opts.vmLevel === "debug";
   const executorGlobals = opts.executorGlobals ?? opts.vmLevel !== "debug";
   const polySeed = opts.polymorphicSeed ?? opts.seed ?? Date.now();
+  const nativeDecoderName = makeSeedMangler(polySeed, "td")("dec", 0);
 
   const nativeNames = new Set<string>(macroTiers.turbos);
   if (debugNative) {
@@ -231,21 +259,39 @@ export function runObfuscatePipeline(code: string, opts: PipelineOptions): strin
     workingAst = applyMBA(workingAst, { enabled: true, seed: typeof opts.seed === "number" ? opts.seed : 0 });
   }
 
+  if (nativeStatements.length > 0 && !debugPlaintextNative) {
+    const hidden = hideNativeGlobals(nativeStatements, {
+      functionNames: new Set(nativeMangled),
+      aliasName: makeSeedMangler(polySeed, "qg")("env", 0),
+      decoderName: nativeDecoderName,
+      key: 0x5a,
+    });
+    nativeStatements = hidden.statements;
+  }
+
+  if (nativeStatements.length > 0 && !debugPlaintextNative) {
+    const cff = scrambleNativeFunctions(nativeStatements, {
+      functionNames: new Set(nativeMangled),
+      seed: typeof opts.seed === "number" ? opts.seed : 0,
+    });
+    nativeStatements = cff.statements;
+  }
+
   if (nativeStatements.length > 0) {
     let nativeChunk: Chunk = { type: "Chunk", loc: ast.loc, body: nativeStatements };
     if (!debugPlaintextNative) {
-      const turboDecoder = makeSeedMangler(polySeed, "td")("dec", 0);
       nativeChunk = encodeStrings(nativeChunk, {
         enabled: true,
         ...(opts.seed !== undefined ? { seed: opts.seed } : {}),
-        decoderName: turboDecoder,
+        decoderName: nativeDecoderName,
       });
       nativeChunk = applyMBA(nativeChunk, {
         enabled: true,
         seed: typeof opts.seed === "number" ? opts.seed : 0,
       });
     }
-    nativeStatements = [...prefixLoaderWrapperStatements(), ...(nativeChunk.body as Statement[])];
+    const nativePrelude = debugPlaintextNative ? [] : statementsFromLua(bit32InstallerLua());
+    nativeStatements = [...nativePrelude, ...prefixLoaderWrapperStatements(), ...(nativeChunk.body as Statement[])];
   }
 
   const obfuscated = obfuscate(workingAst, {

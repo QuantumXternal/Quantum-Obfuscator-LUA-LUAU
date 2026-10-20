@@ -69,6 +69,19 @@ export function mbaTransformExpression(exp: Expression, rng: () => number, varNa
   if (exp.type === "NumberLiteral") {
     const n = (exp as any).value as number;
     if (!Number.isFinite(n)) return exp;
+    if (Number.isSafeInteger(n) && !Object.is(n, -0) && rng() < 0.5) {
+      const c = 1 + Math.floor(rng() * 0x3ffff);
+      const a = n + c;
+      if (Number.isSafeInteger(a)) {
+        return {
+          type: "BinaryExpression",
+          operator: "-",
+          left: { type: "NumberLiteral", value: a, loc: exp.loc } as any,
+          right: { type: "NumberLiteral", value: c, loc: exp.loc } as any,
+          loc: exp.loc,
+        } as any;
+      }
+    }
     const variant = VARIANTS[Math.floor(rng() * VARIANTS.length)];
     if (variant === VARIANTS[0]) {
       // ((v - v) + n)

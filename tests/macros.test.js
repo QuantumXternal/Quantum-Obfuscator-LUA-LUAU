@@ -165,7 +165,7 @@ test("Maximum raises a lower profile to the register max VM", () => {
   expect(out.split("\n")[0]).toBe(WATERMARK_LINE);
 });
 
-test("Turbo gets string and MBA hardening but no native control-flow scrambler", () => {
+test("Turbo gets string, MBA, and native control-flow hardening", () => {
   const code = `--@quantum:turbo
 local function hot()
   return "plain-turbo-token" .. tostring(10 + 20)
@@ -174,6 +174,7 @@ print(hot())
 `;
   const out = runObfuscatePipeline(code, { ...BASE, encodeStrings: false, mba: false });
   expect(out).not.toContain("plain-turbo-token");
+  expect(out).toContain("os.clock()");
   expect(out).not.toMatch(/__qnc_/);
   if (!HAS_LUAU) return;
   const r = runLuau(out);

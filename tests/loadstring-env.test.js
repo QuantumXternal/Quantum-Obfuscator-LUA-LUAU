@@ -110,6 +110,28 @@ print(read())
   }
 }, 180000);
 
+t("plain PUC 5.4: Turbo loader initializes without getgenv or the compat shim", () => {
+  if (!HAS_PUC) return;
+  const src = `--@quantum:turbo
+local function read()
+  local f = loadstring("return 6*7")
+  return f()
+end
+print(read())
+`;
+  const artifact = quiet(() => runObfuscatePipeline(src, {
+    ...BASE,
+    vmType: "register",
+    vmLevel: "max",
+  }));
+  const r = run(LUA54, "", artifact, false);
+  expect({ stderr: r.stderr, status: r.status, stdout: r.stdout }).toEqual({
+    stderr: "",
+    status: 0,
+    stdout: "42",
+  });
+}, 180000);
+
 t("loader remains usable when getgenv is absent", () => {
   const artifact = quiet(() => runObfuscatePipeline('local f=loadstring("return 1+1") print(f())', {
     ...BASE,
