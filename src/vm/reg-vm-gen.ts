@@ -37,7 +37,8 @@ export type RegFeatureFlag =
   | "syntaxInterpreter"
   | "customCipher"
   | "stubCompression"
-  | "vmNesting";
+  | "vmNesting"
+  | "nativeErrorSkip";
 
 export interface RegVMGenOptions {
   level?: RegVMLevel;
@@ -99,6 +100,9 @@ interface BuildCtx {
   handlerNoise: boolean;
   /** Never-called decoder twins + junk fragments. Default true = historical output. */
   deadCodeInjection: boolean;
+  /** Native-call errors matching Roblox restriction messages skip the
+   *  instruction instead of unwinding the VM (non-debug only). */
+  nativeErrorSkip: boolean;
   dispatchVariant: number;
   dispatchMask: number;
   rotSeed: number;
@@ -910,11 +914,30 @@ registerHandler(RegOp.TEST, (n) =>
 registerHandler(RegOp.TESTSET, (n) =>
   `if (not ${n.R}[B+1])==(C~=0) then ${n.kk}=${n.kk}+1;${n.ip}=${n.poff}[${n.kk}] or (#${n.code}+1) else ${n.R}[A+1]=${n.R}[B+1] end`);
 
-registerHandler(RegOp.CALL, (n) => {
+// Roblox raises these when a native method rejects the script's context
+// (remote callback ownership, cross-Datatype casts). They are environmental,
+// not script bugs: skipping the instruction keeps the VM alive instead of
+// replaying the failing call forever.
+const NATIVE_ERROR_MATCH =
+  `type(_em)=="string" and (_em:find("OnClientInvoke",1,true) or _em:find("Unable to cast",1,true))`;
+
+registerHandler(RegOp.CALL, (n, ctx) => {
 
   const storeR = () =>
     `if C==0 then for _i=1,_pk.n do ${n.R}[A+_i]=_pk[_i] end;${n.top}=A+_pk.n ` +
     `else for _i=1,C-1 do ${n.R}[A+_i]=_pk[_i] end end`;
+  if (ctx.nativeErrorSkip) {
+    return `do local _fn=${n.R}[A+1];` +
+      `local _ok,_res=${n.bPcall}(function() local _p;` +
+      `if B==1 then _p=${n.tPack}(_fn()) ` +
+      `elseif B==2 then _p=${n.tPack}(_fn(${n.R}[A+2])) ` +
+      `elseif B==3 then _p=${n.tPack}(_fn(${n.R}[A+2],${n.R}[A+3])) ` +
+      `elseif B==0 then _p=${n.tPack}(_fn(${n.tUnpack}(${n.R},A+2,${n.top}))) ` +
+      `else _p=${n.tPack}(_fn(${n.tUnpack}(${n.R},A+2,A+B))) end;return _p end);` +
+      `local _pk;if _ok then _pk=_res else local _em=_res;` +
+      `if ${NATIVE_ERROR_MATCH} then _pk={n=0} else error(_em,0) end end;` +
+      `${storeR()} end`;
+  }
   return `do local _fn=${n.R}[A+1];local _pk;` +
     `if B==1 then _pk=${n.tPack}(_fn()) ` +
     `elseif B==2 then _pk=${n.tPack}(_fn(${n.R}[A+2])) ` +
@@ -924,15 +947,28 @@ registerHandler(RegOp.CALL, (n) => {
     `${storeR()} end`;
 });
 
-registerHandler(RegOp.TAILCALL, (n) =>
+registerHandler(RegOp.TAILCALL, (n, ctx) => {
   // v2 closure dispatch: run-level returns are packed (tPack) so the
   // dispatcher can propagate them via unpack; bare form returns {n=0}.
-  `do local _fn=${n.R}[A+1];` +
-  `if B==1 then return ${n.tPack}(_fn()) ` +
-  `elseif B==2 then return ${n.tPack}(_fn(${n.R}[A+2])) ` +
-  `elseif B==3 then return ${n.tPack}(_fn(${n.R}[A+2],${n.R}[A+3])) ` +
-  `elseif B==0 then return ${n.tPack}(_fn(${n.tUnpack}(${n.R},A+2,${n.top}))) ` +
-  `else return ${n.tPack}(_fn(${n.tUnpack}(${n.R},A+2,A+B))) end end`);
+  if (ctx.nativeErrorSkip) {
+    return `do local _fn=${n.R}[A+1];` +
+      `local _ok,_res=${n.bPcall}(function() ` +
+      `if B==1 then return ${n.tPack}(_fn()) ` +
+      `elseif B==2 then return ${n.tPack}(_fn(${n.R}[A+2])) ` +
+      `elseif B==3 then return ${n.tPack}(_fn(${n.R}[A+2],${n.R}[A+3])) ` +
+      `elseif B==0 then return ${n.tPack}(_fn(${n.tUnpack}(${n.R},A+2,${n.top}))) ` +
+      `else return ${n.tPack}(_fn(${n.tUnpack}(${n.R},A+2,A+B))) end end);` +
+      `if _ok then return _res end;local _em=_res;` +
+      `if ${NATIVE_ERROR_MATCH} then return ${n.tPack}() end;` +
+      `error(_em,0) end`;
+  }
+  return `do local _fn=${n.R}[A+1];` +
+    `if B==1 then return ${n.tPack}(_fn()) ` +
+    `elseif B==2 then return ${n.tPack}(_fn(${n.R}[A+2])) ` +
+    `elseif B==3 then return ${n.tPack}(_fn(${n.R}[A+2],${n.R}[A+3])) ` +
+    `elseif B==0 then return ${n.tPack}(_fn(${n.tUnpack}(${n.R},A+2,${n.top}))) ` +
+    `else return ${n.tPack}(_fn(${n.tUnpack}(${n.R},A+2,A+B))) end end`;
+});
 
 registerHandler(RegOp.RETURN, (n) =>
   `do if B==0 then return ${n.tPack}(${n.tUnpack}(${n.R},A+1,${n.top})) ` +
@@ -984,12 +1020,23 @@ registerHandler(RegOp.CLOSURE, (n, ctx) => {
   const gMR = pos ? "[6]" : ".mR";
   const gVA = pos ? "[7]" : ".vA";
   const gW = pos ? "[8]" : ".pW";
+  const runArgs =
+    `proto${gK},proto${gC},proto${gW},proto${gP},proto${gU} and nU or {},proto${gN},proto${gMR},proto${gVA},${n.env},...`;
+  // Closures are also invoked by the engine/host (events, spawn), outside
+  // the CALL handler's pcall. Same environmental-error skip applies here.
+  // Pass run as the pcall target directly: varargs cannot be referenced from
+  // a nested non-vararg closure, and the wrapper must stay `function(...)`.
+  const wrapper = ctx.nativeErrorSkip
+    ? `function(...) local _pk=${n.tPack}(${n.bPcall}(${n.run},${runArgs}));` +
+      `if _pk[1] then return ${n.tUnpack}(_pk,2,_pk.n) end;local _em=_pk[2];` +
+      `if ${NATIVE_ERROR_MATCH} then return nil end;error(_em,0) end`
+    : `function(...) return ${n.run}(${runArgs}) end`;
   return `do local proto=${n.protos}[B+1];if proto then ` +
     `local nU={};if proto${gU} then for _ui,_ud in ${n.bIpairs}(proto${gU}) do ` +
     `if _ud[1]==1 then local _b;for _oi=1,#${n.openUVs} do if ${n.openUVs}[_oi][2]==_ud[2]+1 then _b=${n.openUVs}[_oi];break end end;` +
     `if not _b then _b={${n.R},_ud[2]+1};${n.openUVs}[#${n.openUVs}+1]=_b end;nU[_ui]=_b ` +
     `else nU[_ui]=${n.upvalues}[_ud[2]+1] end end end;` +
-    `${n.R}[A+1]=function(...) return ${n.run}(proto${gK},proto${gC},proto${gW},proto${gP},proto${gU} and nU or {},proto${gN},proto${gMR},proto${gVA},${n.env},...) end ` +
+    `${n.R}[A+1]=${wrapper} ` +
     `else ${n.R}[A+1]=nil end end`;
 });
 
@@ -1080,23 +1127,29 @@ registerHandler(RegOp.FUSED_MOVE_MOVE, (n) => {
   return `do ${n.R}[A+1]=${n.R}[B+1];${n.R}[${n.code}[${n.ip}-3]+1]=${n.R}[${n.code}[${n.ip}-2]+1] end`;
 });
 
-registerHandler(RegOp.FUSED_SELF_CALL, (n) => {
+registerHandler(RegOp.FUSED_SELF_CALL, (n, ctx) => {
   const v = Math.floor(rng() * 2);
-  const callBody =
-    `local _B2=${n.code}[${n.ip}-2];local _C2=${n.code}[${n.ip}-1];` +
+  const read = `local _B2=${n.code}[${n.ip}-2];local _C2=${n.code}[${n.ip}-1];`;
+  const invoke =
     `local _pk;` +
     `if _B2==2 then _pk=${n.tPack}(_fn(${n.R}[A+2])) ` +
     `elseif _B2==3 then _pk=${n.tPack}(_fn(${n.R}[A+2],${n.R}[A+3])) ` +
     `elseif _B2==0 then _pk=${n.tPack}(_fn(${n.tUnpack}(${n.R},A+2,${n.top}))) ` +
-    `else _pk=${n.tPack}(_fn(${n.tUnpack}(${n.R},A+2,A+_B2))) end;` +
+    `else _pk=${n.tPack}(_fn(${n.tUnpack}(${n.R},A+2,A+_B2))) end`;
+  const store =
     `if _C2==0 then for _i=1,_pk.n do ${n.R}[A+_i]=_pk[_i] end;${n.top}=A+_pk.n ` +
     `else for _i=1,_C2-1 do ${n.R}[A+_i]=_pk[_i] end end`;
+  const callBody = ctx.nativeErrorSkip
+    ? `${read}local _ok,_res=${n.bPcall}(function() ${invoke};return _pk end);local _pk;` +
+      `if _ok then _pk=_res else local _em=_res;` +
+      `if ${NATIVE_ERROR_MATCH} then _pk={n=0} else error(_em,0) end end;${store}`
+    : `${read}${invoke};${store}`;
   if (v === 0)
     return `do ${n.R}[A+2]=${n.R}[B+1];local _fn=${n.R}[B+1][${n.RK}(C)];${n.R}[A+1]=_fn;${callBody} end`;
   return `do local _s=${n.R}[B+1];${n.R}[A+2]=_s;local _fn=_s[${n.RK}(C)];${n.R}[A+1]=_fn;${callBody} end`;
 });
 
-registerHandler(RegOp.FUSED_GGET_CALL, (n) => {
+registerHandler(RegOp.FUSED_GGET_CALL, (n, ctx) => {
 
   const v = Math.floor(rng() * 2);
   const readSlot2 = `local _A2=${n.code}[${n.ip}-7];local _C2=${n.code}[${n.ip}-5]`;
@@ -1104,15 +1157,21 @@ registerHandler(RegOp.FUSED_GGET_CALL, (n) => {
   const gget = v === 0
     ? `local _g=${n.env}[${n.K}[B+1]];${n.R}[A+1]=_g;local _fn=_g[${n.RK}(_C2)];${n.R}[_A2+1]=_fn`
     : `local _g=${n.env}[${n.K}[B+1]];${n.R}[A+1]=_g;${n.R}[_A2+1]=_g[${n.RK}(_C2)];local _fn=${n.R}[_A2+1]`;
-  const callBody =
+  const invoke =
     `local _pk;` +
     `if _B3==1 then _pk=${n.tPack}(_fn()) ` +
     `elseif _B3==2 then _pk=${n.tPack}(_fn(${n.R}[_A3+2])) ` +
     `elseif _B3==3 then _pk=${n.tPack}(_fn(${n.R}[_A3+2],${n.R}[_A3+3])) ` +
     `elseif _B3==0 then _pk=${n.tPack}(_fn(${n.tUnpack}(${n.R},_A3+2,${n.top}))) ` +
-    `else _pk=${n.tPack}(_fn(${n.tUnpack}(${n.R},_A3+2,_A3+_B3))) end;` +
+    `else _pk=${n.tPack}(_fn(${n.tUnpack}(${n.R},_A3+2,_A3+_B3))) end`;
+  const store =
     `if _C3==0 then for _i=1,_pk.n do ${n.R}[_A3+_i]=_pk[_i] end;${n.top}=_A3+_pk.n ` +
     `else for _i=1,_C3-1 do ${n.R}[_A3+_i]=_pk[_i] end end`;
+  const callBody = ctx.nativeErrorSkip
+    ? `local _ok,_res=${n.bPcall}(function() ${invoke};return _pk end);local _pk;` +
+      `if _ok then _pk=_res else local _em=_res;` +
+      `if ${NATIVE_ERROR_MATCH} then _pk={n=0} else error(_em,0) end end;${store}`
+    : `${invoke};${store}`;
   return `do ${readSlot2};${readSlot3};${gget};${callBody} end`;
 });
 
@@ -2302,7 +2361,7 @@ function buildEnvSetup(ctx: BuildCtx): string {
   };
 
   const dec = randomName(4);
-  L.push(`local function ${dec}(_t) local _s="";for _i=1,#_t do _s=_s..string.char(${n.bBxor}(_t[_i],${n.bBand}(${envKey}+(_i-1)*${envStep},0xFF))) end;return _s end`);
+  L.push(`local function ${dec}(_t) local _s="";for _i=1,#_t do _s=_s..string.char(math.floor(tonumber(${n.bBxor}(math.floor(tonumber(_t[_i]) or 0) % 256,${n.bBand}(${envKey}+(_i-1)*${envStep},0xFF))) or 0) % 256) end;return _s end`);
 
   // v4: robust root resolver — `_G` alone is a bare data table on Roblox
   // (no stdlib), which starved the env proxy of every global it prefetches.
@@ -2346,7 +2405,7 @@ function buildEnvFragments(ctx: BuildCtx): { fragments: Fragment[]; forwardDecls
   const dec = randomName(4);
   forwardDecls.push(dec, n.genv, n.env);
 
-  fragments.push({ code: `${dec}=function(_t) local _s="";for _i=1,#_t do _s=_s..string.char(${n.bBxor}(_t[_i],${n.bBand}(${envKey}+(_i-1)*${envStep},0xFF))) end;return _s end`, layer: 0 });
+  fragments.push({ code: `${dec}=function(_t) local _s="";for _i=1,#_t do _s=_s..string.char(math.floor(tonumber(${n.bBxor}(math.floor(tonumber(_t[_i]) or 0) % 256,${n.bBand}(${envKey}+(_i-1)*${envStep},0xFF))) or 0) % 256) end;return _s end`, layer: 0 });
   // v4: robust root resolver (see ENV_ROOT_LUA) — replaces the v3.2.x
   // `loadstring("return _G")()` root, which is stdlib-less on Roblox.
   fragments.push({ code: `${n.genv}=${envRootLua()}`, layer: 1 });
@@ -2485,9 +2544,9 @@ function buildDecoderChain(
   fragments.push({ code: `${nPre}=function(_0K) for _0i=1,#_0K do if type(_0K[_0i])=="string" then local _0s=_0K[_0i];local _0t={};for _0j=1,#_0s do _0t[_0j]=string.byte(_0s,_0j) end;_0K[_0i]=_0t end end end`, layer: 0 });
 
   if (Math.floor(rng() * 2) === 0) {
-    fragments.push({ code: wrapA(nF, `local _0s="";for _0j=1,#_0v do _0s=_0s..string.char(_0v[_0j]) end;_0K[_0i]=_0s`), layer: 0 });
+    fragments.push({ code: wrapA(nF, `local _0s="";for _0j=1,#_0v do _0s=_0s..string.char(math.floor(tonumber(_0v[_0j]) or 0) % 256) end;_0K[_0i]=_0s`), layer: 0 });
   } else {
-    fragments.push({ code: wrapA(nF, `local _0t={};for _0j=1,#_0v do _0t[_0j]=string.char(_0v[_0j]) end;_0K[_0i]=table.concat(_0t)`), layer: 0 });
+    fragments.push({ code: wrapA(nF, `local _0t={};for _0j=1,#_0v do _0t[_0j]=string.char(math.floor(tonumber(_0v[_0j]) or 0) % 256) end;_0K[_0i]=table.concat(_0t)`), layer: 0 });
   }
 
   // Never-called decoder twins. Gated: no emitted caller exists (chainCalls
@@ -3473,8 +3532,7 @@ function wrapCustomCipher(source: string, layerOpts?: CipherLayerOpts): string {
   const nTU = randomName(3);
   L.push(`local ${nTU}=${nTb}[${vmDk}(${encodeVmStr("unpack")})]`);
 
-  const nTw = randomName(2);
-  L.push(`local ${nTw};do local _t=${nEv}[${vmDk}(${encodeVmStr("task")})] if _t then ${nTw}=_t[${vmDk}(${encodeVmStr("wait")})] end end`);
+
 
   honeypots(1 + Math.floor(rng() * 2));
 
@@ -3555,7 +3613,6 @@ function wrapCustomCipher(source: string, layerOpts?: CipherLayerOpts): string {
   cfStates.push({ id: ST_DECODE, nextId: ST_RLE, lines: [
     `${nDec}={};${nCnt}=0`,
     `for _i=1,#${nDt},4 do`,
-    `if _i%${30000 + Math.floor(rng() * 20001)}==0 and ${nTw} then ${nCPcall}(${nTw}) end`,
     `local _p1,_p2,_p3,_p4=${nBy}(${nDt},_i,_i+3)`,
     `local a,b,c,d=${nLUT}[_p1],${nLUT}[_p2],${nLUT}[_p3],${nLUT}[_p4]`,
     `${nCnt}=${nCnt}+1;${nDec}[${nCnt}]=${nBxor}(${nIv}[${nBor}(${nLsh}(a,2),${nRsh}(b,4))+1],${nBand}(${cSeed}+(${nCnt}-1)*${cStep},0xFF))`,
@@ -3580,7 +3637,7 @@ function wrapCustomCipher(source: string, layerOpts?: CipherLayerOpts): string {
     `${nOut}={};local _oc=0;local _ln=#${nRle};for _i=1,_ln,${BATCH} do _oc=_oc+1;local _e=_i+${BATCH-1};if _e>_ln then _e=_ln end;${nOut}[_oc]=${nCh}(${nTU}(${nRle},_i,_e)) end`,
     `else`,
     `local _lz={};local _lp=1;local _lc=0;local _rn=#${nRle}`,
-    `while _lp<=_rn do if _lp%${35000 + Math.floor(rng() * 30001)}==0 and ${nTw} then ${nCPcall}(${nTw}) end;local _ct=${nRle}[_lp];_lp=_lp+1;if _ct<128 then local _n=_ct+1;for _i=1,_n do _lc=_lc+1;_lz[_lc]=${nRle}[_lp];_lp=_lp+1 end elseif _ct<192 then local _ll=_ct-124;local _lo=${nRle}[_lp]+1;_lp=_lp+1;local _ls=_lc;for _j=1,_ll do _lc=_lc+1;_lz[_lc]=_lz[_ls-_lo+_j] end else local _ll=_ct-188;local _lo=${nRle}[_lp]*256+${nRle}[_lp+1];_lp=_lp+2;local _ls=_lc;for _j=1,_ll do _lc=_lc+1;_lz[_lc]=_lz[_ls-_lo+_j] end end end`,
+    `while _lp<=_rn do local _ct=${nRle}[_lp];_lp=_lp+1;if _ct<128 then local _n=_ct+1;for _i=1,_n do _lc=_lc+1;_lz[_lc]=${nRle}[_lp];_lp=_lp+1 end elseif _ct<192 then local _ll=_ct-124;local _lo=${nRle}[_lp]+1;_lp=_lp+1;local _ls=_lc;for _j=1,_ll do _lc=_lc+1;_lz[_lc]=_lz[_ls-_lo+_j] end else local _ll=_ct-188;local _lo=${nRle}[_lp]*256+${nRle}[_lp+1];_lp=_lp+2;local _ls=_lc;for _j=1,_ll do _lc=_lc+1;_lz[_lc]=_lz[_ls-_lo+_j] end end end`,
     `${nTmpChk}=0;for _i=1,_lc do ${nTmpChk}=(${nTmpChk}+_lz[_i])%${tamperPrime} end`,
     `${nOut}={};local _oc=0;for _i=1,_lc,${BATCH} do _oc=_oc+1;local _e=_i+${BATCH-1};if _e>_lc then _e=_lc end;${nOut}[_oc]=${nCh}(${nTU}(_lz,_i,_e)) end`,
     `end`,
@@ -3907,6 +3964,7 @@ export function generateRegVM(chunk: RegBytecodeChunk, options: RegVMGenOptions 
   // Default ON preserves historical output exactly; disableFeatures:
   // ["deadCodeInjection"] omits only provably uninvoked material.
   const deadCodeInjection = featureEnabled(options, "deadCodeInjection", true);
+  const nativeErrorSkip = level !== "debug" && featureEnabled(options, "nativeErrorSkip", true);
   const includeExecutor = options.executorGlobals ?? (level !== "debug");
 
   const { encode, decode } = shuffleOpcodes(doShuffle);
@@ -3956,7 +4014,8 @@ export function generateRegVM(chunk: RegBytecodeChunk, options: RegVMGenOptions 
 
   const ctx: BuildCtx = {
     level, seed, names, opcodeEncode: encode, opcodeDecode: decode,
-    doShuffle, encodeStrings, handlerNoise, deadCodeInjection, xorKey: 0, xorStep: 0, includeExecutor, protoKeys,
+    doShuffle, encodeStrings, handlerNoise, deadCodeInjection, nativeErrorSkip,
+    xorKey: 0, xorStep: 0, includeExecutor, protoKeys,
     debugTrace: options.debugTrace ?? (level === "debug"),
     sbox, sboxInverse, helixSeed, helixMul, cascadeKey, cascadeMul,
     checkKeyA, checkKeyB, checkStepA, checkStepB,

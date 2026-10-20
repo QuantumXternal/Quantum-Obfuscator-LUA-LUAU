@@ -168,3 +168,121 @@ t("unresolved global callback is left alone with a warning", () => {
   const r = runLuau(out);
   expect(r.stderr).toBe("");
 });
+
+const HB_HARNESS = `
+local calls = {}
+local hb = { Heartbeat = {} }
+function hb.Heartbeat:Connect(fn)
+  calls[#calls + 1] = fn
+end
+local Loops = {}
+function Loops:AddToHeartbeat(name, fn)
+  calls[#calls + 1] = fn
+end
+`;
+
+t("Heartbeat callbacks are lifted for :Connect and AddToHeartbeat", () => {
+  const warnings = [];
+  const code =
+    HB_HARNESS +
+    `
+local function beat()
+  print("beat")
+end
+hb.Heartbeat:Connect(beat)
+
+local function viaLoop()
+  print("via-loop")
+end
+Loops:AddToHeartbeat("viaLoop", viaLoop)
+
+for _, fn in ipairs(calls) do fn() end
+`;
+  const out = runObfuscatePipeline(code, { ...BASE, onWarning: (m) => warnings.push(m) });
+  expect(warnings).toEqual([]);
+  expect(out).toMatch(/__qmr_/);
+  const r = runLuau(out);
+  expect(r.stderr).toBe("");
+  expect(r.stdout).toBe("beat\nvia-loop\n");
+});
+
+const UI_HARNESS = `
+local handlers = {}
+local function makeSignal(name)
+  local s = {}
+  function s:Connect(fn)
+    handlers[name] = fn
+  end
+  return s
+end
+local Instance = { new = function(cls)
+  return {
+    ClassName = cls,
+    InputBegan = makeSignal("began"),
+    InputEnded = makeSignal("ended"),
+  }
+end }
+`;
+
+t("Instance.new aliases lift UI builders and write captures back via setters", () => {
+  const warnings = [];
+  const code =
+    UI_HARNESS +
+    `
+local InstanceNew = Instance.new
+local dragging = false
+local dragCount = 0
+
+local function BuildUI()
+  local frame = InstanceNew("Frame")
+  local label = InstanceNew("TextLabel")
+  label.Name = "hud"
+  frame.Name = "panel"
+  label.Parent = frame
+  frame.InputBegan:Connect(function(input)
+    dragging = true
+    dragCount += 1
+  end)
+  frame.InputEnded:Connect(function()
+    dragging = false
+  end)
+  return frame
+end
+
+local ui = BuildUI()
+print("built", ui.Name, ui.ClassName)
+handlers.began({ Position = 1 })
+print("drag", dragging, dragCount)
+handlers.ended({})
+print("stop", dragging, dragCount)
+`;
+  const out = runObfuscatePipeline(code, { ...BASE, onWarning: (m) => warnings.push(m) });
+  expect(warnings).toEqual([]);
+  expect(out).toMatch(/__qmr_/);
+  const r = runLuau(out);
+  expect(r.stderr).toBe("");
+  expect(r.stdout).toBe("built\tpanel\tFrame\ndrag\ttrue\t1\nstop\tfalse\t1\n");
+});
+
+t("light Instance.new users are not auto-lifted", () => {
+  const warnings = [];
+  const code =
+    UI_HARNESS +
+    `
+local InstanceNew = Instance.new
+local function mainBrain()
+  local part = InstanceNew("Part")
+  local cfg = { label = "x" }
+  return cfg, part
+end
+
+local cfg, part = mainBrain()
+print("main", cfg.label, part.ClassName)
+`;
+  const out = runObfuscatePipeline(code, { ...BASE, onWarning: (m) => warnings.push(m) });
+  expect(warnings).toEqual([]);
+  expect(out).not.toMatch(/__qmr_/);
+  const r = runLuau(out);
+  expect(r.stderr).toBe("");
+  expect(r.stdout).toBe("main\tx\tPart\n");
+});

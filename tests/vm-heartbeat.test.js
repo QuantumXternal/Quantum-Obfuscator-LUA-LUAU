@@ -105,6 +105,18 @@ t("heartbeat does not yield once per VM function call", () => {
   expect(Number(m[1])).toBe(0);
 });
 
+t("large string constants decode intact", () => {
+  const big = "A".repeat(8191) + "Z";
+  const src =
+    'local s = "' + big + '"\n' +
+    'print("len", #s, s:sub(1, 1), s:sub(-1))\n';
+  const art = gen(src, 9090);
+  const r = runLua(art);
+  expect(r.code).toBe(0);
+  expect(r.err).toBe("");
+  expect(r.out).toBe("len\t8192\tA\tZ\n");
+});
+
 t("heartbeat still yields periodically in long-running code", () => {
   const src =
     "local s = 0\n" +
