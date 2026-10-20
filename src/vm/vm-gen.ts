@@ -5,6 +5,7 @@ import { Parser } from "../parser/Parser.js";
 import { compile as compileAST } from "./Compiler.js";
 import { splitLongLiteral, joinBounded, luaQuotedFromBytes, boundCommaSeparatedLine, longStringLevel } from "./limits.js";
 import { bit32InstallerLua } from "./bit32-fallback.js";
+import { prependOutputHeader } from "./watermark.js";
 
 // Emit a (possibly very long) encoded fragment as one or more bounded-width
 // long-bracket literals joined by `..` across lines. Fragments come from the
@@ -3873,6 +3874,8 @@ export interface VMGenOptions {
 
   _noWatermark?: boolean;
 
+  _nativePrefix?: string;
+
   forceFeatures?: FeatureFlag[];
 
   noCompression?: boolean;
@@ -3891,7 +3894,6 @@ export function generateVM(chunk: BytecodeChunk, options: VMGenOptions = {}): st
   // Phase 1.2(b): string seeds take the 128-bit path; the numeric
   // expression below is byte-identical to before for numbers.
   const seed: number | string = options.polymorphicSeed ?? (Date.now() ^ (Math.random() * 0xFFFFFFFF));
-  const seeded = options.polymorphicSeed !== undefined && options.polymorphicSeed !== null;
   if (typeof seed === "string") seedRandom128(seed); else seedRandom(seed);
 
   if (nesting > 0 && !options.forceSingleVM) {
@@ -4195,37 +4197,16 @@ export function generateVM(chunk: BytecodeChunk, options: VMGenOptions = {}): st
     output = wrapStubVM(output);
   }
 
-  if (!options._noWatermark) {
-
-    // Deterministic under an explicit seed (fingerprint drawn from the seeded
-    // stream, still unique per seed); wall-clock/random only when unseeded.
-    const buildTS = seeded ? Math.floor(rng() * 0xFFFFFFFF) : Math.floor(Date.now() / 1000) & 0xFFFFFFFF;
-    const buildRand = seeded ? Math.floor(rng() * 0xFFFF) : Math.floor(Math.random() * 0xFFFF);
-    const fingerprint = ((buildTS ^ (buildRand << 16)) >>> 0);
-    const fpHex = fingerprint.toString(16).padStart(8, '0').toUpperCase();
-
-    const artLines = [
-      `Quantum Protection V2`,
-      `https://discord.gg/DvjFNyyjuH | Protected By Quantum Obfuscator`,
-    ];
-
-    for (let li = 0; li < 8 && li < artLines.length; li++) {
-      const nibble = (fingerprint >>> (28 - li * 4)) & 0xF;
-
-      const spaces = (nibble & 3) + 1;
-      artLines[li] = artLines[li].trimEnd() + ' '.repeat(spaces);
-    }
-
-    const watermark = `--[[\n${artLines.join('\n')}\n]]\n`;
-    output = watermark + output;
+  if (!options._noWatermark || options._nativePrefix) {
+    output = prependOutputHeader(output, options._nativePrefix ?? "", !options._noWatermark);
   }
 
-    // Final line-width guarantee: the stack artifact IS the parsed
-    // executable, so wrap any residual over-bound line (giant table
-    // literals in K/code/proto data or wrap layers) at comma boundaries.
-    // Comment- and string-aware, so the watermark and embedded literals are
-    // untouched; under-bound artifacts are byte-identical.
-    return boundCommaSeparatedLine(output);
+  // Final line-width guarantee: the stack artifact IS the parsed
+  // executable, so wrap any residual over-bound line (giant table
+  // literals in K/code/proto data or wrap layers) at comma boundaries.
+  // Comment- and string-aware, so the watermark and embedded literals are
+  // untouched; under-bound artifacts are byte-identical.
+  return boundCommaSeparatedLine(output);
   } finally {
     _stackArityDecoysActive = false;
   }

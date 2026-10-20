@@ -5,6 +5,8 @@ export interface BaseNode {
   loc: SourceLocation;
 }
 
+export type MacroTier = "turbo" | "maximum";
+
 export interface Chunk extends BaseNode {
   type: "Chunk";
   body: (Statement | LastStatement)[];
@@ -100,6 +102,7 @@ export interface FunctionStatement extends BaseNode {
   params: Param[];
   returnType?: ReturnType;
   body: (Statement | LastStatement)[];
+  tier?: MacroTier;
 }
 
 export interface LocalFunctionStatement extends BaseNode {
@@ -110,6 +113,7 @@ export interface LocalFunctionStatement extends BaseNode {
   params: Param[];
   returnType?: ReturnType;
   body: (Statement | LastStatement)[];
+  tier?: MacroTier;
 }
 
 export interface LocalStatement extends BaseNode {
@@ -268,6 +272,7 @@ export interface FunctionExpression extends BaseNode {
   params: Param[];
   returnType?: ReturnType;
   body: (Statement | LastStatement)[];
+  tier?: MacroTier;
 }
 
 export interface ParenExpression extends BaseNode {

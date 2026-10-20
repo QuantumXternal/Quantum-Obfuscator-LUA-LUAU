@@ -8,6 +8,7 @@ import { encryptAndEncode, compressToBase85, compressBytesToBase85 } from "./lzm
 import { generateBootstrap } from "./bootstrap-template.js";
 import { bit32InstallerLua } from "./bit32-fallback.js";
 import { joinBounded, luaQuotedFromBytes, boundCommaSeparatedLine } from "./limits.js";
+import { prependOutputHeader } from "./watermark.js";
 
 export type RegVMLevel = "debug" | "normal" | "max";
 
@@ -60,6 +61,7 @@ export interface RegVMGenOptions {
 
   debugTrace?: boolean;
   _noWatermark?: boolean;
+  _nativePrefix?: string;
 
   target?: string;
 
@@ -4407,35 +4409,17 @@ export function generateRegVM(chunk: RegBytecodeChunk, options: RegVMGenOptions 
     if (_tel()) console.log(`[RegVM] Blob: final output = ${output.length} chars`);
   }
 
-  if (!options._noWatermark) {
-    const art = [
-      `__________                __                 __  .__                ____   ____________  `,
-      `\\______   \\_______  _____/  |_  ____   _____/  |_|__| ____   ____   \\   \\ /   /\\_____  \\ `,
-      ` |     ___/\\_  __ \\/  _ \\   __\\/ __ \\_/ ___\\   __\\  |/  _ \\ /    \\   \\   Y   /  /  ____/ `,
-      ` |    |     |  | \\(  <_> )  | \\  ___/\\  \\___|  | |  (  <_> )   |  \\   \\     /  /       \\ `,
-      ` |____|     |__|   \\____/|__|  \\___  >\\___  >__| |__|\\____/|___|  /    \\___/   \\_______ \\`,
-      `        \\/     \\/         \\/    \\/                                     \\/     \\/                    \\/                     \\/`,
-      ``,
-      `https://discord.gg/DvjFNyyjuH | Protected By Quantum Obfuscator`,
-    ];
-    output = `--[[\n${art.join('\n')}\n]]\n` + output;
+  if (level !== "debug" && !options._noWatermark) {
+    // Line-width policy: legacy artifacts flatten to one line; keep that
+    // shape only while it stays under the bound, otherwise break at
+    // original line boundaries (semantics-neutral whitespace swap).
+    // Byte-identical to the legacy flatten for artifacts under
+    // MAX_OUTPUT_LINE_BYTES.
+    output = joinBounded(output.split('\n').filter(l => l.trim().length > 0)).join('\n');
   }
 
-  if (level !== "debug") {
-
-    const watermarkEnd = output.indexOf(']]\n');
-    if (watermarkEnd !== -1) {
-      const watermark = output.substring(0, watermarkEnd + 3);
-      const code = output.substring(watermarkEnd + 3);
-
-      // Line-width policy: legacy artifacts flatten to one line; keep that
-      // shape only while it stays under the bound, otherwise break at
-      // original line boundaries (semantics-neutral whitespace swap).
-      // Byte-identical to the legacy flatten for artifacts under
-      // MAX_OUTPUT_LINE_BYTES.
-      const oneLine = joinBounded(code.split('\n').filter(l => l.trim().length > 0)).join('\n');
-      output = watermark + '\n' + oneLine;
-    }
+  if (!options._noWatermark || options._nativePrefix) {
+    output = prependOutputHeader(output, options._nativePrefix ?? "", !options._noWatermark);
   }
 
   return output;

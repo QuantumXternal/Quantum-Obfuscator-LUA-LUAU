@@ -16,9 +16,16 @@ import {
 } from "../tokens.js";
 import type { Position, LexError } from "./types.js";
 
+export interface SourceComment {
+  text: string;
+  loc: SourceLocation;
+  long: boolean;
+}
+
 export interface LexResult {
   tokens: Token[];
   errors: LexError[];
+  comments: SourceComment[];
 }
 
 export class Lexer {
@@ -26,6 +33,7 @@ export class Lexer {
   private pos: Position;
   private tokens: Token[] = [];
   private errors: LexError[] = [];
+  private comments: SourceComment[] = [];
 
   constructor(source: string) {
     this.source = source;
@@ -50,7 +58,7 @@ export class Lexer {
       loc: { start: end, end },
     } as EOFToken);
 
-    return { tokens: this.tokens, errors: this.errors };
+    return { tokens: this.tokens, errors: this.errors, comments: this.comments };
   }
 
   private clonePos(): Position {
@@ -95,6 +103,8 @@ export class Lexer {
   }
 
   private skipComment(): void {
+    const start = this.clonePos();
+    const startOffset = this.pos.offset;
     this.advance();
     this.advance();
     const ch = this.peek();
@@ -102,12 +112,22 @@ export class Lexer {
       const eqCount = this.readLongBracketStart();
       if (eqCount >= 0) {
         this.skipLongComment(eqCount);
+        this.recordComment(start, startOffset, true);
         return;
       }
     }
     while (this.pos.offset < this.source.length && this.peek() !== "\n") {
       this.advance();
     }
+    this.recordComment(start, startOffset, false);
+  }
+
+  private recordComment(start: Position, startOffset: number, long: boolean): void {
+    this.comments.push({
+      text: this.source.slice(startOffset, this.pos.offset),
+      loc: this.loc(start, this.clonePos()),
+      long,
+    });
   }
 
   private readLongBracketStart(): number {

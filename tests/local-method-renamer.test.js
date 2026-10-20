@@ -104,28 +104,27 @@ print(call(t))
   expect(r.stdout).toBe("7\n");
 });
 
-t("lifts method names in the render-prefix with the shared map", () => {
+t("renames methods inside the Turbo prefix", () => {
   const warnings = [];
   const code = runObfuscatePipeline(`
-local calls = {}
-local rs = { RenderStepped = {} }
-function rs.RenderStepped:Connect(fn) calls[#calls + 1] = fn end
-local t = { x = 7 }
-function t:get_position() return self.x end
-function t:aim() return t:get_position() end
-rs.RenderStepped:Connect(function() print(t:aim()) end)
-for _, fn in ipairs(calls) do fn() end
+--@quantum:turbo
+local function paint()
+  local t = { x = 7 }
+  function t:get_position() return self.x end
+  function t:aim() return t:get_position() end
+  print(t:aim())
+end
+paint()
 `, {
     ...BASE,
     vmType: "register",
     vmLevel: "max",
     onWarning: (m) => warnings.push(m),
   });
-  const prefix = code.slice(0, code.indexOf("--[["));
   expect(warnings).toEqual([]);
-  expect(prefix).not.toContain(":aim");
-  expect(prefix).not.toContain(":get_position");
-  expect(prefix).toMatch(/:_0x[0-9a-f]+\(/);
+  expect(code).not.toContain(":aim");
+  expect(code).not.toContain(":get_position");
+  expect(code).toMatch(/:_0x[0-9a-f]+\(/);
   const r = runLuau(code);
   expect(r.stderr).toBe("");
   expect(r.stdout).toBe("7\n");

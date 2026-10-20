@@ -1,28 +1,3 @@
-// Phase 3.2: --@quantum source directives.
-//
-//   --@quantum:no-vm      (line-directive) next `function name` / `local function
-//                         name` is extracted from the VM'd chunk, AST-obfuscated,
-//                         and hoisted as a plain function behind a mangled global
-//                         that is also mirrored into the resolved root env.
-//   --@quantum:light-vm   (file-directive) stack VM, normal level.
-//   --@quantum:secure     (file-directive) register VM, max level + Intense
-//                         Structure feature set. Wins over light-vm.
-//
-// Extraction contract (deliberately conservative):
-//   - only top-level, single-name function declarations are candidates
-//     (`local function F`, `function F`, `local F = function`, `F = function`);
-//   - candidates whose bodies capture an OUTER LOCAL (upvalue) are vetoed and
-//     left inside the VM (advisory emitted through opts.onWarning);
-//   - duplicate candidate names are vetoed outright;
-//   - references are renamed position-aware: a reference is only rewritten at
-//     or after its declaration point, and never under a shadowing local;
-//   - inside extracted bodies only self-recursion and candidates declared
-//     earlier are rewritten (strict lexical-order semantics).
-//
-// The pipeline prepends the extracted definitions (plus one root-mirror pcall)
-// before the VM artifact, so the artifact still sees fully populated globals
-// even when its runtime resolves globals through a divergent environment root.
-
 import type {
   AssignmentStatement,
   Chunk,
@@ -33,38 +8,234 @@ import type {
   LastStatement,
   LocalFunctionStatement,
   LocalStatement,
+  MacroTier,
   Param,
   Statement,
 } from "../ast/types.js";
+import { lex } from "../lexer/Lexer.js";
+import type { SourceComment } from "../lexer/Lexer.js";
+import { parseWithErrors } from "../parser/Parser.js";
+import type { Token } from "../tokens.js";
 
-export type FileDirective = "light-vm" | "secure";
-
-export interface MacroDirectives {
-  noVmFunctions: string[];
-  fileDirective: FileDirective | null;
+export interface MacroScanResult {
+  turbos: string[];
+  maximums: string[];
+  warnings: string[];
 }
 
-const NO_VM_LINE = /--@\s*quantum\s*:\s*no-vm/i;
-const SECURE_LINE = /--@\s*quantum\s*:\s*secure\b/i;
-const LIGHT_VM_LINE = /--@\s*quantum\s*:\s*light-vm\b/i;
-const FUNC_AFTER = /(?:local\s+)?function\s+([A-Za-z_]\w*)/;
-const FUNC_ASSIGN_AFTER = /(?:local\s+)?([A-Za-z_]\w*)\s*=\s*function\b/;
+interface DirectiveHit {
+  tier: MacroTier;
+  line: number;
+}
 
-export function scanMacroDirectives(code: string): MacroDirectives {
-  const lines = code.split(/\r?\n/);
-  const noVmFunctions: string[] = [];
-  let fileDirective: FileDirective | null = null;
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i]!;
-    if (NO_VM_LINE.test(line) && i + 1 < lines.length) {
-      const next = lines[i + 1]!;
-      const m = next.match(FUNC_AFTER) ?? next.match(FUNC_ASSIGN_AFTER);
-      if (m) noVmFunctions.push(m[1]!);
-    }
-    if (SECURE_LINE.test(line)) fileDirective = "secure";
-    else if (LIGHT_VM_LINE.test(line) && fileDirective !== "secure") fileDirective = "light-vm";
+interface DirectiveLookup {
+  present: boolean;
+  conflict: boolean;
+  tier: MacroTier | null;
+  line: number | null;
+}
+
+interface FunctionSite {
+  node: FunctionStatement | LocalFunctionStatement | FunctionExpression;
+  name: string | null;
+  topLevel: boolean;
+  ownerLine: number;
+}
+
+function directiveTier(comment: SourceComment): MacroTier | null {
+  if (comment.long) return null;
+  const body = comment.text.startsWith("--") ? comment.text.slice(2) : comment.text;
+  const match = /^@quantum\s*:\s*(turbo|maximum)\b/i.exec(body.trim());
+  return match ? (match[1]!.toLowerCase() as MacroTier) : null;
+}
+
+export function applyFunctionMacroTiers(
+  code: string,
+  ast: Chunk,
+  comments: SourceComment[],
+  tokens: Token[],
+  onWarning?: (message: string) => void,
+): MacroScanResult {
+  const warnings: string[] = [];
+  const turbos: string[] = [];
+  const maximums: string[] = [];
+  const report = (message: string) => {
+    warnings.push(message);
+    onWarning?.(message);
+  };
+
+  const sourceLines = code.split(/\r?\n/);
+  const codeLines = new Set<number>();
+  for (const token of tokens) {
+    if (token.type !== "EOF") codeLines.add(token.loc.start.line);
   }
-  return { noVmFunctions, fileDirective };
+
+  const directiveLines = new Map<number, DirectiveHit[]>();
+  for (const comment of comments) {
+    if (comment.long) continue;
+    const line = comment.loc.start.line;
+    const before = (sourceLines[line - 1] ?? "").slice(0, Math.max(0, comment.loc.start.column - 1));
+    if (before.trim().length > 0) continue;
+    if (codeLines.has(line)) continue;
+    const tier = directiveTier(comment);
+    if (!tier) continue;
+    const hits = directiveLines.get(line) ?? [];
+    hits.push({ tier, line });
+    directiveLines.set(line, hits);
+  }
+
+  const lookup = (line: number): DirectiveLookup => {
+    let present = false;
+    let nearest: DirectiveHit | null = null;
+    const tiers = new Set<MacroTier>();
+    for (let current = line - 1; current >= 1; current--) {
+      if (codeLines.has(current)) break;
+      const hits = directiveLines.get(current);
+      if (!hits) continue;
+      present = true;
+      for (const hit of hits) {
+        tiers.add(hit.tier);
+        if (!nearest) nearest = hit;
+      }
+    }
+    if (!present) return { present: false, conflict: false, tier: null, line: null };
+    if (tiers.size > 1) {
+      return { present: true, conflict: true, tier: null, line: nearest?.line ?? null };
+    }
+    return { present: true, conflict: false, tier: nearest!.tier, line: nearest!.line };
+  };
+
+  const sites: FunctionSite[] = [];
+  const siteNodes = new Set<object>();
+  const supportedTopLevelLines = new Set<number>();
+  const addSite = (
+    node: FunctionStatement | LocalFunctionStatement | FunctionExpression,
+    name: string | null,
+    topLevel: boolean,
+    ownerLine: number,
+  ) => {
+    if (siteNodes.has(node)) return;
+    siteNodes.add(node);
+    sites.push({ node, name, topLevel, ownerLine });
+    if (topLevel) supportedTopLevelLines.add(ownerLine);
+  };
+
+  const visitNode = (node: AnyNode, topLevel: boolean): void => {
+    switch (node.type) {
+      case "FunctionStatement": {
+        const stmt = node as unknown as FunctionStatement;
+        const named =
+          stmt.name.base.type === "Identifier" && !stmt.name.method
+            ? (stmt.name.base as Identifier).name
+            : null;
+        addSite(stmt, named, topLevel, stmt.loc.start.line);
+        for (const child of stmt.body) visitNode(child as unknown as AnyNode, false);
+        return;
+      }
+      case "LocalFunctionStatement": {
+        const stmt = node as unknown as LocalFunctionStatement;
+        addSite(stmt, stmt.name, topLevel, stmt.loc.start.line);
+        for (const child of stmt.body) visitNode(child as unknown as AnyNode, false);
+        return;
+      }
+      case "LocalStatement": {
+        const stmt = node as unknown as LocalStatement;
+        if (
+          topLevel &&
+          stmt.vars.length === 1 &&
+          stmt.values?.length === 1 &&
+          stmt.values[0]!.type === "FunctionExpression"
+        ) {
+          const fn = stmt.values[0] as FunctionExpression;
+          addSite(fn, stmt.vars[0]!.name, true, stmt.loc.start.line);
+          for (const child of fn.body) visitNode(child as unknown as AnyNode, false);
+          return;
+        }
+        for (const value of stmt.values ?? []) visitNode(value as unknown as AnyNode, false);
+        return;
+      }
+      case "AssignmentStatement": {
+        const stmt = node as unknown as AssignmentStatement;
+        const target = stmt.vars[0];
+        if (
+          topLevel &&
+          stmt.vars.length === 1 &&
+          stmt.values.length === 1 &&
+          target?.type === "Identifier" &&
+          stmt.values[0]!.type === "FunctionExpression"
+        ) {
+          const fn = stmt.values[0] as FunctionExpression;
+          addSite(fn, target.name, true, stmt.loc.start.line);
+          for (const child of fn.body) visitNode(child as unknown as AnyNode, false);
+          return;
+        }
+        for (const value of stmt.values) visitNode(value as unknown as AnyNode, false);
+        return;
+      }
+      case "FunctionExpression": {
+        const fn = node as unknown as FunctionExpression;
+        addSite(fn, null, topLevel, fn.loc.start.line);
+        for (const child of fn.body) visitNode(child as unknown as AnyNode, false);
+        return;
+      }
+      default:
+        forEachChild(node, (child) => visitNode(child, false));
+    }
+  };
+
+  for (const stmt of ast.body) visitNode(stmt as unknown as AnyNode, true);
+
+  for (const site of sites) {
+    const found = lookup(site.node.loc.start.line);
+    if (!found.present) continue;
+    const label = site.name ? `'${site.name}'` : "this function";
+    if (found.conflict) {
+      report(
+        `--@quantum: conflicting tier comments before ${label} at line ${site.node.loc.start.line}; directive ignored`,
+      );
+      continue;
+    }
+    const tier = found.tier!;
+    if (!site.topLevel) {
+      report(
+        `--@quantum:${tier} (line ${found.line}): nested ${label} is not supported; stays in the VM`,
+      );
+      continue;
+    }
+    if (!site.name) {
+      report(
+        `--@quantum:${tier} (line ${found.line}): table/method functions are not supported; stays in the VM`,
+      );
+      continue;
+    }
+    site.node.tier = tier;
+    if (tier === "turbo") turbos.push(site.name);
+    else maximums.push(site.name);
+  }
+
+  for (const stmt of ast.body) {
+    if (supportedTopLevelLines.has(stmt.loc.start.line)) continue;
+    const found = lookup(stmt.loc.start.line);
+    if (!found.present) continue;
+    if (found.conflict) {
+      report(`--@quantum: conflicting tier comments before line ${stmt.loc.start.line}; directive ignored`);
+    } else {
+      report(
+        `--@quantum:${found.tier} (line ${found.line}): only a top-level function declaration can be tagged; directive ignored`,
+      );
+    }
+  }
+
+  return { turbos, maximums, warnings };
+}
+
+export function scanFunctionMacros(
+  code: string,
+  onWarning?: (message: string) => void,
+): MacroScanResult {
+  const lexed = lex(code);
+  const parsed = parseWithErrors(lexed.tokens);
+  return applyFunctionMacroTiers(code, parsed.ast, lexed.comments, lexed.tokens, onWarning);
 }
 
 export type Mangler = (sourceName: string, index: number) => string;
@@ -85,7 +256,7 @@ export interface ExtractedFunction {
   mangled: string;
 }
 
-export interface NoVmExtraction {
+export interface NativeExtraction {
   ast: Chunk;
   prefixStatements: Statement[];
   extracted: ExtractedFunction[];
@@ -305,12 +476,12 @@ function candidateFor(stmt: Statement, names: Set<string>): RawCandidate | null 
   return null;
 }
 
-export function extractNoVmFunctions(
+export function extractNativeFunctions(
   ast: Chunk,
   names: Iterable<string>,
   mangle: Mangler,
   onWarning?: (message: string) => void,
-): NoVmExtraction {
+): NativeExtraction {
   const wanted = new Set(names);
   const warnings: string[] = [];
   const vetoed: { name: string; reason: string }[] = [];
@@ -340,7 +511,7 @@ export function extractNoVmFunctions(
       if (isNode(base) && base.type === "Identifier") leftmost = (base as unknown as Identifier).name;
       if (leftmost && wanted.has(leftmost) && !occurrenceCount.has(`dotted:${leftmost}`)) {
         occurrenceCount.set(`dotted:${leftmost}`, 1);
-        warn(`--@quantum:no-vm: '${leftmost}.…' is a table/method function and stays in the VM`);
+        warn(`native macro: '${leftmost}.…' is a table/method function and stays in the VM`);
       }
     }
   }
@@ -350,7 +521,7 @@ export function extractNoVmFunctions(
     if (!name.startsWith("dotted:") && count > 1) duplicates.add(name);
   }
   for (const name of duplicates) {
-    warn(`--@quantum:no-vm: '${name}' is declared more than once and stays in the VM`);
+    warn(`native macro: '${name}' is declared more than once and stays in the VM`);
   }
 
   const eligible = raw.filter((c) => !duplicates.has(c.name));
@@ -386,7 +557,7 @@ export function extractNoVmFunctions(
         vetoes.set(c.name, reason);
         vetoed.push({ name: c.name, reason });
         extractedNames = new Set([...extractedNames].filter((n) => n !== c.name));
-        warn(`--@quantum:no-vm: '${c.name}' ${reason}; stays in the VM`);
+        warn(`native macro: '${c.name}' ${reason}; stays in the VM`);
         changed = true;
       }
     }

@@ -3,11 +3,9 @@ import { parseWithErrors } from "../parser/Parser.js";
 import type { Token, SourceLocation } from "../tokens.js";
 import { obfuscate } from "../obfuscator/Obfuscator.js";
 import { encodeStrings } from "../obfuscator/StringEncoder.js";
-import { hoistFactoryStrings } from "../obfuscator/PrefixStringHoist.js";
-import { scrambleNativePrefix } from "../obfuscator/PrefixControlFlow.js";
 import { renameLocalMethods } from "../obfuscator/LocalMethodRenamer.js";
-  import { scrambleControlFlow } from "../obfuscator/ControlFlowScrambler.js";
-  import { applyMBA } from "../obfuscator/MBAEncoder.js";
+import { scrambleControlFlow } from "../obfuscator/ControlFlowScrambler.js";
+import { applyMBA } from "../obfuscator/MBAEncoder.js";
 import { printChunk, printChunkOneLine } from "../obfuscator/Printer.js";
 import { adaptRkOffset } from "../vm/reg-offset.js";
 import { compile } from "../vm/Compiler.js";
@@ -16,22 +14,13 @@ import { generateVM } from "../vm/vm-gen.js";
 import type { VMGenLevel } from "../vm/vm-gen.js";
 import { generateRegVM } from "../vm/reg-vm-gen.js";
 import type { RegVMLevel } from "../vm/reg-vm-gen.js";
-import { extractNoVmFunctions, makeSeedMangler, rootCopyLua, scanMacroDirectives } from "./macros.js";
-import { autoBypassRenderStepped } from "./render-bypass.js";
+import { prependOutputHeader } from "../vm/watermark.js";
+import { applyFunctionMacroTiers, extractNativeFunctions, makeSeedMangler, rootCopyLua } from "./macros.js";
 import type { Chunk, Statement } from "../ast/types.js";
 
 export type PipelineVmType = "none" | "stack" | "register";
 export type PipelineVmLevel = "debug" | "normal" | "max";
 export type PerformanceTier = "turbo" | "balanced" | "maximum";
-
-/** --@quantum:secure force-feature bundle ("Intense VM Structure"). */
-const SECURE_FORCE_FEATURES = [
-  "vmNesting",
-  "controlFlowFlattening",
-  "deadCodeInjection",
-  "handlerNoise",
-  "fakeHandlers",
-] as const;
 
 export interface PipelineOptions {
   renameLocals: boolean;
@@ -77,9 +66,7 @@ export interface PipelineOptions {
    * Used by the register-VM CLI to preserve its `[RegVM] Bytecode:` log line.
    */
   onBytecode?: (info: { instructions: number; constants: number; protos: number; maxRegs: number }) => void;
-  /** Phase 3.2: function names to exclude from VM virtualization (macro). */
-  noVmFunctions?: string[];
-  /** Phase 3.2(b): register-VM feature gates forced ON (e.g. secure directive). */
+  /** Register-VM feature gates forced ON. */
   forceFeatures?: string[];
   /** Phase 3.2(b): advisory sink for macro decisions (vetoes, fallbacks). */
   onWarning?: (message: string) => void;
@@ -165,7 +152,7 @@ function prefixLoaderWrapperStatements(): Statement[] {
 }
 
 export function runObfuscatePipeline(code: string, opts: PipelineOptions): string {
-  const { tokens, errors: lexErrors } = lex(code);
+  const { tokens, errors: lexErrors, comments } = lex(code);
   if (lexErrors.length > 0) {
     throw new PipelineLexError(lexErrors);
   }
@@ -180,151 +167,102 @@ export function runObfuscatePipeline(code: string, opts: PipelineOptions): strin
   }
   let ast = parsed.ast;
 
-  // Phase 3.2: macro directives. --@quantum:no-vm records the function named
-  // on the following line; --@quantum:light-vm / --@quantum:secure select the
-  // VM family for the whole file (secure wins ties). Directives are
-  // authoritative and override performanceTier/vmType/vmLevel.
-  const directives = scanMacroDirectives(code);
-  const noVmFunctions = new Set<string>(opts.noVmFunctions ?? []);
-  for (const n of directives.noVmFunctions) noVmFunctions.add(n);
-  opts.noVmFunctions = [...noVmFunctions];
+  const macroTiers = applyFunctionMacroTiers(code, ast, comments, tokens, opts.onWarning);
 
-  // Phase 3.1: resolve performance tier to vmType/vmLevel.
   if (opts.performanceTier) {
     if (opts.performanceTier === "turbo") { opts.vmType = "none"; opts.vmLevel = "normal"; }
     else if (opts.performanceTier === "balanced") { opts.vmType = "stack"; opts.vmLevel = "normal"; }
     else { opts.vmType = "register"; opts.vmLevel = "max"; }
   }
-  if (directives.fileDirective === "secure") { opts.vmType = "register"; opts.vmLevel = "max"; }
-  else if (directives.fileDirective === "light-vm") { opts.vmType = "stack"; opts.vmLevel = "normal"; }
+  if (opts.vmLevel !== "debug" && macroTiers.maximums.length > 0) {
+    opts.vmType = "register";
+    opts.vmLevel = "max";
+  }
 
+  const debugNative = opts.vmLevel === "debug";
   const executorGlobals = opts.executorGlobals ?? opts.vmLevel !== "debug";
   const polySeed = opts.polymorphicSeed ?? opts.seed ?? Date.now();
 
-  // Phase 3.3: RenderStepped auto-bypass. Detect hot-frame connections and
-  // lift their callbacks into plain top-level factories before string
-  // encoding / control-flow scrambling, so the frame path never enters the
-  // VM. Stable captures are copied by value; captures reassigned elsewhere
-  // are read through injected getter closures; callbacks that write a
-  // captured local stay in the VM (a value/getter capture cannot propagate
-  // the write back to the original variable).
-  let autoPrefixStatements: Statement[] = [];
-  let autoMangled: string[] = [];
-  let autoFactoryNames = new Set<string>();
-  let autoHeavyFactoryNames = new Set<string>();
-  if (opts.vmType !== "none") {
-    const bypass = autoBypassRenderStepped(ast, makeSeedMangler(polySeed, "qmr"), opts.onWarning);
-    ast = bypass.ast;
-    autoPrefixStatements = bypass.prefixStatements;
-    autoMangled = bypass.mangled;
-    autoFactoryNames = new Set(bypass.lifted.map((l) => l.factory));
-    autoHeavyFactoryNames = new Set(bypass.lifted.filter((l) => l.heavy).map((l) => l.factory));
+  const nativeNames = new Set<string>(macroTiers.turbos);
+  if (debugNative) {
+    for (const name of macroTiers.maximums) nativeNames.add(name);
   }
 
-  // Prefix method names are still readable in the lifted factories. Rename
-  // only statically-resolved methods declared on local tables, using one map
-  // for both the VM body and the lifted prefix, before the two chunks are
-  // obfuscated independently. Unsafe/escaped/aliased methods stay untouched.
-  const methodPrefixChunk: Chunk = { type: "Chunk", loc: ast.loc, body: autoPrefixStatements };
-  const methodRename = renameLocalMethods([ast, methodPrefixChunk], {
-    onWarning: opts.onWarning,
-    internalCallees: autoFactoryNames,
-  });
-  ast = methodRename.chunks[0]!;
-  autoPrefixStatements = methodRename.chunks[1]!.body as Statement[];
+  let workingAst = ast;
+  let nativeStatements: Statement[] = [];
+  const nativeMangled: string[] = [];
+  if (nativeNames.size > 0) {
+    const extraction = extractNativeFunctions(
+      workingAst,
+      nativeNames,
+      makeSeedMangler(polySeed),
+      opts.onWarning,
+    );
+    workingAst = extraction.ast;
+    nativeStatements = extraction.prefixStatements;
+    for (const fn of extraction.extracted) nativeMangled.push(fn.mangled);
+  }
 
-  // Phase 3.3(b): obfuscate the auto-bypassed frame factories with the same
-  // string-encoding and MBA passes as the main body. The extracted @no-vm
-  // prefix is excluded: it already went through these passes before
-  // extraction, so re-applying would double-transform it. Control-flow
-  // hardening is tiered: heavy UI factories get block-level state machines;
-  // frame factories only get opaque predicates and dead junk branches so the
-  // hot path stays flat.
-  if (autoPrefixStatements.length > 0) {
-    if (opts.encodeStrings) {
-      const autoChunk: Chunk = { type: "Chunk", loc: ast.loc, body: autoPrefixStatements };
-      const autoDecoderName = makeSeedMangler(polySeed, "ad")("dec", 0);
-      autoPrefixStatements = encodeStrings(autoChunk, {
-        enabled: true,
-        ...(opts.seed !== undefined ? { seed: opts.seed } : {}),
-        decoderName: autoDecoderName,
-      }).body as Statement[];
-      // Decode each unique literal once when the factory is created instead
-      // of on every callback invocation. The decoder remains in place and is
-      // called by the hoisted initializer.
-      const hoistMangle = makeSeedMangler(polySeed, "hs");
-      autoPrefixStatements = hoistFactoryStrings(autoPrefixStatements, {
-        decoderName: autoDecoderName,
-        factoryNames: autoFactoryNames,
-        mangle: (i) => hoistMangle("h", i),
-      }).statements;
+  const debugPlaintextNative = debugNative && nativeStatements.length > 0;
+  if (nativeStatements.length > 0) {
+    if (!debugPlaintextNative) {
+      const nativeChunk: Chunk = { type: "Chunk", loc: ast.loc, body: nativeStatements };
+      const methodRename = renameLocalMethods([workingAst, nativeChunk], {
+        onWarning: opts.onWarning,
+      });
+      workingAst = methodRename.chunks[0]!;
+      nativeStatements = methodRename.chunks[1]!.body as Statement[];
     }
-    if (opts.scramble) {
-      autoPrefixStatements = scrambleNativePrefix(autoPrefixStatements, {
-        seed: typeof opts.seed === "number" ? opts.seed : 0,
-        factoryNames: autoFactoryNames,
-        heavyFactories: autoHeavyFactoryNames,
-        maxFlattened: 1000,
-      }).statements;
-    }
-    if (opts.mba) {
-      const autoChunk: Chunk = { type: "Chunk", loc: ast.loc, body: autoPrefixStatements };
-      autoPrefixStatements = applyMBA(
-        autoChunk,
-        { enabled: true, seed: typeof opts.seed === "number" ? opts.seed : 0 },
-      ).body as Statement[];
-    }
+  } else {
+    workingAst = renameLocalMethods([workingAst], {
+      onWarning: opts.onWarning,
+    }).chunks[0]!;
   }
 
   if (opts.encodeStrings) {
-    ast = encodeStrings(ast, opts.seed !== undefined ? { enabled: true, seed: opts.seed } : { enabled: true });
+    workingAst = encodeStrings(workingAst, opts.seed !== undefined ? { enabled: true, seed: opts.seed } : { enabled: true });
   }
 
   if (opts.scramble) {
-    ast = scrambleControlFlow(ast, opts.seed !== undefined ? { enabled: true, seed: opts.seed } : { enabled: true });
+    workingAst = scrambleControlFlow(workingAst, opts.seed !== undefined ? { enabled: true, seed: opts.seed } : { enabled: true });
   }
 
-  // Phase 4.1: optional MBA constant encoding.
-  let workingAst = ast;
   if (opts.mba) {
     workingAst = applyMBA(workingAst, { enabled: true, seed: typeof opts.seed === "number" ? opts.seed : 0 });
   }
 
-  // Phase 3.2(b): extract --@quantum:no-vm functions from the AST before
-  // obfuscation. They are AST-obfuscated independently and hoisted as a plain
-  // prefix (plus a root mirror) ahead of the VM artifact.
-  let extractedMangled: string[] = [];
-  let prefixStatements: Statement[] = [];
-  if (opts.vmType !== "none" && noVmFunctions.size > 0) {
-    const extraction = extractNoVmFunctions(workingAst, noVmFunctions, makeSeedMangler(polySeed), opts.onWarning);
-    workingAst = extraction.ast;
-    prefixStatements = extraction.prefixStatements;
-    extractedMangled = extraction.extracted.map((e) => e.mangled);
+  if (nativeStatements.length > 0) {
+    let nativeChunk: Chunk = { type: "Chunk", loc: ast.loc, body: nativeStatements };
+    if (!debugPlaintextNative) {
+      const turboDecoder = makeSeedMangler(polySeed, "td")("dec", 0);
+      nativeChunk = encodeStrings(nativeChunk, {
+        enabled: true,
+        ...(opts.seed !== undefined ? { seed: opts.seed } : {}),
+        decoderName: turboDecoder,
+      });
+      nativeChunk = applyMBA(nativeChunk, {
+        enabled: true,
+        seed: typeof opts.seed === "number" ? opts.seed : 0,
+      });
+    }
+    nativeStatements = [...prefixLoaderWrapperStatements(), ...(nativeChunk.body as Statement[])];
   }
-  prefixStatements = [...autoPrefixStatements, ...prefixStatements];
-  if (prefixStatements.length > 0) {
-    prefixStatements = [...prefixLoaderWrapperStatements(), ...prefixStatements];
-  }
-  extractedMangled = [...autoMangled, ...extractedMangled];
 
   const obfuscated = obfuscate(workingAst, {
     renameLocals: opts.renameLocals,
     preserveGlobals: opts.preserveGlobals,
   });
 
-  let macroPrefix = "";
-  if (prefixStatements.length > 0) {
-    const prefixChunk: Chunk = { type: "Chunk", loc: ast.loc, body: prefixStatements };
+  let nativePrefix = "";
+  if (nativeStatements.length > 0) {
+    const prefixChunk: Chunk = { type: "Chunk", loc: ast.loc, body: nativeStatements };
     const obfuscatedPrefix = obfuscate(prefixChunk, {
-      renameLocals: opts.renameLocals,
+      renameLocals: debugPlaintextNative ? false : opts.renameLocals,
       preserveGlobals: opts.preserveGlobals,
       nameStyle: "hex",
     });
-    // Prefixes can contain whole lifted frame callbacks; print them
-    // multiline even in oneLine mode so executor line-length limits are not
-    // exceeded by a single synthetic factory statement.
-    macroPrefix = printChunk(obfuscatedPrefix);
-    macroPrefix += "\n" + rootCopyLua(extractedMangled) + "\n";
+    nativePrefix = printChunk(obfuscatedPrefix);
+    nativePrefix += "\n" + rootCopyLua(nativeMangled) + "\n";
   }
 
   if (opts.vmType === "stack") {
@@ -335,11 +273,12 @@ export function runObfuscatePipeline(code: string, opts: PipelineOptions): strin
       protos: chunk.protos?.length ?? 0,
       maxRegs: 0,
     });
-    return macroPrefix + generateVM(chunk, {
+    return generateVM(chunk, {
       level: opts.vmLevel as VMGenLevel,
       executorGlobals,
       noCompression: opts.noCompression,
       polymorphicSeed: polySeed,
+      _nativePrefix: nativePrefix,
     });
   }
 
@@ -376,10 +315,7 @@ export function runObfuscatePipeline(code: string, opts: PipelineOptions): strin
       disableFeatures.push("controlFlowFlattening");
     }
     const forceFeatures = [...(opts.forceFeatures ?? [])];
-    if (directives.fileDirective === "secure") {
-      for (const f of SECURE_FORCE_FEATURES) if (!forceFeatures.includes(f)) forceFeatures.push(f);
-    }
-    return macroPrefix + generateRegVM(chunk, {
+    return generateRegVM(chunk, {
       level: opts.vmLevel as RegVMLevel,
       executorGlobals,
       polymorphicSeed: polySeed,
@@ -388,8 +324,10 @@ export function runObfuscatePipeline(code: string, opts: PipelineOptions): strin
       ...(forceFeatures.length > 0 ? { forceFeatures: forceFeatures as any[] } : {}),
       ...(opts.debugTrace !== undefined ? { debugTrace: opts.debugTrace } : {}),
       ...(opts.target !== undefined ? { target: opts.target } : {}),
+      _nativePrefix: nativePrefix,
     });
   }
 
-  return macroPrefix + (opts.oneLine ? printChunkOneLine(obfuscated) : printChunk(obfuscated));
+  const printed = opts.oneLine ? printChunkOneLine(obfuscated) : printChunk(obfuscated);
+  return nativePrefix.length > 0 ? prependOutputHeader(printed, nativePrefix) : printed;
 }

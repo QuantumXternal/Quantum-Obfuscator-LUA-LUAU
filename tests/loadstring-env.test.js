@@ -85,8 +85,8 @@ for (const [vmType, vmLevel] of VARIANTS) {
   }, 180000);
 }
 
-t("prefix: lifted factory loadstring uses getgenv before the VM starts", () => {
-  const src = `--@quantum:no-vm
+t("prefix: Turbo loadstring uses getgenv before the VM starts", () => {
+  const src = `--@quantum:turbo
 local function read()
   local f = loadstring("return x")
   return f()
