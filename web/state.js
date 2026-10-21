@@ -11,6 +11,9 @@ export const DEFAULT_SETTINGS = {
   vmLevel: "normal",
   target: "roblox",
   seed: "",
+  renameVariables: true,
+  encodeStrings: true,
+  minifyCode: false,
   autoDetectMacros: true,
   turboLevel: "light",
   luraph: {
@@ -67,6 +70,9 @@ export function loadSettings() {
     if (!["debug", "normal", "max", "custom"].includes(merged.vmLevel)) merged.vmLevel = "normal";
     if (!["roblox", "generic"].includes(merged.target)) merged.target = "roblox";
     if (!["light", "heavy"].includes(merged.turboLevel)) merged.turboLevel = "light";
+    for (const key of ["renameVariables", "encodeStrings", "minifyCode"]) {
+      if (typeof merged[key] !== "boolean") merged[key] = DEFAULT_SETTINGS[key];
+    }
     return merged;
   } catch {
     return structuredClone(DEFAULT_SETTINGS);
@@ -127,6 +133,9 @@ export function buildObfuscateOptions(settings, seed) {
       vmCompression: settings.luraph.vmCompression !== false,
     },
   };
+  if (typeof settings.renameVariables === "boolean") options.noRename = !settings.renameVariables;
+  if (typeof settings.encodeStrings === "boolean") options.encodeStrings = settings.encodeStrings;
+  if (typeof settings.minifyCode === "boolean") options.oneLine = settings.minifyCode;
   // Turbo's native-fastest preset relies on the server applying its
   // performanceTier when both VM fields are omitted.
   const turboPreset =

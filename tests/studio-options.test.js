@@ -53,6 +53,24 @@ test("Custom derives MBA from grade and honors an explicit override", () => {
   expect(overridden.pipeline.mba).toBe(false);
 });
 
+test("AST transform flags override profile defaults independently", () => {
+  const plan = buildStudioPlan({
+    profile: "balanced",
+    target: "roblox",
+    noRename: true,
+    encodeStrings: false,
+    oneLine: true,
+  });
+  expect(plan.pipeline).toMatchObject({
+    renameLocals: false,
+    encodeStrings: false,
+    oneLine: true,
+    vmType: "register",
+    vmLevel: "normal",
+    target: "roblox",
+  });
+});
+
 test("register VM Luraph-Killers force hardening features", () => {
   const plan = buildStudioPlan({
     profile: "balanced",

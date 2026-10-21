@@ -280,10 +280,14 @@ export function initAnalyzer() {
     if (diagnostic.fix) {
       const fix = document.createElement("button");
       fix.type = "button";
-      fix.className = "btn btn-primary btn-xs finding-fix";
+      fix.className = "btn btn-primary btn-xs finding-fix finding-action finding-action-fix";
+      fix.dataset.findingAction = "fix";
       fix.textContent = "Apply fix";
+      fix.setAttribute("aria-label", `Apply macro tag above line ${diagnostic.fix.line}`);
       fix.addEventListener("click", (event) => {
+        event.preventDefault();
         event.stopPropagation();
+        if (event.currentTarget?.dataset.findingAction !== "fix") return;
         editor.applyFix(diagnostic.fix);
         log(`Inserted ${diagnostic.fix.insertText.trim()} above line ${diagnostic.fix.line}.`, "success");
       });
@@ -291,10 +295,14 @@ export function initAnalyzer() {
     } else if (diagnostic.refactor) {
       const refactor = document.createElement("button");
       refactor.type = "button";
-      refactor.className = "btn btn-secondary btn-xs finding-fix";
+      refactor.className = "btn btn-secondary btn-xs finding-fix finding-action finding-action-refactor";
+      refactor.dataset.findingAction = "refactor";
       refactor.textContent = "Refactor IIFE";
+      refactor.setAttribute("aria-label", `Refactor top-level IIFE at line ${diagnostic.refactor.line}`);
       refactor.addEventListener("click", (event) => {
+        event.preventDefault();
         event.stopPropagation();
+        if (event.currentTarget?.dataset.findingAction !== "refactor") return;
         refactorAtLine(diagnostic.refactor.line, refactor);
       });
       row.appendChild(refactor);

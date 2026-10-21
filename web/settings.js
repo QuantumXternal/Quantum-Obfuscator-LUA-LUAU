@@ -15,6 +15,7 @@ const PROFILE_LABELS = {
 };
 
 const LURAPH_FLAGS = ["intenseVM", "gcFixes", "hardcodeGlobals", "staticEnv", "useDebugLib", "vmCompression"];
+const AST_FLAGS = ["renameVariables", "encodeStrings", "minifyCode"];
 
 function option(value, label) {
   return `<option value="${value}">${label}</option>`;
@@ -98,6 +99,41 @@ function luraphMarkup() {
         <span class="check-copy">
           <span class="check-title">VM Compression</span>
           <span class="check-help">Stack VM only. Disabling it maps to <code>noCompression</code>.</span>
+        </span>
+      </label>
+    </div>
+  `;
+}
+
+function astMarkup() {
+  return `
+    <div class="settings-group">
+      <div class="settings-group-head">
+        <div>
+          <span class="eyebrow">Transforms</span>
+          <h3>AST transforms</h3>
+        </div>
+        <span class="tag tag-beta">Independent</span>
+      </div>
+      <label class="check-row" data-check-row="renameVariables">
+        <input type="checkbox" data-setting="renameVariables" />
+        <span class="check-copy">
+          <span class="check-title">Rename Variables</span>
+          <span class="check-help">Rename locals and parameters while preserving globals and library access.</span>
+        </span>
+      </label>
+      <label class="check-row" data-check-row="encodeStrings">
+        <input type="checkbox" data-setting="encodeStrings" />
+        <span class="check-copy">
+          <span class="check-title">XOR Encrypt Strings</span>
+          <span class="check-help">Encode string literals and rebuild them at runtime through the VM.</span>
+        </span>
+      </label>
+      <label class="check-row" data-check-row="minifyCode">
+        <input type="checkbox" data-setting="minifyCode" />
+        <span class="check-copy">
+          <span class="check-title">Minify Code</span>
+          <span class="check-help">Collapse the protected output to reduce size. Useful for constrained executors.</span>
         </span>
       </label>
     </div>
@@ -232,6 +268,8 @@ export function renderProtectionSettings(container, initialSettings, onChange, o
       </div>
     </div>
 
+    ${astMarkup()}
+
     ${luraphMarkup()}
 
     <div class="settings-actions">
@@ -269,6 +307,10 @@ export function renderProtectionSettings(container, initialSettings, onChange, o
     for (const name of LURAPH_FLAGS) {
       const checkbox = getLuraph(name);
       if (checkbox) checkbox.checked = session.settings.luraph[name] === true;
+    }
+    for (const name of AST_FLAGS) {
+      const checkbox = get(name);
+      if (checkbox) checkbox.checked = session.settings[name] === true;
     }
     profileChip.textContent = PROFILE_LABELS[session.settings.profile] || "Custom";
     profileHelp.textContent = PROFILE_HINTS[session.settings.profile] || PROFILE_HINTS.custom;
@@ -311,6 +353,13 @@ export function renderProtectionSettings(container, initialSettings, onChange, o
       session.commit("luraph");
     });
   }
+  for (const name of AST_FLAGS) {
+    const checkbox = get(name);
+    checkbox?.addEventListener("change", (event) => {
+      session.settings[name] = event.target.checked;
+      session.commit(name);
+    });
+  }
   container.querySelector("[data-reset-settings]").addEventListener("click", () => {
     const next = structuredClone(session.settings);
     next.profile = DEFAULT_SETTINGS.profile;
@@ -318,6 +367,7 @@ export function renderProtectionSettings(container, initialSettings, onChange, o
     next.vmLevel = DEFAULT_SETTINGS.vmLevel;
     next.target = DEFAULT_SETTINGS.target;
     next.seed = DEFAULT_SETTINGS.seed;
+    for (const key of AST_FLAGS) next[key] = DEFAULT_SETTINGS[key];
     next.luraph = structuredClone(DEFAULT_SETTINGS.luraph);
     session.setSettings(next);
     applyToForm();

@@ -6,6 +6,7 @@ import { tmpdir as _dumpTmpdir } from "os";
 import { join as _dumpJoin } from "path";
 import { encryptAndEncode, compressToBase85, compressBytesToBase85 } from "./lzma.js";
 import { generateBootstrap } from "./bootstrap-template.js";
+import { buildEnvRootExpr } from "./envRoot.js";
 import { bit32InstallerLua } from "./bit32-fallback.js";
 import { joinBounded, luaQuotedFromBytes, boundCommaSeparatedLine } from "./limits.js";
 import { prependOutputHeader } from "./watermark.js";
@@ -1730,24 +1731,21 @@ function buildHandlerBodies(n: NameMap, ctx: BuildCtx, usedOps?: Set<number>): M
  * `loadstring("return _G")()` resolves every stdlib member to nil there —
  * the v3.2.x executor incident reported exactly that as
  * `[string "Quantum"]:43: attempt to index nil with 'pack'`.
- * Resolution order:
+ * Candidate order (any table is accepted; candidate-only keys are copied):
  *   1. getgenv()  - executor global environment (carries stdlib)
  *   2. getfenv(0) - vanilla Roblox / standalone Lua global env
  *   3. loadstring("return _G") - a SEPARATE chunk, so the read is immune to
  *      the runtime's own locals: the generator can name a local `_G` (2-char
  *      pool collision, seen in the wild), which would shadow the global for
- *      any inline read. Validated for stdlib content before being trusted.
- *   4. inline `_G` - only when it actually carries the stdlib (standalone)
- *   5. direct-globals snapshot - final guarantee, nil-safe by construction
+ *      any inline read.
+ *   4. inline `_G` - final candidate when present (standalone)
+ *   5. direct-globals snapshot - always present; candidate-only keys are
+ *      copied in without overwriting captured globals, so an empty/partial
+ *      getgenv() cannot hide wait/task/game.
  * Self-contained expression: references only globals, safe in any fragment.
  */
 function envRootLua(): string {
-  const snapshot = CORE_GLOBALS
-    .filter(g => g !== "_G")
-    .concat(["bit"])
-    .map(g => `${g}=${g}`)
-    .join(",");
-  return `(function() local _0pc=pcall local _0ty=type if _0pc and _0ty then local _0ok,_0r=_0pc(getgenv) if _0ok and _0ty(_0r)=="table" then return _0r end _0ok,_0r=_0pc(getfenv,0) if _0ok and _0ty(_0r)=="table" then return _0r end local _0ls=loadstring or load if _0ty(_0ls)=="function" then _0ok,_0r=_0pc(_0ls,"return _G") if _0ok and _0ty(_0r)=="table" and _0ty(_0r["table"])=="table" then return _0r end end end local _0g=_G if _0ty and _0ty(_0g)=="table" and _0ty(_0g["table"])=="table" then return _0g end return {${snapshot}} end)()`;
+  return buildEnvRootExpr(CORE_GLOBALS);
 }
 function buildBuiltinCaptures(ctx: BuildCtx): { code: string; assignOnly: string } {
   const n = ctx.names;
@@ -3485,9 +3483,9 @@ function wrapCustomCipher(source: string, layerOpts?: CipherLayerOpts): string {
     { op: OP_ENV, code: (() => {
 
       // v4: "return _G" hands back Roblox's stdlib-less DATA table — the
-      // loaded chunk now prefers getgenv()/getfenv(0), validates that the
-      // result actually carries the stdlib (table.table), and falls back to
-      // the robust root chain otherwise. nEv must always end up a table:
+      // loaded chunk prefers getgenv()/getfenv(0), validates that the result
+      // actually carries the stdlib (table.table), and falls back to the
+      // robust root chain otherwise. nEv must always end up a table:
       // downstream `nTb`/`nBt` indexing is unconditional.
       const envSrc = `return getgenv and getgenv() or (getfenv and getfenv(0)) or _G`;
       const envCoder = (s: string) => Array.from(s).map(c => {

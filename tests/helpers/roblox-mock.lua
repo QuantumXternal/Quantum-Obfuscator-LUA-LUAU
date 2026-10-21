@@ -302,6 +302,7 @@ game = {
 
 workspace = newInstance("Workspace")
 workspace._props.Name = "Workspace"
+workspace._props.Parent = game
 
 Players = players
 UserInputService = userInputService
@@ -317,6 +318,10 @@ task = {
     return callback
   end,
 }
+
+wait = function()
+  return nil
+end
 
 tick = function()
   return os.clock()

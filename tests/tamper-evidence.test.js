@@ -73,7 +73,10 @@ t("payload flips never yield the valid result (tamper-evident)", () => {
   // neighbors (+210, +310, +1005), verified by flip-scan on Luau.
   // Recalibrated for the loader-wrapper prologue: old +210 is now a dead
   // store; +216 is its live neighbor, verified by flip-scan on Luau.
-  const positions = [0, 1, 40, 50, 60, 100, 216, 310, 1005, 5000]
+  // Recalibrated for the shared environment-root snapshot in the loader
+  // wrappers: old +1005 now lands on a benign decoder digit; +1002 is the
+  // adjacent live character-code entry and breaks loudly.
+  const positions = [0, 1, 40, 50, 60, 100, 216, 310, 1002, 5000]
     .map((k) => start + k).filter((p) => p < art.length);
   expect(positions.length).toBeGreaterThan(0);
   for (const p of positions) {

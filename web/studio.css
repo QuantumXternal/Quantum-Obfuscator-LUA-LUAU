@@ -1660,6 +1660,29 @@ h4 {
   border-color: rgba(255, 107, 138, 0.16);
 }
 
+.finding-row .finding-action {
+  white-space: nowrap;
+}
+
+.finding-row .finding-action-fix {
+  color: #061019;
+  background: linear-gradient(135deg, #62dcff 0%, #4cb9f5 55%, #6d8cff 100%);
+  border-color: rgba(120, 216, 255, 0.48);
+  box-shadow: 0 5px 16px rgba(65, 173, 240, 0.16);
+}
+
+.finding-row .finding-action-refactor {
+  color: var(--amber);
+  background: var(--amber-soft);
+  border-color: rgba(247, 198, 92, 0.34);
+}
+
+.finding-row .finding-action-refactor:hover:not(:disabled) {
+  color: #ffe4a6;
+  background: rgba(247, 198, 92, 0.16);
+  border-color: rgba(247, 198, 92, 0.52);
+}
+
 .findings-note {
   padding: 10px;
   color: var(--muted-2);

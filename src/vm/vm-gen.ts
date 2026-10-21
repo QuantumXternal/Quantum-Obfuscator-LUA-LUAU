@@ -5,6 +5,7 @@ import { Parser } from "../parser/Parser.js";
 import { compile as compileAST } from "./Compiler.js";
 import { splitLongLiteral, joinBounded, luaQuotedFromBytes, boundCommaSeparatedLine, longStringLevel } from "./limits.js";
 import { bit32InstallerLua } from "./bit32-fallback.js";
+import { buildEnvRootExpr } from "./envRoot.js";
 import { prependOutputHeader } from "./watermark.js";
 
 // Emit a (possibly very long) encoded fragment as one or more bounded-width
@@ -1138,6 +1139,8 @@ function buildAlphabet(): string {
   return std.slice(0, 62) + rep.join("");
 }
 
+const WRAPPER_ENV_GLOBALS = ["table", "loadstring", "load", "bit32", "tostring"];
+
 export function wrapCustomCipher(source: string, seed?: number | string): string {
   applySeedParam(seed);
 
@@ -1259,7 +1262,7 @@ export function wrapCustomCipher(source: string, seed?: number | string): string
   // but blocked (throws) or absent; a bare `getfenv(0)` hard-crashes there.
   // pcall-guarded call, table-typed result, else _G. Semantics preserved:
   // prefers getfenv(0) exactly as before on hosts where it works.
-  lines.push(`local ${vEnv}=(function() local ok,r=pcall(getfenv,0) if ok and type(r)=="table" then return r end return _G end)()`);
+  lines.push(`local ${vEnv}=${buildEnvRootExpr(WRAPPER_ENV_GLOBALS)}`);
 
   const builtinLines: string[] = [
     `local ${vTc}=${vEnv}[${vSc}(116,97,98,108,101)][${vSc}(99,111,110,99,97,116)]`,
@@ -1627,7 +1630,7 @@ export function wrapNestedVM(source: string, seed?: number | string): string {
   emitHoneypot();
 
   // Phase 5 / Step 3: same restricted-executor guard as the primary path.
-  L.push(`local ${vEnv}=(function() local ok,r=pcall(getfenv,0) if ok and type(r)=="table" then return r end return _G end)()`);
+  L.push(`local ${vEnv}=${buildEnvRootExpr(WRAPPER_ENV_GLOBALS)}`);
   const builtins = [
     `local ${vTc}=${vEnv}[${vSc}(${encSC('table')})][${vSc}(${encSC('concat')})]`,
     `local ${vLd}=${vEnv}[${vSc}(${encSC('loadstring')})] or ${vEnv}[${vSc}(${encSC('load')})]`,
@@ -1899,8 +1902,7 @@ export function wrapStubVM(source: string, seed?: number | string): string {
     L.push(`local ${a_sb}=${tv}[1][("${encStr('byte')}")]`);
   }
 
-  L.push(`local ${pvv},${efv}=pcall(getfenv,0)`);
-  L.push(`if not ${pvv} then ${efv}=_G end`);
+  L.push(`local ${pvv},${efv}=true,${buildEnvRootExpr(WRAPPER_ENV_GLOBALS)}`);
 
   L.push(`local ${b32v}=${efv}[${a_sc}(${encSC('bit32')})]`);
   const b32Methods: [string, string][] = [
@@ -2405,7 +2407,7 @@ function buildEnvSetup(
   const _ldEnc = _ldChars.map(c => (c + _lsKey) % 256);
   const _tmpN = randomName(2);
 
-  lines.push(`local ${_ldFunc}=(function() local ${_tmpN}=${luaEsc("")};for _,_c in ipairs({${_lsEnc.join(",")}}) do ${_tmpN}=${_tmpN}..${bSC}((_c-${_lsKey}+256)%256) end;local _f=(function() local _ok,_r=pcall(getfenv,0) if _ok and type(_r)=="table" then return _r end return _G end)()[${_tmpN}];if _f then return _f end;${_tmpN}=${luaEsc("")};for _,_c in ipairs({${_ldEnc.join(",")}}) do ${_tmpN}=${_tmpN}..${bSC}((_c-${_lsKey}+256)%256) end;return (function() local _ok,_r=pcall(getfenv,0) if _ok and type(_r)=="table" then return _r end return _G end)()[${_tmpN}] end)()`);
+  lines.push(`local ${_ldFunc}=(function() local ${_tmpN}=${luaEsc("")};for _,_c in ipairs({${_lsEnc.join(",")}}) do ${_tmpN}=${_tmpN}..${bSC}((_c-${_lsKey}+256)%256) end;local _f=(function() local _ok,_r=pcall(getfenv,0) if _ok and type(_r)=="table" then return _r end return _G end)()[${_tmpN}];if _f then return _f end;${_tmpN}=${luaEsc("")};for _,_c in ipairs({${_ldEnc.join(",")}}) do ${_tmpN}=${_tmpN}..${bSC}((_c-${_lsKey}+256)%256) end;local _f2=(function() local _ok,_r=pcall(getfenv,0) if _ok and type(_r)=="table" then return _r end return _G end)()[${_tmpN}];if _f2 then return _f2 end;return loadstring or load end)()`);
   lines.push(`local ${bLS}=${_ldFunc}`);
 
   const _resolver = randomName(4);
@@ -2448,27 +2450,8 @@ function buildEnvSetup(
   const ck = randomName(2);
   lines.push(`local function ${collatzDec}(${bp}) local ${cn}=${collatzSeed};local ${ct}={};for ${ci}=1,#${bp} do local ${ck}=${bBA}(${cn},0xFF);${ct}[${ci}]=${bSC}(${bBX}(${bp}[${ci}],${ck}));if ${cn}%2==0 then ${cn}=${bBR}(${cn},1) else ${cn}=${bBA}(${cn}*3+1,0x7FFFFFFF) end;if ${cn}<=1 then ${cn}=${bBX}(${collatzSeed},${ci}) end end;return ${bTC}(${ct}) end`);
 
-  const resolverStyle = Math.floor(rng() * 3);
-  const encCode1 = `{${collatzEncodeString("return getgenv()", collatzSeed).join(",")}}`;
-  const encCode2 = `{${collatzEncodeString("return getfenv(0)", collatzSeed).join(",")}}`;
-  const tmpF = randomName(3);
-  const tmpR = randomName(3);
   const tblEsc = luaEsc("table");
-  if (resolverStyle === 0) {
-    lines.push(`local ${genv}=_G`);
-    lines.push(`do local ${tmpF},${tmpR}=${bPC}(function() local _f=${bLS}(${collatzDec}(${encCode1}));if _f then return _f() end end);if ${tmpF} and ${bTY}(${tmpR})==${tblEsc} then ${genv}=${tmpR} end end`);
-    lines.push(`do local ${tmpF},${tmpR}=${bPC}(function() local _f=${bLS}(${collatzDec}(${encCode2}));if _f then return _f() end end);if ${tmpF} and ${bTY}(${tmpR})==${tblEsc} then ${genv}=${tmpR} end end`);
-  } else if (resolverStyle === 1) {
-    const tmpG = randomName(3);
-    lines.push(`local ${tmpG}=nil`);
-    lines.push(`do local ${tmpF},${tmpR}=${bPC}(function() return ${bLS}(${collatzDec}(${encCode1}))() end);if ${tmpF} and ${bTY}(${tmpR})==${tblEsc} then ${tmpG}=${tmpR} end end`);
-    lines.push(`if not ${tmpG} then local ${tmpF},${tmpR}=${bPC}(function() return ${bLS}(${collatzDec}(${encCode2}))() end);if ${tmpF} and ${bTY}(${tmpR})==${tblEsc} then ${tmpG}=${tmpR} end end`);
-    lines.push(`local ${genv}=${tmpG} or _G`);
-  } else {
-    const fnName = randomName(4);
-    lines.push(`local function ${fnName}() local ${tmpR};local _f=${bLS}(${collatzDec}(${encCode1}));if _f then local _o,_r=${bPC}(_f);if _o and ${bTY}(_r)==${tblEsc} then return _r end end;_f=${bLS}(${collatzDec}(${encCode2}));if _f then local _o,_r=${bPC}(_f);if _o and ${bTY}(_r)==${tblEsc} then return _r end end;return _G end`);
-    lines.push(`local ${genv}=${fnName}()`);
-  }
+  lines.push(`local ${genv}=${buildEnvRootExpr(CORE_GLOBALS)}`);
 
   const mtStyle = Math.floor(rng() * 3);
   const fbP = randomName(2);

@@ -1,5 +1,6 @@
 import { longStringLevel, splitLongLiteral } from "./limits.js";
 import { bit32InstallerLua } from "./bit32-fallback.js";
+import { buildEnvRootExpr } from "./envRoot.js";
 
 export interface BootstrapConfig {
   vmBlob: string;
@@ -148,35 +149,29 @@ const CAP_PACK = `((type(string)=="table" and string.pack) or ${FALLBACK_PACK})`
  * script-shared DATA table and does NOT contain the standard library
  * (official docs), so anything rooted at `_G` alone resolves every stdlib
  * member to nil there (v3.2.1 executor incident: `attempt to index nil with
- * 'pack'` inside the decrypted runtime). Resolution order:
+ * 'pack'` inside the decrypted runtime). Candidate order (any table is
+ * accepted; candidate-only keys are copied into the snapshot):
  *   1. getgenv()            - executor global environment (has stdlib)
  *   2. getfenv(0)           - vanilla Roblox / standalone Lua global env
  *   3. loadstring("return _G") - separate chunk, immune to local shadowing
- *                              (the generator names can collide with `_G`);
- *                              trusted only if it carries the stdlib
- *   4. _G                   - only if it actually carries the stdlib
- *   5. direct-globals snapshot - final guarantee, nil-safe by construction
+ *                              (the generator names can collide with `_G`)
+ *   4. _G                   - final candidate when present
+ *   5. direct-globals snapshot - always present; candidate-only keys are
+ *      copied in without overwriting captured globals, so an empty/partial
+ *      getgenv() cannot hide wait/task/game.
  * Self-contained: references only globals, so it can sit anywhere in a
  * shuffled fragment layer.
  */
-const ENV_ROOT_EXPR = `(function()
-local _0pc=pcall
-local _0ty=type
-if _0pc and _0ty then
-local _0ok,_0r=_0pc(getgenv)
-if _0ok and _0ty(_0r)=="table" then return _0r end
-_0ok,_0r=_0pc(getfenv,0)
-if _0ok and _0ty(_0r)=="table" then return _0r end
-local _0ls=loadstring or load
-if _0ty(_0ls)=="function" then
-_0ok,_0r=_0pc(_0ls,"return _G")
-if _0ok and _0ty(_0r)=="table" and _0ty(_0r["table"])=="table" then return _0r end
-end
-end
-local _0g=_G
-if _0ty and _0ty(_0g)=="table" and _0ty(_0g["table"])=="table" then return _0g end
-return {table=table,string=string,math=math,bit32=bit32,bit=bit,pcall=pcall,xpcall=xpcall,select=select,type=type,ipairs=ipairs,pairs=pairs,next=next,tostring=tostring,tonumber=tonumber,rawget=rawget,rawset=rawset,setmetatable=setmetatable,getmetatable=getmetatable,unpack=unpack,loadstring=loadstring,load=load,error=error,assert=assert,coroutine=coroutine,os=os,utf8=utf8,buffer=buffer,task=task,game=game,workspace=workspace,script=script,Instance=Instance,Enum=Enum,typeof=typeof,tick=tick,time=time,wait=wait,spawn=spawn,delay=delay,newproxy=newproxy,collectgarbage=collectgarbage,debug=debug,print=print,warn=warn,shared=shared,require=require}
-end)()`;
+const ENV_ROOT_GLOBALS = [
+  "table", "string", "math", "bit32", "pcall", "xpcall", "select", "type",
+  "ipairs", "pairs", "next", "tostring", "tonumber", "rawget", "rawset",
+  "setmetatable", "getmetatable", "unpack", "loadstring", "load", "error",
+  "assert", "coroutine", "os", "utf8", "buffer", "task", "game", "workspace",
+  "script", "Instance", "Enum", "typeof", "tick", "time", "wait", "spawn",
+  "delay", "newproxy", "collectgarbage", "debug", "print", "warn", "shared",
+  "require",
+];
+const ENV_ROOT_EXPR = buildEnvRootExpr(ENV_ROOT_GLOBALS);
 
 export function generateBootstrap(config: BootstrapConfig): string {
   const { vmBlob, vmOrigLen, compLen, xorKey, invSbox, checksum, chunkName = "Quantum", rng } = config;
