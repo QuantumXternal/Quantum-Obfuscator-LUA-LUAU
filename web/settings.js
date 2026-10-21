@@ -113,7 +113,7 @@ export function renderAutomationSettings(container, initialSettings, onChange) {
       <label class="switch-row">
         <span class="switch-copy">
           <span class="check-title">Auto-detect macros</span>
-          <span class="check-help">Tag safe top-level functions when you press Analyze. Nested and IIFE code always stays manual.</span>
+          <span class="check-help">Tag safe top-level functions when you press Analyze. Top-level IIFEs can be refactored from the banner; nested IIFEs stay manual.</span>
         </span>
         <span class="switch">
           <input type="checkbox" data-setting="autoDetectMacros" />

@@ -50,6 +50,10 @@ export function analyzeCode(code, tier, signal) {
   return request("/api/analyze", { code, options: { tier } }, signal);
 }
 
+export function refactorIifes(code, tier, line, signal) {
+  return request("/api/refactor-iifes", { code, line, options: { tier } }, signal);
+}
+
 export function obfuscateCode(code, options, signal) {
   return request("/api/obfuscate", { code, options }, signal);
 }

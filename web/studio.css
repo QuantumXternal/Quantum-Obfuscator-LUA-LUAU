@@ -2174,7 +2174,15 @@ h4 {
 }
 
 .iife-warning-copy {
+  flex: 1 1 auto;
   min-width: 0;
+}
+
+.iife-warning > .btn {
+  flex: 0 0 auto;
+  align-self: center;
+  margin-left: auto;
+  white-space: nowrap;
 }
 
 .iife-warning strong {
@@ -3096,6 +3104,15 @@ h4 {
   .page {
     padding-right: 14px;
     padding-left: 14px;
+  }
+
+  .iife-warning {
+    flex-wrap: wrap;
+  }
+
+  .iife-warning > .btn {
+    width: 100%;
+    margin-left: 0;
   }
 
   .hero-panel h2 {

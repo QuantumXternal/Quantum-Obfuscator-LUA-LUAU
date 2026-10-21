@@ -5,8 +5,13 @@ import type { SourceComment } from "../lexer/Lexer.js";
 import type { Token } from "../tokens.js";
 import { applyFunctionMacroTiers } from "./macros.js";
 import type { MacroScanResult } from "./macros.js";
+import { collectIifeSites, type IifeSite } from "./iifeRefactor.js";
 
 export type AnalyzerTier = "turbo" | "maximum";
+
+export interface AnalyzerIifeRefactor {
+  line: number;
+}
 
 export interface AnalyzerFix {
   /** 1-based source line where the directive should be inserted. */
@@ -26,6 +31,7 @@ export interface AnalyzerDiagnostic {
   message: string;
   functionName: string | null;
   fix: AnalyzerFix | null;
+  refactor?: AnalyzerIifeRefactor | null;
 }
 
 export interface AnalyzerSummary {
@@ -33,6 +39,7 @@ export interface AnalyzerSummary {
   tokens: number;
   functions: number;
   iifeCount: number;
+  iifeRefactorable: number;
   instanceNew: number;
   renderStepped: number;
   heavyFunctions: number;
@@ -240,6 +247,32 @@ export function analyzeScript(code: string, options: AnalyzerOptions = {}): Anal
     });
   }
 
+  let iifeSites: IifeSite[] = [];
+  if (lexed.errors.length === 0 && parseErrors.length === 0) {
+    try {
+      iifeSites = collectIifeSites(ast, code, { tokens: lexed.tokens, comments: lexed.comments });
+    } catch {
+      iifeSites = [];
+    }
+  }
+  for (const site of iifeSites) {
+    const message = site.safe
+      ? `Top-level IIFE can be refactored into a named local function and tagged for ${tier.toUpperCase()}.`
+      : `IIFE cannot be auto-refactored safely. ${site.reason ?? "Lift it to the top level manually."}`;
+    pushDiagnostic({
+      line: site.line,
+      column: site.column,
+      endLine: site.endLine,
+      endColumn: Math.max(site.endColumn, site.column + 1),
+      severity: "warning",
+      code: "iife",
+      message,
+      functionName: null,
+      fix: null,
+      refactor: site.safe ? { line: site.line } : null,
+    });
+  }
+
   let macros: MacroScanResult = { turbos: [], maximums: [], warnings: [] };
   try {
     macros = applyFunctionMacroTiers(code, ast, lexed.comments as SourceComment[], lexed.tokens as Token[]);
@@ -390,7 +423,8 @@ export function analyzeScript(code: string, options: AnalyzerOptions = {}): Anal
       lines: sourceLines.length,
       tokens: lexed.tokens.filter((t) => t.type !== "EOF").length,
       functions: functionCount(ast),
-      iifeCount: countIifes(ast),
+      iifeCount: lexed.errors.length === 0 && parseErrors.length === 0 ? iifeSites.length : countIifes(ast),
+      iifeRefactorable: iifeSites.filter((site) => site.safe).length,
       instanceNew,
       renderStepped,
       heavyFunctions: heavyFunctionKeys.size,

@@ -60,7 +60,7 @@
           <h1>AST Analyzer</h1>
         </div>
         <div class="topbar-actions">
-          <span class="workflow-chip"><span>1</span> Analyze</span>
+          <span class="workflow-chip"><span>1</span> Analyze &amp; prepare</span>
           <span class="workflow-chip is-muted"><span>2</span> Protect</span>
           <a class="btn btn-ghost btn-sm" href="/docs#macros">Macro guide</a>
         </div>
@@ -70,7 +70,7 @@
         <div class="workspace-head">
           <div>
             <h2>Prepare safe macros before the VM.</h2>
-            <p>Static AST analysis for Roblox startup and render-loop hotspots. Safe top-level functions get a one-click Turbo tag; nested and IIFE code stays manual.</p>
+            <p>Static AST analysis for Roblox startup and render-loop hotspots. Safe top-level functions get a one-click Turbo tag, and safe top-level IIFEs can be refactored automatically.</p>
           </div>
           <div class="workspace-actions">
             <button type="button" class="btn btn-ghost btn-sm" data-load-example>Load example</button>
@@ -89,10 +89,11 @@
         <div class="iife-warning" data-iife-warning hidden role="status" aria-live="polite">
           <div class="iife-warning-icon" aria-hidden="true">!</div>
           <div class="iife-warning-copy">
-            <strong>Warning: This script uses IIFEs.</strong>
-            <p>Macros cannot be auto-applied safely. Please extract the code to top-level functions manually.</p>
+            <strong>IIFE refactor available.</strong>
+            <p>Safe top-level IIFEs can become named local functions with one click. Nested IIFEs stay untouched and manual.</p>
             <span class="iife-warning-count" data-iife-count></span>
           </div>
+          <button type="button" class="btn btn-primary btn-sm" data-refactor-all-iifes disabled>Auto-Refactor All IIFEs</button>
         </div>
 
         <div class="analyzer-grid">

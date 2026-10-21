@@ -1,4 +1,4 @@
-import { analyzeCode } from "../api.js";
+import { analyzeCode, refactorIifes } from "../api.js";
 import { createEditor } from "../editor.js";
 import { loadSettings, loadDraft, saveDraft, setPendingSource } from "../state.js";
 import { renderAutomationSettings } from "../settings.js";
@@ -86,6 +86,7 @@ export function initAnalyzer() {
   const settingsHost = document.querySelector("[data-analyzer-settings]");
   const iifeWarning = document.querySelector("[data-iife-warning]");
   const iifeCount = document.querySelector("[data-iife-count]");
+  const refactorAllButton = document.querySelector("[data-refactor-all-iifes]");
   const logList = document.querySelector("[data-analyzer-log]");
 
   let settings = loadSettings();
@@ -188,13 +189,59 @@ export function initAnalyzer() {
     });
   }
 
-  function updateIifeWarning(count) {
+  function updateIifeWarning(count, refactorable = 0) {
     if (!iifeWarning) return;
     const total = Number(count) || 0;
+    const safe = Number(refactorable) || 0;
     iifeWarning.hidden = total === 0;
     if (iifeCount && total > 0) {
-      iifeCount.textContent = `${total} IIFE${total === 1 ? "" : "s"} detected`;
+      iifeCount.textContent =
+        safe > 0
+          ? `${safe} of ${total} IIFE${total === 1 ? "" : "s"} can be refactored safely`
+          : `${total} IIFE${total === 1 ? "" : "s"} detected; none are safe for automatic refactoring`;
     }
+    if (refactorAllButton) refactorAllButton.disabled = safe === 0;
+  }
+
+  async function applyRefactor(code, line, button) {
+    if (!code.trim()) {
+      toast("Add some Luau before refactoring IIFEs.", "error");
+      return;
+    }
+    if (button) setButtonBusy(button, true);
+    try {
+      const tier = settings.turboLevel === "heavy" ? "maximum" : "turbo";
+      const result = await refactorIifes(code, tier, line);
+      if (!result.refactored) {
+        const warning = result.warnings?.[0] || "No safe top-level IIFE matched that location.";
+        toast(warning, "info", 5200);
+        log(warning, "info");
+        return;
+      }
+      suppressFixAnalysis = true;
+      editor.setValue(result.code);
+      suppressFixAnalysis = false;
+      saveDraft("analyzer", result.code);
+      updateSourceMeta(result.code);
+      const message = `Refactored ${result.refactored} IIFE${result.refactored === 1 ? "" : "s"} into named local functions.`;
+      toast(message, "success");
+      log(message, "success");
+      await runAnalysis({ source: "refactor" });
+    } catch (err) {
+      if (err?.name === "AbortError") return;
+      toast(err.message || "IIFE refactor failed.", "error", 5200);
+      log(err.message || "IIFE refactor failed.", "error");
+    } finally {
+      if (button) setButtonBusy(button, false);
+    }
+  }
+
+  async function refactorAtLine(line, button) {
+    await applyRefactor(editor.getValue(), line, button);
+  }
+
+  async function refactorAll(button) {
+    await applyRefactor(editor.getValue(), undefined, button);
   }
 
   function createFinding(diagnostic, index) {
@@ -241,6 +288,16 @@ export function initAnalyzer() {
         log(`Inserted ${diagnostic.fix.insertText.trim()} above line ${diagnostic.fix.line}.`, "success");
       });
       row.appendChild(fix);
+    } else if (diagnostic.refactor) {
+      const refactor = document.createElement("button");
+      refactor.type = "button";
+      refactor.className = "btn btn-secondary btn-xs finding-fix";
+      refactor.textContent = "Refactor IIFE";
+      refactor.addEventListener("click", (event) => {
+        event.stopPropagation();
+        refactorAtLine(diagnostic.refactor.line, refactor);
+      });
+      row.appendChild(refactor);
     } else {
       const tag = document.createElement("span");
       tag.className = `finding-state ${diagnostic.severity}`;
@@ -285,7 +342,7 @@ export function initAnalyzer() {
     if (emptyState) emptyState.hidden = true;
     document.querySelector("[data-results-count]").textContent = `${result.diagnostics.length} finding${result.diagnostics.length === 1 ? "" : "s"}`;
     updateSummary(result, elapsed);
-    updateIifeWarning(result.summary.iifeCount);
+    updateIifeWarning(result.summary.iifeCount, result.summary.iifeRefactorable);
     renderFindings(result);
     const fixCount = result.summary.autoFixable;
     if (applyAllButton) {
@@ -302,7 +359,7 @@ export function initAnalyzer() {
 
   function clearResults() {
     lastResult = null;
-    updateIifeWarning(0);
+    updateIifeWarning(0, 0);
     if (emptyState) emptyState.hidden = false;
     if (results) results.replaceChildren();
     editor.clearServerDiagnostics();
@@ -313,6 +370,8 @@ export function initAnalyzer() {
           lines: 0,
           functions: 0,
           heavyFunctions: 0,
+          iifeCount: 0,
+          iifeRefactorable: 0,
           instanceNew: 0,
           renderStepped: 0,
           autoFixable: 0,
@@ -379,6 +438,7 @@ export function initAnalyzer() {
   }
 
   analyzeButton?.addEventListener("click", () => runAnalysis({ applyFixes: true, button: analyzeButton }));
+  refactorAllButton?.addEventListener("click", () => refactorAll(refactorAllButton));
   applyAllButton?.addEventListener("click", async () => {
     const fixes = lastResult ? dedupeFixes(lastResult.diagnostics) : [];
     if (!fixes.length) {

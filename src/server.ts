@@ -7,6 +7,7 @@ import { validate } from "./compiler/LuauCompiler.js";
 import type { PipelineVmType, PipelineVmLevel } from "./engine/obfuscatePipeline.js";
 import type { ObfuscationTarget } from "./engine/profiles.js";
 import { analyzeScript } from "./engine/analyzer.js";
+import { refactorIifes } from "./engine/iifeRefactor.js";
 import { injectHeavyMacros } from "./engine/macroAuto.js";
 import { buildStudioPlan, StudioOptionsError } from "./studioOptions.js";
 import { cacheKey } from "./cacheKey.js";
@@ -81,6 +82,38 @@ app.post("/api/analyze", (req: express.Request, res: express.Response) => {
     res.json({ success: true, ...result });
   } catch (err: any) {
     console.error("[API-ERROR] /api/analyze failed:", err);
+    res.status(500).json({ error: `Server error: ${err.message}` });
+  }
+});
+
+app.post("/api/refactor-iifes", (req: express.Request, res: express.Response) => {
+  try {
+    const { code, line, options } = req.body ?? {};
+    if (typeof code !== "string") {
+      return res.status(400).json({ error: "Invalid 'code' parameter" }) as any;
+    }
+    if (line !== undefined && (!Number.isInteger(line) || line < 1)) {
+      return res.status(400).json({ error: "Invalid 'line' parameter" }) as any;
+    }
+    const bytes = Buffer.byteLength(code, "utf8");
+    if (bytes > MAX_INPUT_BYTES) {
+      return res.status(413).json({ error: inputTooLargeMessage(MAX_INPUT_BYTES), bytes, maxBytes: MAX_INPUT_BYTES }) as any;
+    }
+    const tier = options?.tier === "maximum" ? "maximum" : "turbo";
+    const result = refactorIifes(code, { tier, line });
+    console.log(
+      `[API] /api/refactor-iifes - line: ${line ?? "all"}, refactored: ${result.refactored}, remaining: ${result.remaining}`,
+    );
+    res.json({
+      success: true,
+      code: result.code,
+      refactored: result.refactored,
+      remaining: result.remaining,
+      warnings: result.warnings,
+      tier: result.tier,
+    });
+  } catch (err: any) {
+    console.error("[API-ERROR] /api/refactor-iifes failed:", err);
     res.status(500).json({ error: `Server error: ${err.message}` });
   }
 });

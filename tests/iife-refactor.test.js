@@ -1,0 +1,181 @@
+import { analyzeScript } from "../dist/engine/analyzer.js";
+import { collectIifeSites, refactorIifes } from "../dist/engine/iifeRefactor.js";
+import { lex } from "../dist/lexer/Lexer.js";
+import { parse, parseWithErrors } from "../dist/parser/Parser.js";
+
+function expectValid(code) {
+  const tokens = lex(code);
+  expect(tokens.errors).toEqual([]);
+  const parsed = parseWithErrors(tokens.tokens);
+  expect(parsed.errors).toEqual([]);
+}
+
+function sitesFor(code) {
+  const lexed = lex(code);
+  return collectIifeSites(parse(lexed.tokens), code, lexed);
+}
+
+test("refactors a direct top-level IIFE into a tagged local function", () => {
+  const code = `(function(a)\n  return a + 1\nend)(41)\n`;
+  const result = refactorIifes(code);
+  expect(result.refactored).toBe(1);
+  expect(result.remaining).toBe(0);
+  expect(result.warnings).toEqual([]);
+  expect(result.code).toBe(
+    `--@quantum:turbo\nlocal function __quantum_iife_1(a)\n  return a + 1\nend\n__quantum_iife_1(41)\n`,
+  );
+  expectValid(result.code);
+});
+
+test("preserves assignment prefixes, call arguments, and trailing comments", () => {
+  const code = `local value = (function(a, b)\n  return a + b\nend)(1, 2) -- keep this\nprint(value)\n`;
+  const result = refactorIifes(code);
+  expect(result.refactored).toBe(1);
+  expect(result.code).toContain("local value = __quantum_iife_1(1, 2) -- keep this");
+  expectValid(result.code);
+});
+
+test("refactors every safe top-level site with unique names", () => {
+  const code = `local first = (function() return 1 end)()\nlocal second = (function() return 2 end)()\nprint(first, second)\n`;
+  const result = refactorIifes(code);
+  expect(result.refactored).toBe(2);
+  expect(result.code.match(/--@quantum:turbo/g)).toHaveLength(2);
+  expect(result.code).toContain("local function __quantum_iife_1()");
+  expect(result.code).toContain("local function __quantum_iife_2()");
+  expect(result.code).toContain("local first = __quantum_iife_1()");
+  expect(result.code).toContain("local second = __quantum_iife_2()");
+  expectValid(result.code);
+});
+
+test("a line target refactors only the IIFE that starts on that line", () => {
+  const code = `local first = (function() return 1 end)()\nlocal second = (function() return 2 end)()\nprint(first, second)\n`;
+  const result = refactorIifes(code, { line: 2 });
+  expect(result.refactored).toBe(1);
+  expect(result.line).toBe(2);
+  expect(result.code).toContain("local first = (function() return 1 end)()");
+  expect(result.code).toContain("local second = __quantum_iife_1()");
+  expectValid(result.code);
+});
+
+test("a line without a safe IIFE returns the source unchanged", () => {
+  const code = `(function() return 1 end)()\nprint("done")\n`;
+  const result = refactorIifes(code, { line: 9 });
+  expect(result.refactored).toBe(0);
+  expect(result.code).toBe(code);
+  expect(result.warnings[0]).toMatch(/No refactorable top-level IIFE starts on line 9/);
+});
+
+test("rejects an invalid line option instead of refactoring everything", () => {
+  const code = `local value = (function() return 1 end)()\n`;
+  const result = refactorIifes(code, { line: 0 });
+  expect(result.refactored).toBe(0);
+  expect(result.code).toBe(code);
+  expect(result.warnings[0]).toMatch(/Invalid 'line' option/);
+});
+
+test("nested IIFEs are reported but never refactored", () => {
+  const code = `do\n  (function()\n    return 1\n  end)()\nend\n`;
+  const sites = sitesFor(code);
+  expect(sites).toHaveLength(1);
+  expect(sites[0]).toMatchObject({ line: 2, safe: false });
+  expect(sites[0].reason).toMatch(/Nested IIFEs/);
+  const result = refactorIifes(code);
+  expect(result.refactored).toBe(0);
+  expect(result.remaining).toBe(1);
+  expect(result.code).toBe(code);
+  expect(result.warnings.join(" ")).toMatch(/could not be refactored safely/);
+});
+
+test("nested IIFEs inside a refactored body remain untouched", () => {
+  const code = `local value = (function()\n  return (function() return 1 end)()\nend)()\nprint(value)\n`;
+  const result = refactorIifes(code);
+  expect(result.refactored).toBe(1);
+  expect(result.remaining).toBe(1);
+  expect(result.code).toContain("return (function() return 1 end)()");
+  expectValid(result.code);
+});
+
+test("preserves an existing directive instead of adding a duplicate", () => {
+  const code = `--@quantum:maximum\n(function() return 1 end)()\n`;
+  const result = refactorIifes(code);
+  expect(result.refactored).toBe(1);
+  expect(result.code.match(/--@quantum:maximum/g)).toHaveLength(1);
+  expect(result.code).not.toContain("--@quantum:turbo");
+  expect(result.code).toContain("--@quantum:maximum\nlocal function __quantum_iife_1()");
+  expectValid(result.code);
+});
+
+test("uses the requested tier when no directive exists", () => {
+  const code = `local value = (function() return 1 end)()\n`;
+  const result = refactorIifes(code, { tier: "maximum" });
+  expect(result.tier).toBe("maximum");
+  expect(result.code.startsWith("--@quantum:maximum\nlocal function")).toBe(true);
+});
+
+test("preserves CRLF line endings", () => {
+  const code = `local a = 1\r\nlocal b = (function()\r\n  return a\r\nend)()\r\nprint(b)\r\n`;
+  const result = refactorIifes(code);
+  expect(result.refactored).toBe(1);
+  expect(result.code).toContain("--@quantum:turbo\r\nlocal function __quantum_iife_1()");
+  expect(result.code.split("\n").every((line) => line.endsWith("\r") || line === "")).toBe(true);
+});
+
+test("handles multiple IIFEs in one statement and wraps with block bodies", () => {
+  const code = `local a, b = (function() return 1 end)(), (function()\n  if true then return 2 end\n  return 3\nend)()\nprint(a, b)\n`;
+  const result = refactorIifes(code);
+  expect(result.refactored).toBe(2);
+  expect(result.code).toContain("local function __quantum_iife_1() return 1 end");
+  expect(result.code).toContain("local function __quantum_iife_2()\n  if true then return 2 end\n  return 3\nend");
+  expectValid(result.code);
+});
+
+test("avoids generated-name collisions", () => {
+  const code = `local __quantum_iife_1 = true\nlocal value = (function() return 1 end)()\nprint(__quantum_iife_1, value)\n`;
+  const result = refactorIifes(code);
+  expect(result.refactored).toBe(1);
+  expect(result.code).toContain("local function __quantum_iife_2()");
+  expectValid(result.code);
+});
+
+test("supports string and table call suffixes", () => {
+  const code = `local s = (function() return "x" end) "arg"\nlocal t = (function() return {} end) {1}\n`;
+  const result = refactorIifes(code);
+  expect(result.refactored).toBe(2);
+  expect(result.code).toContain(`__quantum_iife_1 "arg"`);
+  expect(result.code).toContain("__quantum_iife_2 {1}");
+  expectValid(result.code);
+});
+
+test("refuses type-asserted IIFEs", () => {
+  const code = `local value = (function() return 1 end :: any)()\n`;
+  const sites = sitesFor(code);
+  expect(sites[0].safe).toBe(false);
+  expect(sites[0].reason).toMatch(/Type-asserted/);
+  const result = refactorIifes(code);
+  expect(result.refactored).toBe(0);
+  expect(result.code).toBe(code);
+});
+
+test("leaves syntax-invalid source unchanged", () => {
+  const code = `local value = (function(\n`;
+  const result = refactorIifes(code);
+  expect(result.refactored).toBe(0);
+  expect(result.code).toBe(code);
+  expect(result.warnings[0]).toMatch(/syntax errors/);
+});
+
+test("is idempotent after a successful refactor", () => {
+  const first = refactorIifes(`local value = (function() return 1 end)()\n`);
+  const second = refactorIifes(first.code);
+  expect(second.refactored).toBe(0);
+  expect(second.code).toBe(first.code);
+});
+
+test("the analyzer sees generated functions and their macro tags", () => {
+  const result = refactorIifes(`local value = (function() return 1 end)()\nprint(value)\n`);
+  const analysis = analyzeScript(result.code);
+  expect(analysis.valid).toBe(true);
+  expect(analysis.summary.iifeCount).toBe(0);
+  expect(analysis.summary.iifeRefactorable).toBe(0);
+  expect(analysis.macros.turbos).toHaveLength(1);
+});

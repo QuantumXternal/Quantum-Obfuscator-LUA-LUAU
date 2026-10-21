@@ -22,8 +22,8 @@ A from-scratch Luau obfuscation engine in TypeScript: complete Lexer → Parser 
 - **LZ4 payload compression (new)** — payloads are LZ4 block-compressed before the cipher stack and inflated in-artifact by a pure-Luau `unlz4` (chunked `table.concat` decode, **~140 ms on Luau**), with the adler32 checksum still verified over the inflated bytes. The 580 KB fixture lands at **1.38–1.44 MB** across seeds (was 2.29 MB). Pure-Luau deflate was implemented and rejected by the 200 ms boot-cost go/no-go (651 ms).
 - **Clean loader failures** — payload loads run through pcall guards (`Quantum: payload load failed`); corrupted or truncated payloads produce the single `Quantum Protection V2` error on both runtimes, and `wrapNestedVM` passes >1.5 MB sources through instead of doubling pre-decode work.
 - **Determinism retained** — same-seed builds stay byte-identical across CLI/API/UI (`benchmarks/seed-parity.mjs`, 6/6).
-- **Quantum Studio (new)** — a four-page, local-first CodeMirror 6 workspace with AST hot-path analysis, clickable lint fixes, Analyzer-owned macro auto-detection, an IIFE warning with detected counts, a no-repaste analyzer → obfuscator handoff, and the IIFE Turbo guide.
-- **758 tests / 64 suites green**; acceptance seeds 10001–50005 (MAXIMUM + BALANCED) all ≤ 1.45 MB with reference-matched execution on Luau 0.742 + PUC-Lua 5.4.8.
+- **Quantum Studio (new)** — a four-page, local-first CodeMirror 6 workspace with AST hot-path analysis, clickable lint fixes, Analyzer-owned macro auto-detection, an IIFE banner with safe-site counts and one-click top-level IIFE refactoring, a no-repaste analyzer → obfuscator handoff, and the IIFE Turbo guide.
+- **776 tests / 65 suites green**; acceptance seeds 10001–50005 (MAXIMUM + BALANCED) all ≤ 1.45 MB with reference-matched execution on Luau 0.742 + PUC-Lua 5.4.8.
 
 ---
 
@@ -221,9 +221,9 @@ Open [http://localhost:3000](http://localhost:3000) for the four-page Studio:
 | Page | What it does |
 |------|--------------|
 | **Dashboard** | Engine health, presets, recent source summary, and shortcuts into the workflow |
-| **Analyzer** | CodeMirror 6 Luau editor with debounced AST analysis, visible lint squiggles, clickable findings, one-click/apply-all Turbo macro fixes, Quantum Exclusives automation, IIFE warning, and **Send to Obfuscator** (source + settings, no re-paste) |
+| **Analyzer** | CodeMirror 6 Luau editor with debounced AST analysis, visible lint squiggles, clickable findings, one-click/apply-all Turbo macro fixes, Quantum Exclusives automation, safe top-level IIFE refactoring (all or per finding), and **Send to Obfuscator** (source + settings, no re-paste) |
 | **Obfuscator** | Source/output editors, profile + engine settings, deterministic seed, copy/download, and run metadata |
-| **Docs** | Profiles, options, API, troubleshooting, and the mandatory [How to Turbo an IIFE Script](http://localhost:3000/docs#iife) refactor guide |
+| **Docs** | Profiles, options, API, troubleshooting, and the [IIFE refactor guide](http://localhost:3000/docs#iife) |
 
 Studio defaults to **BALANCED** with the **Roblox** target. The Analyzer owns macro automation and inserts `--@quantum:turbo` / `--@quantum:maximum` only where it is syntax-safe and idempotent; explicit tags always win. The Obfuscator preserves those tags and never re-scans at protect time.
 
@@ -264,7 +264,7 @@ npm run parse -- input.lua
 
 ## API Reference
 
-The Express server exposes four endpoints:
+The Express server exposes five endpoints:
 
 ### `GET /api/health`
 
@@ -295,7 +295,21 @@ Runs the AST hot-path analyzer used by the Studio editor. `options.tier` control
 }
 ```
 
-The response includes `valid`, `diagnostics` (line/column ranges, severity, code, message, `functionName`, optional `fix`), `macros`, and a `summary` with token/function/IIFE/`Instance.new`/hot-call counts. Diagnostics without a safe fix return `fix: null` and an explanation.
+The response includes `valid`, `diagnostics` (line/column ranges, severity, code, message, `functionName`, optional `fix`), `macros`, and a `summary` with token/function/IIFE/`Instance.new`/hot-call counts plus `iifeRefactorable`. Safe IIFE findings include a `refactor: { line }` action; nested or unsafe sites return `refactor: null`. Diagnostics without a safe fix return `fix: null` and an explanation.
+
+### `POST /api/refactor-iifes`
+
+Refactors safe top-level IIFEs into named local functions with Quantum macro tags. Omit `line` to refactor every safe top-level IIFE, or pass a 1-based `line` to refactor only the IIFE that starts there. Nested, type-asserted, and directive-conflicting IIFEs are never rewritten.
+
+```json
+{
+  "code": "local value = (function() return 1 end)()",
+  "line": 1,
+  "options": { "tier": "turbo" }
+}
+```
+
+The response includes `code` (unchanged when nothing was refactored), `refactored`, `remaining`, `warnings`, and the resolved `tier`. Invalid `line` values return `400`; a valid line with no matching safe IIFE returns `200` with `refactored: 0`.
 
 ### `POST /api/obfuscate`
 
@@ -439,7 +453,7 @@ Standard script executors frequently restrict the environment. Quantum output de
 
 ## Verification & Trust
 
-- **758 tests across 64 suites** green, including RNG draw-order canaries that pin byte-identity of legacy unseeded paths and Studio analyzer/macro/settings coverage
+- **776 tests across 65 suites** green, including RNG draw-order canaries that pin byte-identity of legacy unseeded paths and Studio analyzer/macro/settings coverage
 - **24/24 dual-VM execution matrix** on Luau 0.742 and PUC-Lua 5.4.8 (with a compat shim), covering plain, custom-cipher, nested, stub, and triple-stacked configurations
 - **Determinism measured**: pipeline (seed `1234`) `f9fef00e…856c`; seeded cipher wrapper `33276098…8f01`; seeded triple-stack chain `b638694e…bd67` — all byte-identical on repeated builds
 - **Adversarial**: ClydeDeobfuscator 5/5 REFUSE, Luraph V15 5/5 GARBAGE — full evidence in [SECURITY.md](./SECURITY.md)

@@ -44,11 +44,26 @@ test("nested functions and IIFEs are not auto-tagged", () => {
   const iife = analyzeScript(`(function()\n  local f = Instance.new("Frame")\n  return f\nend)()\n`);
   expect(iife.summary.autoFixable).toBe(0);
   expect(iife.summary.iifeCount).toBe(1);
-  expect(iife.diagnostics[0].fix).toBeNull();
-  expect(iife.diagnostics[0].message).toMatch(/Move it into a top-level named function/);
+  expect(iife.summary.iifeRefactorable).toBe(1);
+  const iifeDiagnostic = iife.diagnostics.find((d) => d.code === "iife");
+  expect(iifeDiagnostic).toMatchObject({
+    line: 1,
+    severity: "warning",
+    fix: null,
+    refactor: { line: 1 },
+  });
+  expect(iifeDiagnostic.message).toMatch(/can be refactored/);
+
+  const nestedIife = analyzeScript(`do\n  (function()\n    return Instance.new("Frame")\n  end)()\nend\n`);
+  expect(nestedIife.summary.iifeCount).toBe(1);
+  expect(nestedIife.summary.iifeRefactorable).toBe(0);
+  const nestedDiagnostic = nestedIife.diagnostics.find((d) => d.code === "iife");
+  expect(nestedDiagnostic.refactor).toBeNull();
+  expect(nestedDiagnostic.message).toMatch(/cannot be auto-refactored safely/);
 
   const wrapped = analyzeScript(`local Module = (function()\n  return {}\nend)()\nprint(Module)\n`);
   expect(wrapped.summary.iifeCount).toBe(1);
+  expect(wrapped.summary.iifeRefactorable).toBe(1);
 
   const callback = analyzeScript(`pcall(function()\n  return Instance.new("Frame")\nend)\n`);
   expect(callback.summary.iifeCount).toBe(0);
@@ -93,6 +108,7 @@ test("large fixture analysis matches the stress-test baseline", () => {
     tokens: 8860,
     functions: 54,
     iifeCount: 0,
+    iifeRefactorable: 0,
     instanceNew: 90,
     renderStepped: 0,
     heavyFunctions: 20,

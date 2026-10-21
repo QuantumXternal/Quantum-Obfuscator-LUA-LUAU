@@ -73,7 +73,7 @@
           <div class="docs-hero-meta">
             <span><strong>3</strong> profiles</span>
             <span><strong>2</strong> macro tiers</span>
-            <span><strong>4</strong> local endpoints</span>
+            <span><strong>5</strong> local endpoints</span>
           </div>
         </div>
 
@@ -82,11 +82,10 @@
             <section class="doc-section" id="quick-start">
               <span class="doc-kicker">01 / Start here</span>
               <h2>Quick start</h2>
-              <p>There are two paths into the engine. Both keep the source on this machine.</p>
+              <p>Prepare the source first, then protect it. Both steps keep the source on this machine.</p>
               <div class="doc-steps">
-                <div><span class="step-number">01</span><div><strong>Analyze</strong><p>Drop a <code>.lua</code> or <code>.luau</code> file into the dashboard. The analyzer parses it and lists every <code>Instance.new</code> and <code>RenderStepped</code> site.</p></div></div>
-                <div><span class="step-number">02</span><div><strong>Tag safe functions</strong><p>Use <em>Apply all fixes</em> or the inline lint popover. Only top-level, uniquely named functions are tagged automatically.</p></div></div>
-                <div><span class="step-number">03</span><div><strong>Protect</strong><p>Send the source and settings to the obfuscator. Pick a profile, press <em>Protect Script</em>, then copy or download the result.</p></div></div>
+                <div><span class="step-number">01</span><div><strong>Analyze &amp; prepare</strong><p>Drop a <code>.lua</code> or <code>.luau</code> file into the analyzer. Apply safe top-level macro tags, then use <em>Auto-Refactor All IIFEs</em> or the per-finding <em>Refactor IIFE</em> action to turn safe top-level IIFEs into tagged local functions.</p></div></div>
+                <div><span class="step-number">02</span><div><strong>Protect</strong><p>Send the prepared source and settings to the obfuscator. Pick a profile, press <em>Protect Script</em>, then copy or download the result.</p></div></div>
               </div>
               <div class="doc-callout">
                 <strong>Shortcut</strong>
@@ -130,7 +129,8 @@ end</code></pre>
                 <li>The function must be a top-level statement with a stable name.</li>
                 <li>Function assignments such as <code>local f = function() end</code> are taggable when named and top-level.</li>
                 <li>Duplicate names are rejected: tag the declaration after the conflict is resolved.</li>
-                <li>Nested functions, anonymous callbacks, and IIFEs have no stable tag site.</li>
+                <li>Nested functions, anonymous callbacks, and nested IIFEs have no stable tag site.</li>
+                <li>Top-level IIFEs have no stable tag site until they are refactored into named functions.</li>
                 <li>A function with conflicting Turbo and Maximum directives is rejected by the scanner.</li>
                 <li>If native extraction would capture an upvalue, the engine safely vetoes extraction for that function.</li>
               </ul>
@@ -143,7 +143,17 @@ end</code></pre>
             <section class="doc-section" id="iife">
               <span class="doc-kicker">03 / Common blocker</span>
               <h2>How to Turbo an IIFE Script</h2>
-              <p>An immediately invoked function expression has no stable top-level name, so there is nowhere legal to put a macro. Tagging the call site does nothing. The reliable fix is to lift the IIFE into a named top-level function and call it once.</p>
+              <p>An immediately invoked function expression has no stable top-level name, so there is nowhere legal to put a macro. The analyzer can now lift safe top-level IIFEs into named local functions, add the macro tag, and preserve the call and its arguments. Nested IIFEs still require a manual refactor.</p>
+              <h3>Automatic refactor</h3>
+              <ul class="doc-list">
+                <li>Use <em>Auto-Refactor All IIFEs</em> in the banner to handle every safe top-level site at once.</li>
+                <li>Use <em>Refactor IIFE</em> on an individual finding to handle only that line.</li>
+                <li>Only direct top-level statements and direct values in top-level assignments, local declarations, compound assignments, and returns are eligible.</li>
+                <li>Arguments, trailing comments, indentation, and CRLF line endings are preserved. Existing Quantum directives are kept without duplication.</li>
+                <li>Generated names use the collision-free <code>__quantum_iife_N</code> form, and the transformed source is validated before it replaces the editor contents.</li>
+                <li>Nested IIFEs, type-asserted IIFEs, and sites with conflicting directives are never rewritten. The response reports them as remaining.</li>
+              </ul>
+              <p>The comparison shows the same rewrite with a readable function name; the automatic action uses <code>__quantum_iife_N</code> so it cannot collide with existing locals.</p>
               <div class="iife-compare">
                 <div class="code-block code-before">
                   <div class="code-head"><span>Before — IIFE, cannot be tagged</span><button type="button" class="code-copy" data-copy-code>Copy</button></div>
@@ -168,7 +178,7 @@ end
 local panel = buildPanel()</code></pre>
                 </div>
               </div>
-              <h3>Refactor checklist</h3>
+              <h3>Manual refactor checklist for nested IIFEs</h3>
               <ol class="doc-list doc-list-numbered">
                 <li>Move the IIFE body into a new <code>local function</code> at the top level of the script.</li>
                 <li>Pass values the body used to capture as parameters, or return them and keep the call site explicit.</li>
@@ -178,7 +188,7 @@ local panel = buildPanel()</code></pre>
               </ol>
               <div class="doc-callout doc-callout-amber">
                 <strong>IIFE inside another function?</strong>
-                <p>Lift it all the way to the script's top level. Moving it to another nested function does not make it taggable, even if that function has a name.</p>
+                <p>Lift it all the way to the script's top level. The automatic action intentionally leaves nested IIFEs unchanged, and moving them into another nested function does not make them taggable even if that function has a name.</p>
               </div>
               <div class="doc-callout">
                 <strong>Captured variables are still checked.</strong>
@@ -228,7 +238,7 @@ local panel = buildPanel()</code></pre>
               <p>Studio keeps macro preparation in the Analyzer and compilation in the Obfuscator. The Obfuscator never re-scans the source at protect time; it preserves the Quantum tags already in the editor. The local API still exposes backend auto-detection for external callers.</p>
               <ul class="doc-list">
                 <li><strong>Analyzer Auto-Detect:</strong> the explicit Analyze button analyzes first, applies safe top-level fixes, then re-analyzes the tagged result. Auto Turbo level and Auto-detect live in the Quantum Exclusives panel.</li>
-                <li><strong>IIFE guard:</strong> if the source contains IIFEs, the Analyzer shows a warning and the detected count. Safe top-level functions can still be tagged; IIFE and nested code stay manual.</li>
+                <li><strong>IIFE guard:</strong> if the source contains IIFEs, the Analyzer shows the detected count and how many are safe to refactor. Use the banner action or a finding action for safe top-level sites; nested IIFEs stay manual.</li>
                 <li><strong>API Auto-Detect:</strong> external callers may send <code>autoDetectMacros</code> and <code>turboLevel</code>. The backend scans a copy and reports <code>autoMacros.injected</code> plus skipped-function warnings.</li>
                 <li><strong>Live typing:</strong> never auto-applies a fix while you are editing; it only refreshes diagnostics.</li>
               </ul>
@@ -240,7 +250,8 @@ local panel = buildPanel()</code></pre>
               <p>The Studio UI uses the same public endpoints available to local tooling. The server binds to this machine and accepts JSON bodies.</p>
               <div class="endpoint-list">
                 <div class="endpoint"><span class="method">GET</span><code>/api/health</code><p>Returns <code>{ ok, service, version }</code>.</p></div>
-                <div class="endpoint"><span class="method">POST</span><code>/api/analyze</code><p>Body: <code>{ code, options: { tier } }</code>. Returns diagnostics, macros, and summary counts.</p></div>
+                <div class="endpoint"><span class="method">POST</span><code>/api/analyze</code><p>Body: <code>{ code, options: { tier } }</code>. Returns diagnostics, macros, and summary counts. IIFE findings include a <code>refactor: { line }</code> action when safe.</p></div>
+                <div class="endpoint"><span class="method">POST</span><code>/api/refactor-iifes</code><p>Body: <code>{ code, line?, options: { tier } }</code>. Refactors all safe top-level IIFEs, or only the IIFE that starts on <code>line</code>. Returns <code>code</code>, <code>refactored</code>, <code>remaining</code>, and <code>warnings</code>.</p></div>
                 <div class="endpoint"><span class="method">POST</span><code>/api/obfuscate</code><p>Body: <code>{ code, options }</code>. Returns the protected output, elapsed time, resolved meta, and auto-macro details.</p></div>
                 <div class="endpoint"><span class="method">POST</span><code>/api/validate</code></div>
               </div>
@@ -267,6 +278,20 @@ local panel = buildPanel()</code></pre>
 
 const { output, durationMs, meta, autoMacros } = await response.json();</code></pre>
               </div>
+              <div class="code-block">
+                <div class="code-head"><span>JavaScript &mdash; refactor safe IIFEs</span><button type="button" class="code-copy" data-copy-code>Copy</button></div>
+                <pre><code>const response = await fetch("/api/refactor-iifes", {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({
+    code: source,
+    line: 12, // omit to refactor all safe top-level IIFEs
+    options: { tier: "turbo" }
+  })
+});
+
+const { code, refactored, remaining, warnings } = await response.json();</code></pre>
+              </div>
               <p>Omitting <code>profile</code> keeps the legacy path for older callers. Supplying <code>profile</code> activates Studio profile resolution. An invalid target, VM type, grade, or profile returns HTTP 400 with a JSON error.</p>
               <div class="doc-callout">
                 <strong>Deterministic builds</strong>
@@ -283,8 +308,8 @@ const { output, durationMs, meta, autoMacros } = await response.json();</code></
                   <p>Remove or replace the existing macro above the function. The analyzer intentionally does not offer an automatic tier replacement while both directives could exist.</p>
                 </details>
                 <details>
-                  <summary>My IIFE is not being tagged by Auto-Detect.</summary>
-                  <p>IIFEs are anonymous expressions. The analyzer shows a warning with the detected count and leaves those sites manual. Refactor to a named top-level function using the checklist above, then run the analyzer again.</p>
+                  <summary>My IIFE is not being refactored automatically.</summary>
+                  <p>Only safe top-level IIFEs are eligible. Nested, type-asserted, or directive-conflicting IIFEs are reported as remaining and left unchanged. Move nested sites to the script's top level using the manual checklist above, then run the analyzer again.</p>
                 </details>
                 <details>
                   <summary>I see an <code>antiTamper</code> feature but the script targets Generic.</summary>
@@ -323,7 +348,7 @@ const { output, durationMs, meta, autoMacros } = await response.json();</code></
               <span class="eyebrow">On this page</span>
               <a href="#quick-start">Quick start</a>
               <a href="#macros">Macro directives</a>
-              <a href="#iife">How to Turbo an IIFE</a>
+              <a href="#iife">IIFE refactors</a>
               <a href="#profiles">Protection profiles</a>
               <a href="#settings">Settings mapping</a>
               <a href="#api">Local API</a>

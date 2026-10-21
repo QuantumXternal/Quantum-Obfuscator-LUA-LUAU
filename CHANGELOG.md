@@ -10,6 +10,21 @@ is the AST-only control: byte-identical before/after in every comparison.
 
 ## Unreleased — Quantum Studio (4-page web IDE)
 
+- feat(analyzer): safe top-level IIFE auto-refactor with per-line and global
+  actions. `src/engine/iifeRefactor.ts` lifts only direct top-level IIFEs into
+  tagged `local function` declarations, preserves arguments/comments/CRLF,
+  keeps existing directives without duplication, generates collision-free
+  `__quantum_iife_N` names, and validates the transformed source before
+  returning it. The analyzer now emits `code: "iife"` findings with a
+  `refactor: { line }` action and `summary.iifeRefactorable`; nested,
+  type-asserted, and directive-conflicting sites stay manual.
+  `POST /api/refactor-iifes` accepts optional `line` plus `options.tier`, and
+  Studio exposes **Auto-Refactor All IIFEs** in the banner and **Refactor
+  IIFE** per finding. Docs and README describe the Analyze & prepare ->
+  Protect workflow. MEASURED: focused IIFE/analyzer suites 27/27 passing; full
+  suite 65 suites / 776 tests green. RISK: only a documented safe subset is
+  rewritten; any validation failure returns the original source unchanged.
+  TESTS: `tests/iife-refactor.test.js`, `tests/analyzer.test.js`.
 - fix(web): separate macro preparation from compilation. The Analyzer now owns
   the Quantum Exclusives panel and adds an IIFE warning with a detected count;
   the Obfuscator no longer sends `autoDetectMacros`/`turboLevel` and preserves
