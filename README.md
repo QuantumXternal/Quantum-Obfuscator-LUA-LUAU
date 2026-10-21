@@ -22,7 +22,8 @@ A from-scratch Luau obfuscation engine in TypeScript: complete Lexer → Parser 
 - **LZ4 payload compression (new)** — payloads are LZ4 block-compressed before the cipher stack and inflated in-artifact by a pure-Luau `unlz4` (chunked `table.concat` decode, **~140 ms on Luau**), with the adler32 checksum still verified over the inflated bytes. The 580 KB fixture lands at **1.38–1.44 MB** across seeds (was 2.29 MB). Pure-Luau deflate was implemented and rejected by the 200 ms boot-cost go/no-go (651 ms).
 - **Clean loader failures** — payload loads run through pcall guards (`Quantum: payload load failed`); corrupted or truncated payloads produce the single `Quantum Protection V2` error on both runtimes, and `wrapNestedVM` passes >1.5 MB sources through instead of doubling pre-decode work.
 - **Determinism retained** — same-seed builds stay byte-identical across CLI/API/UI (`benchmarks/seed-parity.mjs`, 6/6).
-- **615 tests / 46 suites green**; acceptance seeds 10001–50005 (MAXIMUM + BALANCED) all ≤ 1.45 MB with reference-matched execution on Luau 0.742 + PUC-Lua 5.4.8.
+- **Quantum Studio (new)** — a four-page, local-first CodeMirror 6 workspace with AST hot-path analysis, clickable lint fixes, safe macro auto-detection, a no-repaste analyzer → obfuscator handoff, and the IIFE Turbo guide.
+- **758 tests / 64 suites green**; acceptance seeds 10001–50005 (MAXIMUM + BALANCED) all ≤ 1.45 MB with reference-matched execution on Luau 0.742 + PUC-Lua 5.4.8.
 
 ---
 
@@ -60,9 +61,11 @@ Two complementary layers control protection strength. They land on the same VM m
 
 | Profile | AST Passes | VM | Notes |
 |---------|-----------|-----|-------|
+| `TURBO` | FAST (rename only) | none | Studio fast path; pairs with `performanceTier: "turbo"` unless VM overridden |
 | `FAST` | Rename only | none | Smallest/fastest tier for build pipelines |
-| `BALANCED` | Rename + string encoding + control-flow scramble | Register @ normal | **Web UI default** |
+| `BALANCED` | Rename + string encoding + control-flow scramble | Register @ normal | **Studio default** |
 | `MAXIMUM` | Rename + string encoding + control-flow scramble + MBA constants | Register @ max | Roblox anti-tamper bootstrap only when `target: "roblox"`; fully generic otherwise |
+| `CUSTOM` | BALANCED base + explicit overrides | caller-selected | `vmType`/`vmLevel` omit = profile default; MBA defaults on only at `vmLevel: "max"` |
 
 ---
 
@@ -153,24 +156,26 @@ graph TD
 ```mermaid
 graph TD
     ROOT["Quantum-Obfuscator-LUA-LUAU/"] --> SRC["src/"]
+    ROOT --> WEB["web/<br/><i>Studio modules + CodeMirror 6 editors</i>"]
     ROOT --> PUB["public/"]
-    ROOT --> TESTS["tests/<br/><i>42 suites / 556 tests</i>"]
+    ROOT --> TESTS["tests/<br/><i>Engine + Studio Jest suites</i>"]
 
     SRC --> LEX["lexer/<br/><i>Tokenizer + token types</i>"]
     SRC --> PAR["parser/<br/><i>Recursive descent parser + type parser</i>"]
     SRC --> AST2["ast/<br/><i>AST node type definitions</i>"]
     SRC --> OBF["obfuscator/<br/><i>Renamer, StringEncoder,<br/>ControlFlowScrambler, MBA, Printer</i>"]
-    SRC --> ENG["engine/<br/><i>Pipeline + protection profiles</i>"]
+    SRC --> ENG["engine/<br/><i>Pipeline, protection profiles,<br/>analyzer + macro auto-injection</i>"]
     SRC --> VM["vm/<br/><i>Stack + Register compilers and<br/>generators, bootstrap envelope, LZMA</i>"]
     SRC --> CLI["cli/<br/><i>CLI entry points</i>"]
-    SRC --> SRV["server.ts<br/><i>Express API server</i>"]
+    SRC --> SRV["server.ts<br/><i>Express API + Studio static pages</i>"]
 
-    PUB --> HTML["index.html"]
-    PUB --> CSS["style.css"]
-    PUB --> JS["app.js"]
+    PUB --> HTML["index / analyzer /<br/>obfuscator / docs"]
+    PUB --> ASSETS["assets/<br/><i>generated esbuild bundle</i>"]
+    WEB --> ASSETS
 
     style ROOT fill:#1a1a2e,stroke:#4fc3f7,color:#e0e0e0
     style SRC fill:#1a1a2e,stroke:#4fc3f7,color:#e0e0e0
+    style WEB fill:#1a1a2e,stroke:#4fc3f7,color:#e0e0e0
     style PUB fill:#1a1a2e,stroke:#4fc3f7,color:#e0e0e0
     style TESTS fill:#1a1a2e,stroke:#4fc3f7,color:#e0e0e0
     style LEX fill:#0d2137,stroke:#81d4fa,color:#e0e0e0
@@ -182,8 +187,7 @@ graph TD
     style CLI fill:#0d2137,stroke:#81d4fa,color:#e0e0e0
     style SRV fill:#0d2137,stroke:#81d4fa,color:#e0e0e0
     style HTML fill:#1a1a2e,stroke:#4fc3f7,color:#e0e0e0
-    style CSS fill:#1a1a2e,stroke:#4fc3f7,color:#e0e0e0
-    style JS fill:#1a1a2e,stroke:#4fc3f7,color:#e0e0e0
+    style ASSETS fill:#0d3b0d,stroke:#66bb6a,color:#e0e0e0
 ```
 
 ---
@@ -204,19 +208,30 @@ npm install
 npm run build
 ```
 
-### Web UI
+### Quantum Studio
 
 ```bash
-node dist/server.js
+npm start          # build engine + Studio bundle, then serve
+# or, after a build:
+npm run serve
 ```
 
-Open [http://localhost:3000](http://localhost:3000) to access the obfuscation dashboard (BALANCED default, profile selector, optional **Seed** field for byte-reproducible builds).
+Open [http://localhost:3000](http://localhost:3000) for the four-page Studio:
+
+| Page | What it does |
+|------|--------------|
+| **Dashboard** | Engine health, presets, recent source summary, and shortcuts into the workflow |
+| **Analyzer** | CodeMirror 6 Luau editor with debounced AST analysis, visible lint squiggles, clickable findings, one-click/apply-all Turbo macro fixes, and **Send to Obfuscator** (source + settings, no re-paste) |
+| **Obfuscator** | Source/output editors, profile + engine settings, deterministic seed, auto-detect macros, copy/download, and run metadata |
+| **Docs** | Profiles, options, API, troubleshooting, and the mandatory [How to Turbo an IIFE Script](http://localhost:3000/docs#iife) refactor guide |
+
+Studio defaults to **BALANCED** with the **Roblox** target. Auto-Detect Macros inserts `--@quantum:turbo` / `--@quantum:maximum` only where it is syntax-safe and idempotent; explicit tags always win.
 
 Input caps and worker isolation:
 
 - Requests are capped at **20 MB** of source (`MAX_INPUT_BYTES=<bytes>` to raise/lower; over-cap requests get a `413` JSON envelope with `bytes`/`maxBytes`).
 - Each obfuscation runs in a **worker thread** with its own heap limit (`MAX_OLD_GEN_MB`, default 2048) and timeout (`OBFUSCATE_TIMEOUT_MS`, default 15000); a timeout returns `504`, an OOM/crash returns `500`, and the API process itself stays alive.
-- The client-side pre-check mirrors the 20 MB default (bump `CLIENT_MAX_INPUT_BYTES` in `public/app.js` if you raise the server cap).
+- The client-side pre-check mirrors the 20 MB default (`web/pages/obfuscator.js`).
 - Set `PORT=<n>` to change the port and `NO_BROWSER=1` to skip auto-opening the browser.
 
 ### CLI Usage
@@ -249,7 +264,15 @@ npm run parse -- input.lua
 
 ## API Reference
 
-The Express server exposes two endpoints:
+The Express server exposes four endpoints:
+
+### `GET /api/health`
+
+Studio liveness probe used by the dashboard.
+
+```json
+{ "ok": true, "service": "quantum-studio", "version": "3.2.0" }
+```
 
 ### `POST /api/validate`
 
@@ -261,31 +284,51 @@ Validates Luau source code for syntax errors.
 }
 ```
 
+### `POST /api/analyze`
+
+Runs the AST hot-path analyzer used by the Studio editor. `options.tier` controls which macro tier is recommended (`"turbo"` default, `"maximum"` for heavy).
+
+```json
+{
+  "code": "local part = Instance.new('Part')",
+  "options": { "tier": "turbo" }
+}
+```
+
+The response includes `valid`, `diagnostics` (line/column ranges, severity, code, message, `functionName`, optional `fix`), `macros`, and a `summary` with token/function/`Instance.new`/hot-call counts. Diagnostics without a safe fix return `fix: null` and an explanation.
+
 ### `POST /api/obfuscate`
 
-Obfuscates Luau source with a protection profile and optional deterministic seed.
+Obfuscates Luau source with a protection profile and optional deterministic seed / macro auto-detection.
 
 ```json
 {
   "code": "local function greet(name) print('Hello ' .. name) end",
   "options": {
     "profile": "BALANCED",
-    "target": "generic",
+    "target": "roblox",
     "seed": 1234,
-    "polymorphicSeed": "build-2026-01"
+    "polymorphicSeed": "build-2026-01",
+    "autoDetectMacros": true,
+    "turboLevel": "light"
   }
 }
 ```
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `profile` | `"FAST" \| "BALANCED" \| "MAXIMUM"` | Protection profile (default `BALANCED`) |
+| `profile` | `"TURBO" \| "FAST" \| "BALANCED" \| "MAXIMUM" \| "CUSTOM"` | Studio profile; `TURBO` = FAST AST passes + turbo tier, `CUSTOM` starts from BALANCED and applies explicit overrides |
 | `target` | `"generic" \| "roblox"` | Output environment; `roblox` enables executor globals + anti-tamper bootstrap |
 | `seed` | `number` | Deterministic build seed |
 | `polymorphicSeed` | `number \| string` | Exact VM polymorphic seed (`string` ⇒ 128-bit path; ≥ 16 chars recommended) |
+| `autoDetectMacros` | `boolean` | Insert missing `--@quantum:turbo` / `--@quantum:maximum` tags before `runDemo`, build loops, and other safe hot paths |
+| `turboLevel` | `"light" \| "heavy"` | Auto-detect tier: inserts turbo tags for `light`, maximum tags for `heavy` |
+| `luraph` | `object` | Studio hardening toggles: `intenseVM`, `useDebugLib`, `vmCompression` (stack VM only) |
+| `vmType` | `"none" \| "stack" \| "register"` | Optional override of the profile VM (omit for profile default) |
+| `vmLevel` | `"debug" \| "normal" \| "max"` | Optional override of the profile level |
 | `options` | `object` | Explicit per-field overrides (see below) |
 
-Unknown profiles are rejected with `400`. Responses are always JSON.
+Unknown profiles/options are rejected with `400`. Responses are always JSON. When auto-detection ran, the response adds `autoMacros: { injected, warnings, tier }`; profile requests also return `meta` with the resolved profile/VM/level/target. Over-cap requests return `413`, worker timeouts `504`, and worker crashes `500`.
 
 ### Pipeline Options (`runObfuscatePipeline`)
 
@@ -396,7 +439,7 @@ Standard script executors frequently restrict the environment. Quantum output de
 
 ## Verification & Trust
 
-- **556 tests across 42 suites** green, including RNG draw-order canaries that pin byte-identity of legacy unseeded paths
+- **758 tests across 64 suites** green, including RNG draw-order canaries that pin byte-identity of legacy unseeded paths and Studio analyzer/macro/settings coverage
 - **24/24 dual-VM execution matrix** on Luau 0.742 and PUC-Lua 5.4.8 (with a compat shim), covering plain, custom-cipher, nested, stub, and triple-stacked configurations
 - **Determinism measured**: pipeline (seed `1234`) `f9fef00e…856c`; seeded cipher wrapper `33276098…8f01`; seeded triple-stack chain `b638694e…bd67` — all byte-identical on repeated builds
 - **Adversarial**: ClydeDeobfuscator 5/5 REFUSE, Luraph V15 5/5 GARBAGE — full evidence in [SECURITY.md](./SECURITY.md)

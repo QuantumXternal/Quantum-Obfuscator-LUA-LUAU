@@ -8,6 +8,42 @@ Conventions: times are single-run wall ms (run-to-run variance ± several ms —
 only consistent directional deltas across all 9 fixtures count). `none` path
 is the AST-only control: byte-identical before/after in every comparison.
 
+## Unreleased — Quantum Studio (4-page web IDE)
+
+- feat(web): replace the single-page UI with a dark, responsive CodeMirror 6
+  Studio: Dashboard, Analyzer, Obfuscator, and Docs. Source/settings carry
+  across Analyzer → Obfuscator without re-pasting; analysis, obfuscation,
+  copying, downloading, and profile/seed state are wired to the existing API.
+  `web/studio.js`, `web/{editor,api,state,ui,settings}.js`,
+  `web/pages/*.js`, `web/studio.css`, `public/{analyzer,obfuscator,docs}.html`.
+- feat(api): `POST /api/analyze` AST hot-path analysis + `GET /api/health`;
+  `src/engine/analyzer.ts` reports ranged diagnostics with safe Turbo fixes and
+  summary counts. `src/server.ts` serves extensionless Studio routes and
+  returns `meta`/`autoMacros` from `/api/obfuscate`.
+- feat(api): Studio settings resolver (`src/studioOptions.ts`) maps
+  TURBO/FAST/BALANCED/MAXIMUM/CUSTOM plus Luraph toggles onto pipeline
+  options. Turbo keeps FAST AST passes and requests `performanceTier: "turbo"`;
+  Intense VM/debug lib map to supported force-features; compression is
+  stack-only.
+- feat(api): idempotent, syntax-safe macro auto-detection
+  (`src/engine/macroAuto.ts`) inserts turbo/maximum tags above `runDemo`, build
+  loops, and other hot functions; nested/IIFE/unnamed functions are skipped
+  with warnings.
+- fix(analyzer): reset function attribution inside nested functions/callbacks
+  so parent functions are never auto-tagged by child call sites.
+- docs: `/docs` includes **How to Turbo an IIFE Script** with before/after
+  snippets and a refactor checklist, plus profiles, settings, API, and
+  troubleshooting.
+- MEASURED: fixture (1,228 lines) TURBO analysis → 90 ranged diagnostics,
+  20 heavy-function sites, 1 auto-fixable function (2 call sites), 90
+  `Instance.new`; MAXIMUM + auto-detect → 191,363-char output / 2,238 lines /
+  264 ms, register@max, watermark line 1, 1 macro injected. Browser CDP run
+  completed with zero console errors.
+- RISK: Studio defaults to Roblox (API default stays generic); auto-detection
+  only inserts tags and never rewrites function bodies.
+- TESTS: `tests/analyzer.test.js`, `tests/studio-options.test.js`,
+  `tests/macro-auto.test.js` (25 tests); full suite 64 suites / 758 tests green.
+
 ## Release — v3.2.0 (loader line-width bound + LZ4 payload compression)
 
 - fix(vm) `421edf6`: every emitted line is bounded at 9.6 KB

@@ -19,6 +19,7 @@ import { dirname, join } from "path";
 const __testDir = dirname(fileURLToPath(import.meta.url));
 import { runObfuscatePipeline, PipelineLexError } from "../dist/engine/obfuscatePipeline.js";
 import { resolveProfile, profileDefaults } from "../dist/engine/profiles.js";
+import { DEFAULT_SETTINGS } from "../web/state.js";
 
 function runStack(source) {
   const { tokens, errors } = lex(source);
@@ -389,9 +390,11 @@ describe("protection profiles", () => {
   });
   test("web UI defaults to BALANCED/normal (no silent MAXIMUM)", () => {
     const html = readFileSync(join(__testDir, "..", "public", "index.html"), "utf8");
-    expect(html).toMatch('value="BALANCED" selected');
-    expect(html).toMatch('value="normal" selected');
-    expect(html).not.toMatch('value="max" selected');
+    expect(html).toMatch('data-page="dashboard"');
+    expect(DEFAULT_SETTINGS.profile).toBe("balanced");
+    expect(DEFAULT_SETTINGS.vmType).toBe("register");
+    expect(DEFAULT_SETTINGS.vmLevel).toBe("normal");
+    expect(DEFAULT_SETTINGS.vmLevel).not.toBe("max");
   });
 });
 

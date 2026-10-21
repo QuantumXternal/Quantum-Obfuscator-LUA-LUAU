@@ -1,0 +1,348 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="theme-color" content="#070b12" />
+  <meta name="description" content="Quantum Studio field manual — macros, IIFE refactors, profiles, settings, and the local API." />
+  <title>Documentation · Quantum Studio</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='9' fill='%230b1220'/%3E%3Cpath d='M23 20.5a8 8 0 1 1-2.5-11' fill='none' stroke='%2358d7ff' stroke-width='2.4' stroke-linecap='round'/%3E%3Cpath d='m20 20 4 5' stroke='%238b5cf6' stroke-width='2.4' stroke-linecap='round'/%3E%3C/svg%3E" />
+  <link rel="stylesheet" href="/assets/studio.css" />
+  <script type="module" src="/assets/studio.js"></script>
+</head>
+<body data-page="docs">
+  <div class="app-shell">
+    <aside class="sidebar">
+      <a class="brand" href="/" aria-label="Quantum Studio home">
+        <span class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 32 32" fill="none"><path d="M23.4 21.3a9 9 0 1 1-2.8-12.7" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" /><path d="m20.3 20.2 4.7 5.3" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" /></svg>
+        </span>
+        <span class="brand-text"><strong>Quantum</strong><span>Studio</span></span>
+      </a>
+      <div class="sidebar-section-label">Workspace</div>
+      <nav class="nav" aria-label="Studio navigation">
+        <a class="nav-link" data-nav="dashboard" href="/">
+          <svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><rect x="2.5" y="2.5" width="6" height="6" rx="1.6" stroke="currentColor" stroke-width="1.4"/><rect x="11.5" y="2.5" width="6" height="6" rx="1.6" stroke="currentColor" stroke-width="1.4"/><rect x="2.5" y="11.5" width="6" height="6" rx="1.6" stroke="currentColor" stroke-width="1.4"/><rect x="11.5" y="11.5" width="6" height="6" rx="1.6" stroke="currentColor" stroke-width="1.4"/></svg>
+          <span>Dashboard</span>
+        </a>
+        <a class="nav-link" data-nav="analyzer" href="/analyzer">
+          <svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M3 15.5 7.4 9l3.1 3.2L16.8 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M13.5 4h3.3v3.3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M3 18h14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" opacity=".45"/></svg>
+          <span>Analyzer</span>
+          <span class="nav-badge">AST</span>
+        </a>
+        <a class="nav-link" data-nav="obfuscator" href="/obfuscator">
+          <svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M10 2.6 16 5v4.6c0 3.5-2.3 6.2-6 7.8-3.7-1.6-6-4.3-6-7.8V5l6-2.4Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><path d="m7.2 10.1 1.9 1.9 3.8-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <span>Obfuscator</span>
+        </a>
+        <a class="nav-link" data-nav="docs" href="/docs">
+          <svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M4 3.5h8.5A2.5 2.5 0 0 1 15 6v10H6.5A2.5 2.5 0 0 0 4 18.5v-15Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><path d="M4 15.2h8.7M7 7h5M7 10h5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
+          <span>Documentation</span>
+        </a>
+      </nav>
+      <div class="sidebar-spacer"></div>
+      <div class="sidebar-card">
+        <span class="eyebrow">Local engine</span>
+        <div class="engine-status" data-engine-status>
+          <span class="status-dot" aria-hidden="true"></span>
+          <div><strong data-engine-label>Checking engine…</strong><span data-engine-detail>Connecting to API</span></div>
+        </div>
+      </div>
+      <div class="sidebar-footer"><span>Quantum Studio</span><span>v3.2.0</span></div>
+    </aside>
+
+    <div class="main-shell">
+      <header class="topbar">
+        <button type="button" class="icon-button menu-toggle" data-menu-toggle aria-label="Toggle navigation" aria-expanded="false">
+          <svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M3 5h14M3 10h14M3 15h14" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+        </button>
+        <div class="topbar-title">
+          <span class="eyebrow">Reference</span>
+          <h1>Field Manual</h1>
+        </div>
+        <div class="topbar-actions">
+          <span class="badge badge-neutral">Studio v3.2</span>
+          <a class="btn btn-primary btn-sm" href="/analyzer">Open analyzer</a>
+        </div>
+      </header>
+
+      <main class="page docs-page">
+        <div class="docs-hero">
+          <span class="eyebrow">Quantum Studio · field manual</span>
+          <h2>Everything between a raw script and a protected build.</h2>
+          <p>Macro syntax, safe IIFE refactors, profile behavior, settings mapping, auto-detection, and the local API. Written for the build you are actually running.</p>
+          <div class="docs-hero-meta">
+            <span><strong>3</strong> profiles</span>
+            <span><strong>2</strong> macro tiers</span>
+            <span><strong>4</strong> local endpoints</span>
+          </div>
+        </div>
+
+        <div class="docs-layout">
+          <article class="docs-article">
+            <section class="doc-section" id="quick-start">
+              <span class="doc-kicker">01 / Start here</span>
+              <h2>Quick start</h2>
+              <p>There are two paths into the engine. Both keep the source on this machine.</p>
+              <div class="doc-steps">
+                <div><span class="step-number">01</span><div><strong>Analyze</strong><p>Drop a <code>.lua</code> or <code>.luau</code> file into the dashboard. The analyzer parses it and lists every <code>Instance.new</code> and <code>RenderStepped</code> site.</p></div></div>
+                <div><span class="step-number">02</span><div><strong>Tag safe functions</strong><p>Use <em>Apply all fixes</em> or the inline lint popover. Only top-level, uniquely named functions are tagged automatically.</p></div></div>
+                <div><span class="step-number">03</span><div><strong>Protect</strong><p>Send the source and settings to the obfuscator. Pick a profile, press <em>Protect Script</em>, then copy or download the result.</p></div></div>
+              </div>
+              <div class="doc-callout">
+                <strong>Shortcut</strong>
+                <p><span class="kbd">Ctrl</span> + <span class="kbd">Enter</span> runs the analyzer or obfuscator from anywhere on the page.</p>
+              </div>
+            </section>
+
+            <section class="doc-section" id="macros">
+              <span class="doc-kicker">02 / Turbo tags</span>
+              <h2>Macro directives</h2>
+              <p>Place a one-line comment immediately above a top-level named function. The macro scanner reads only standalone comments that share no line with code.</p>
+              <div class="code-block">
+                <div class="code-head"><span>Luau</span><button type="button" class="code-copy" data-copy-code>Copy</button></div>
+                <pre><code>--@quantum:turbo
+local function buildInventory()
+  local frame = Instance.new("Frame")
+  -- ...
+  return frame
+end
+
+--@quantum:maximum
+function Effects.explode(position)
+  local attachment = Instance.new("Attachment")
+  -- ...
+end</code></pre>
+              </div>
+              <div class="doc-grid-2">
+                <div class="doc-mini-card">
+                  <span class="tag tag-cyan">Turbo</span>
+                  <h3>Native extraction</h3>
+                  <p>Eligible function bodies are lifted into native Luau where the engine can prove it is safe. No VM bytecode for that function.</p>
+                </div>
+                <div class="doc-mini-card">
+                  <span class="tag tag-violet">Maximum</span>
+                  <h3>Native plus maximum grade</h3>
+                  <p>The function is processed at the maximum hardening grade. Use it for expensive visual construction with no sensitive control flow.</p>
+                </div>
+              </div>
+              <h3>Rules the scanner enforces</h3>
+              <ul class="doc-list">
+                <li>The function must be a top-level statement with a stable name.</li>
+                <li>Function assignments such as <code>local f = function() end</code> are taggable when named and top-level.</li>
+                <li>Duplicate names are rejected: tag the declaration after the conflict is resolved.</li>
+                <li>Nested functions, anonymous callbacks, and IIFEs have no stable tag site.</li>
+                <li>A function with conflicting Turbo and Maximum directives is rejected by the scanner.</li>
+                <li>If native extraction would capture an upvalue, the engine safely vetoes extraction for that function.</li>
+              </ul>
+              <div class="doc-warning">
+                <strong>No tag is not an error.</strong>
+                <p>It only means the function is not a candidate for native extraction. The rest of the script still gets the selected VM or AST profile.</p>
+              </div>
+            </section>
+
+            <section class="doc-section" id="iife">
+              <span class="doc-kicker">03 / Common blocker</span>
+              <h2>How to Turbo an IIFE Script</h2>
+              <p>An immediately invoked function expression has no stable top-level name, so there is nowhere legal to put a macro. Tagging the call site does nothing. The reliable fix is to lift the IIFE into a named top-level function and call it once.</p>
+              <div class="iife-compare">
+                <div class="code-block code-before">
+                  <div class="code-head"><span>Before — IIFE, cannot be tagged</span><button type="button" class="code-copy" data-copy-code>Copy</button></div>
+                  <pre><code>(function()
+  local panel = Instance.new("Frame")
+  panel.Size = UDim2.fromOffset(320, 180)
+  panel.Position = UDim2.new(0.5, -160, 0.5, -90)
+  panel.Parent = playerGui
+end)()</code></pre>
+                </div>
+                <div class="code-block code-after">
+                  <div class="code-head"><span>After — named top-level function, taggable</span><button type="button" class="code-copy" data-copy-code>Copy</button></div>
+                  <pre><code>--@quantum:turbo
+local function buildPanel()
+  local panel = Instance.new("Frame")
+  panel.Size = UDim2.fromOffset(320, 180)
+  panel.Position = UDim2.new(0.5, -160, 0.5, -90)
+  panel.Parent = playerGui
+  return panel
+end
+
+local panel = buildPanel()</code></pre>
+                </div>
+              </div>
+              <h3>Refactor checklist</h3>
+              <ol class="doc-list doc-list-numbered">
+                <li>Move the IIFE body into a new <code>local function</code> at the top level of the script.</li>
+                <li>Pass values the body used to capture as parameters, or return them and keep the call site explicit.</li>
+                <li>Return anything the surrounding code expected from the IIFE.</li>
+                <li>Call the function once at the original invocation site.</li>
+                <li>Add <code>--@quantum:turbo</code> on the line directly above the new function.</li>
+              </ol>
+              <div class="doc-callout doc-callout-amber">
+                <strong>IIFE inside another function?</strong>
+                <p>Lift it all the way to the script's top level. Moving it to another nested function does not make it taggable, even if that function has a name.</p>
+              </div>
+              <div class="doc-callout">
+                <strong>Captured variables are still checked.</strong>
+                <p>Naming the function makes it taggable, but native extraction is vetoed if the body captures an upvalue the extractor cannot prove safe. The engine falls back to the normal path instead of risking behavior.</p>
+              </div>
+            </section>
+
+            <section class="doc-section" id="profiles">
+              <span class="doc-kicker">04 / Profiles</span>
+              <h2>Protection profiles</h2>
+              <div class="table-wrap">
+                <table class="doc-table">
+                  <thead><tr><th>Profile</th><th>Default pipeline</th><th>Best for</th></tr></thead>
+                  <tbody>
+                    <tr><td><strong>Turbo</strong></td><td>FAST AST passes, native extraction tier, no VM by default.</td><td>UI startup, visual construction, latency-sensitive code.</td></tr>
+                    <tr><td><strong>Balanced</strong></td><td>Register VM at normal grade, relocation, string transforms.</td><td>General scripts that need a stable VM baseline.</td></tr>
+                    <tr><td><strong>Maximum</strong></td><td>Register VM at max grade, MBA constants, full hardening.</td><td>Control flow and logic you want to protect aggressively.</td></tr>
+                    <tr><td><strong>Custom</strong></td><td>Balanced base plus the architecture and grade you select.</td><td>Explicit VM and hardening experiments.</td></tr>
+                  </tbody>
+                </table>
+              </div>
+              <p>VM architecture and grade remain editable after selecting a profile. Choosing a profile resets both selects to that profile's defaults; changing either afterwards creates an explicit override for this build.</p>
+              <div class="doc-grid-2">
+                <div class="doc-mini-card"><span class="tag tag-cyan">Register VM</span><p>Instructions run in a register-based interpreter. Supports the Luraph-Killer hardening features exposed in this build.</p></div>
+                <div class="doc-mini-card"><span class="tag tag-violet">Stack VM</span><p>Stack-based interpreter with optional compression. VM Compression maps to <code>noCompression</code> only for this architecture.</p></div>
+              </div>
+            </section>
+
+            <section class="doc-section" id="settings">
+              <span class="doc-kicker">05 / Controls</span>
+              <h2>Settings mapping</h2>
+              <p>Every visible control resolves to a real pipeline field. Unsupported Luraph-Killer flags are visibly disabled rather than silently ignored.</p>
+              <div class="table-wrap">
+                <table class="doc-table">
+                  <thead><tr><th>Control</th><th>Engine mapping</th><th>Status</th></tr></thead>
+                  <tbody>
+                    <tr><td>Intense VM</td><td>Adds <code>handlerNoise</code>, <code>antiDebug</code>, and <code>antiTamper</code> to register VM features.</td><td><span class="status-ok">Supported</span></td></tr>
+                    <tr><td>Use Debug Lib</td><td>Adds <code>antiDebug</code> to register VM features.</td><td><span class="status-ok">Supported</span></td></tr>
+                    <tr><td>VM Compression</td><td>Stack VM only; unchecked sets <code>noCompression: true</code>.</td><td><span class="status-ok">Supported</span></td></tr>
+                    <tr><td>GC Fixes</td><td>No engine equivalent in this build.</td><td><span class="status-off">Disabled</span></td></tr>
+                    <tr><td>Hardcode Globals</td><td>No engine equivalent in this build.</td><td><span class="status-off">Disabled</span></td></tr>
+                    <tr><td>Static Environment</td><td>No engine equivalent in this build.</td><td><span class="status-off">Disabled</span></td></tr>
+                  </tbody>
+                </table>
+              </div>
+              <h3>Auto-detect macros</h3>
+              <p>When enabled, the backend scans the source immediately before obfuscation. It applies the same safety rules as the analyzer and injects Turbo or Maximum tags into a copy of the source. The original source is never mutated in the editor.</p>
+              <ul class="doc-list">
+                <li><strong>Analyzer Auto-Detect:</strong> the explicit Analyze button analyzes first, applies safe fixes, then re-analyzes the tagged result.</li>
+                <li><strong>Backend Auto-Detect:</strong> sends a copy with safe tags into the protection pipeline. The response reports <code>autoMacros.injected</code> and any skipped-function warnings.</li>
+                <li><strong>Live typing:</strong> never auto-applies a fix while you are editing; it only refreshes diagnostics.</li>
+              </ul>
+            </section>
+
+            <section class="doc-section" id="api">
+              <span class="doc-kicker">06 / Integration</span>
+              <h2>Local API</h2>
+              <p>The Studio UI uses the same public endpoints available to local tooling. The server binds to this machine and accepts JSON bodies.</p>
+              <div class="endpoint-list">
+                <div class="endpoint"><span class="method">GET</span><code>/api/health</code><p>Returns <code>{ ok, service, version }</code>.</p></div>
+                <div class="endpoint"><span class="method">POST</span><code>/api/analyze</code><p>Body: <code>{ code, options: { tier } }</code>. Returns diagnostics, macros, and summary counts.</p></div>
+                <div class="endpoint"><span class="method">POST</span><code>/api/obfuscate</code><p>Body: <code>{ code, options }</code>. Returns the protected output, elapsed time, resolved meta, and auto-macro details.</p></div>
+                <div class="endpoint"><span class="method">POST</span><code>/api/validate</code></div>
+              </div>
+              <div class="code-block">
+                <div class="code-head"><span>JavaScript — protect a script</span><button type="button" class="code-copy" data-copy-code>Copy</button></div>
+                <pre><code>const response = await fetch("/api/obfuscate", {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({
+    code: source,
+    options: {
+      profile: "maximum",
+      target: "roblox",
+      autoDetectMacros: true,
+      turboLevel: "light",
+      luraph: {
+        intenseVM: true,
+        useDebugLib: false,
+        vmCompression: true
+      }
+    }
+  })
+});
+
+const { output, durationMs, meta, autoMacros } = await response.json();</code></pre>
+              </div>
+              <p>Omitting <code>profile</code> keeps the legacy path for older callers. Supplying <code>profile</code> activates Studio profile resolution. An invalid target, VM type, grade, or profile returns HTTP 400 with a JSON error.</p>
+              <div class="doc-callout">
+                <strong>Deterministic builds</strong>
+                <p>Set a seed in the obfuscator settings to make repeated builds reproducible. With a blank seed, Studio creates a fresh random seed for every run and shows it in the output metadata.</p>
+              </div>
+            </section>
+
+            <section class="doc-section" id="troubleshooting">
+              <span class="doc-kicker">07 / Repairs</span>
+              <h2>Troubleshooting</h2>
+              <div class="faq-list">
+                <details>
+                  <summary>The analyzer says a function is already tagged, but I want to change the tier.</summary>
+                  <p>Remove or replace the existing macro above the function. The analyzer intentionally does not offer an automatic tier replacement while both directives could exist.</p>
+                </details>
+                <details>
+                  <summary>My IIFE is not being tagged by Auto-Detect.</summary>
+                  <p>IIFEs are anonymous expressions. Refactor to a named top-level function using the checklist above, then run the analyzer again.</p>
+                </details>
+                <details>
+                  <summary>I see an <code>antiTamper</code> feature but the script targets Generic.</summary>
+                  <p>Intense VM can force hardening features regardless of target. Confirm the output target in the resolved metadata before shipping. Maximum with Roblox also enables executor globals and the Roblox bootstrap.</p>
+                </details>
+                <details>
+                  <summary>The obfuscator reports a parse error.</summary>
+                  <p>Run the analyzer first. Syntax errors block macro injection and protection. The error banner includes line and column details when the parser provides them.</p>
+                </details>
+                <details>
+                  <summary>My script is too large to send from the analyzer.</summary>
+                  <p>Browser storage has a per-origin quota. The UI keeps the draft in the current tab and reports when the handoff cannot fit. Paste the script directly into the obfuscator instead.</p>
+                </details>
+                <details>
+                  <summary>I want the old single-page behavior.</summary>
+                  <p>The four Studio routes are the supported interface. The API remains compatible with legacy request shapes that omit a profile.</p>
+                </details>
+              </div>
+            </section>
+
+            <section class="doc-section" id="security">
+              <span class="doc-kicker">08 / Trust boundary</span>
+              <h2>Local by construction</h2>
+              <p>Studio is a local tool. Source code, settings, and protected output travel only between the browser and the Express server on this machine. There is no account, upload queue, remote cache, or telemetry endpoint.</p>
+              <ul class="doc-list">
+                <li>The web bundle is generated locally with esbuild and served from <code>/assets/studio.js</code>.</li>
+                <li>Obfuscation runs inside a worker with a timeout and its own resource boundary.</li>
+                <li>The server accepts up to 20 MB of UTF-8 source per request.</li>
+                <li>Drafts and the analyzer handoff use browser storage; they do not leave the browser.</li>
+              </ul>
+            </section>
+          </article>
+
+          <aside class="docs-side">
+            <div class="docs-toc">
+              <span class="eyebrow">On this page</span>
+              <a href="#quick-start">Quick start</a>
+              <a href="#macros">Macro directives</a>
+              <a href="#iife">How to Turbo an IIFE</a>
+              <a href="#profiles">Protection profiles</a>
+              <a href="#settings">Settings mapping</a>
+              <a href="#api">Local API</a>
+              <a href="#troubleshooting">Troubleshooting</a>
+              <a href="#security">Trust boundary</a>
+            </div>
+            <div class="docs-side-card">
+              <span class="eyebrow">Need the exact tag?</span>
+              <p>Open the analyzer, click a warning, and use <strong>Apply Turbo fix</strong> in the lint popover.</p>
+              <a class="btn btn-secondary btn-sm btn-block" href="/analyzer">Open analyzer</a>
+            </div>
+          </aside>
+        </div>
+
+        <footer class="page-footer">
+          <span>Quantum Studio Field Manual · v3.2.0</span>
+          <a href="/">Back to dashboard</a>
+        </footer>
+      </main>
+    </div>
+  </div>
+</body>
+</html>

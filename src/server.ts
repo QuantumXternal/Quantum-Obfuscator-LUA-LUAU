@@ -5,13 +5,13 @@ import { fileURLToPath } from "url";
 
 import { validate } from "./compiler/LuauCompiler.js";
 import type { PipelineVmType, PipelineVmLevel } from "./engine/obfuscatePipeline.js";
-import { resolveProfile } from "./engine/profiles.js";
-import type { ProtectionProfile, ObfuscationTarget } from "./engine/profiles.js";
+import type { ObfuscationTarget } from "./engine/profiles.js";
+import { analyzeScript } from "./engine/analyzer.js";
+import { injectHeavyMacros } from "./engine/macroAuto.js";
+import { buildStudioPlan, StudioOptionsError } from "./studioOptions.js";
 import { cacheKey } from "./cacheKey.js";
 import { runObfuscationInWorker, RunnerFailure } from "./obfuscationRunner.js";
 import { DEFAULT_MAX_INPUT_BYTES, envInt, inputTooLargeMessage } from "./engine/inputLimits.js";
-
-const VALID_PROFILES: ProtectionProfile[] = ["FAST", "BALANCED", "MAXIMUM"];
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -59,7 +59,31 @@ function cacheSet(key: string, output: string): void {
 // and the parser-level error handler covers absurd raw bodies.
 app.use(express.json({ limit: `${Math.max(1, Math.ceil((MAX_INPUT_BYTES * 3) / (1024 * 1024)))}mb` }));
 
-app.use(express.static(join(__dirname, "..", "public")));
+app.use(express.static(join(__dirname, "..", "public"), { extensions: ["html"], index: "index.html" }));
+
+app.get("/api/health", (_req: express.Request, res: express.Response) => {
+  res.json({ ok: true, service: "quantum-studio", version: "3.2.0" });
+});
+
+app.post("/api/analyze", (req: express.Request, res: express.Response) => {
+  try {
+    const { code, options } = req.body ?? {};
+    if (typeof code !== "string") {
+      return res.status(400).json({ error: "Invalid 'code' parameter" }) as any;
+    }
+    const bytes = Buffer.byteLength(code, "utf8");
+    if (bytes > MAX_INPUT_BYTES) {
+      return res.status(413).json({ error: inputTooLargeMessage(MAX_INPUT_BYTES), bytes, maxBytes: MAX_INPUT_BYTES }) as any;
+    }
+    const tier = options?.tier === "maximum" ? "maximum" : "turbo";
+    const result = analyzeScript(code, { tier });
+    console.log(`[API] /api/analyze - Code length: ${code.length}, findings: ${result.diagnostics.length}`);
+    res.json({ success: true, ...result });
+  } catch (err: any) {
+    console.error("[API-ERROR] /api/analyze failed:", err);
+    res.status(500).json({ error: `Server error: ${err.message}` });
+  }
+});
 
 app.post("/api/validate", (req: express.Request, res: express.Response) => {
   try {
@@ -81,8 +105,9 @@ app.post("/api/validate", (req: express.Request, res: express.Response) => {
 });
 
 app.post("/api/obfuscate", async (req: express.Request, res: express.Response) => {
+  const startedAt = Date.now();
   try {
-    const { code, options } = req.body;
+    const { code, options } = req.body ?? {};
     if (typeof code !== "string") {
       return res.status(400).json({ error: "Invalid 'code' parameter" }) as any;
     }
@@ -91,7 +116,7 @@ app.post("/api/obfuscate", async (req: express.Request, res: express.Response) =
       return res.status(413).json({ error: inputTooLargeMessage(MAX_INPUT_BYTES), bytes, maxBytes: MAX_INPUT_BYTES }) as any;
     }
 
-    const opts = options || {};
+    const opts = options && typeof options === "object" ? options : {};
     // Optional deterministic seed for reproducible builds/caching.
     // Omitted = legacy random behavior (decoder names, polymorphic seeds).
     const seed = typeof opts.seed === "number" ? opts.seed : undefined;
@@ -101,16 +126,19 @@ app.post("/api/obfuscate", async (req: express.Request, res: express.Response) =
     // discriminates the type (see ./cacheKey.js), so 1234 and "1234" never
     // share an entry.
     const polymorphicSeed = typeof opts.polymorphicSeed === "number" || typeof opts.polymorphicSeed === "string" ? opts.polymorphicSeed : undefined;
-    // Explicit protection profile (FAST/BALANCED/MAXIMUM) and environment
-    // target (generic/roblox). Absent profile = legacy behavior below.
-    const profile: ProtectionProfile | undefined = VALID_PROFILES.includes(opts.profile)
-      ? opts.profile
-      : undefined;
-    if (opts.profile !== undefined && profile === undefined) {
-      return res.status(400).json({ error: "Invalid 'profile' (expected FAST, BALANCED, or MAXIMUM)" }) as any;
-    }
-    const target: ObfuscationTarget = opts.target === "roblox" ? "roblox" : "generic";
 
+    let studioPlan;
+    try {
+      studioPlan = buildStudioPlan(opts as Record<string, unknown>, { seed, polymorphicSeed });
+    } catch (err: any) {
+      if (err instanceof StudioOptionsError) {
+        return res.status(400).json({ error: err.message }) as any;
+      }
+      throw err;
+    }
+
+    // Legacy API path (no profile supplied) keeps its historical defaults.
+    const target: ObfuscationTarget = studioPlan?.target ?? (opts.target === "roblox" ? "roblox" : "generic");
     const noRename = opts.noRename === true;
     const noPreserve = opts.noPreserve === true;
     const encodeStringsOpt = opts.encodeStrings === true;
@@ -118,37 +146,61 @@ app.post("/api/obfuscate", async (req: express.Request, res: express.Response) =
     const oneLineOpt = opts.oneLine === true;
     const vmType = opts.vmType || "none";
     const vmLevel = opts.vmLevel || "normal";
-
-    // Optional pass-through for documented VM feature gates
-    // (e.g. disableFeatures: ["deadCodeInjection"]). Omitted = defaults.
     const disableFeatures = Array.isArray(opts.disableFeatures)
       ? (opts.disableFeatures as unknown[]).filter((f): f is string => typeof f === "string")
       : undefined;
 
-    const key = cacheKey(code, { profile, target, noRename, noPreserve, encodeStringsOpt, scrambleOpt, oneLineOpt, vmType, vmLevel, seed, polymorphicSeed, disableFeatures });
-    const cached = cacheGet(key);
-    if (cached !== null) {
-      return res.json({ output: cached, cached: true }) as any;
+    const autoDetect = studioPlan ? studioPlan.autoDetectMacros : opts.autoDetectMacros === true;
+    const autoTier = studioPlan?.autoTier ?? (opts.turboLevel === "heavy" ? "maximum" : "turbo");
+    let effectiveCode = code;
+    let autoMacros: { injected: number; warnings: string[]; tier: string } | null = null;
+    if (autoDetect) {
+      const auto = injectHeavyMacros(code, autoTier);
+      effectiveCode = auto.code;
+      autoMacros = { injected: auto.injected, warnings: auto.warnings, tier: auto.tier };
     }
 
-    console.log(`[API] /api/obfuscate - Profile: ${profile ?? "legacy"}, VM: ${vmType}, Level: ${vmLevel}, Target: ${target}, length: ${code.length}`);
+    const cacheOptions = studioPlan
+      ? studioPlan.cacheOptions
+      : {
+          profile: undefined,
+          target,
+          noRename,
+          noPreserve,
+          encodeStringsOpt,
+          scrambleOpt,
+          oneLineOpt,
+          vmType,
+          vmLevel,
+          seed,
+          polymorphicSeed,
+          disableFeatures,
+          autoDetectMacros: autoDetect,
+          autoTier,
+        };
+    const key = cacheKey(effectiveCode, cacheOptions);
+    const cached = cacheGet(key);
+    if (cached !== null) {
+      return res.json({
+        output: cached,
+        cached: true,
+        durationMs: Date.now() - startedAt,
+        ...(studioPlan ? { meta: { profile: studioPlan.profile, vmType: studioPlan.pipeline.vmType, vmLevel: studioPlan.pipeline.vmLevel, target: studioPlan.target } } : {}),
+        ...(autoMacros ? { autoMacros } : {}),
+      }) as any;
+    }
+
+    const displayProfile = studioPlan?.profile ?? "legacy";
+    const displayVm = studioPlan?.pipeline.vmType ?? vmType;
+    const displayLevel = studioPlan?.pipeline.vmLevel ?? vmLevel;
+    console.log(`[API] /api/obfuscate - Profile: ${displayProfile}, VM: ${displayVm}, Level: ${displayLevel}, Target: ${target}, length: ${code.length}${autoMacros ? `, autoMacros: ${autoMacros.injected}` : ""}`);
 
     let output: string;
     try {
-      if (profile !== undefined) {
-        // Profile supplies defaults; explicitly provided fields override.
-        const base = resolveProfile({ profile, target, seed, polymorphicSeed });
-        if (opts.vmType !== undefined) base.vmType = opts.vmType as PipelineVmType;
-        if (opts.vmLevel !== undefined) base.vmLevel = opts.vmLevel as PipelineVmLevel;
-        if (opts.noRename !== undefined) base.renameLocals = opts.noRename !== true;
-        if (opts.noPreserve !== undefined) base.preserveGlobals = opts.noPreserve !== true;
-        if (opts.encodeStrings !== undefined) base.encodeStrings = opts.encodeStrings === true;
-        if (opts.scramble !== undefined) base.scramble = opts.scramble === true;
-        if (opts.oneLine !== undefined) base.oneLine = opts.oneLine === true;
-        if (disableFeatures !== undefined) base.disableFeatures = disableFeatures;
-        output = await runObfuscationInWorker(code, base as unknown as Record<string, unknown>);
+      if (studioPlan) {
+        output = await runObfuscationInWorker(effectiveCode, studioPlan.pipeline as unknown as Record<string, unknown>);
       } else {
-        output = await runObfuscationInWorker(code, {
+        output = await runObfuscationInWorker(effectiveCode, {
           renameLocals: !noRename,
           preserveGlobals: !noPreserve,
           encodeStrings: encodeStringsOpt,
@@ -171,17 +223,28 @@ app.post("/api/obfuscate", async (req: express.Request, res: express.Response) =
         // isolate died; report a clean JSON error instead of hanging.
         return res.status(500).json({ error: err.message }) as any;
       }
-      // PipelineLexError travels through the worker by name (see
+      // Pipeline errors travel through the worker by name (see
       // obfuscationRunner.RemoteError); preserve the original 400 envelope.
       if (err?.name === "PipelineLexError") {
         return res.status(400).json({ error: "Lexer error", details: err.details }) as any;
+      }
+      if (err?.name === "PipelineParseError") {
+        return res.status(400).json({ error: "Parse error", details: err.details }) as any;
       }
       throw err;
     }
 
     cacheSet(key, output);
-    res.json({ output });
+    res.json({
+      output,
+      durationMs: Date.now() - startedAt,
+      ...(studioPlan ? { meta: { profile: studioPlan.profile, vmType: studioPlan.pipeline.vmType, vmLevel: studioPlan.pipeline.vmLevel, target: studioPlan.target } } : {}),
+      ...(autoMacros ? { autoMacros } : {}),
+    });
   } catch (err: any) {
+    if (err instanceof StudioOptionsError) {
+      return res.status(400).json({ error: err.message }) as any;
+    }
     console.error("Obfuscation error:", err);
     res.status(500).json({ error: `Server error: ${err.message}` });
   }
