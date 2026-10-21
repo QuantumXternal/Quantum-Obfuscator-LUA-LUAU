@@ -22,7 +22,7 @@ A from-scratch Luau obfuscation engine in TypeScript: complete Lexer → Parser 
 - **LZ4 payload compression (new)** — payloads are LZ4 block-compressed before the cipher stack and inflated in-artifact by a pure-Luau `unlz4` (chunked `table.concat` decode, **~140 ms on Luau**), with the adler32 checksum still verified over the inflated bytes. The 580 KB fixture lands at **1.38–1.44 MB** across seeds (was 2.29 MB). Pure-Luau deflate was implemented and rejected by the 200 ms boot-cost go/no-go (651 ms).
 - **Clean loader failures** — payload loads run through pcall guards (`Quantum: payload load failed`); corrupted or truncated payloads produce the single `Quantum Protection V2` error on both runtimes, and `wrapNestedVM` passes >1.5 MB sources through instead of doubling pre-decode work.
 - **Determinism retained** — same-seed builds stay byte-identical across CLI/API/UI (`benchmarks/seed-parity.mjs`, 6/6).
-- **Quantum Studio (new)** — a four-page, local-first CodeMirror 6 workspace with AST hot-path analysis, clickable lint fixes, safe macro auto-detection, a no-repaste analyzer → obfuscator handoff, and the IIFE Turbo guide.
+- **Quantum Studio (new)** — a four-page, local-first CodeMirror 6 workspace with AST hot-path analysis, clickable lint fixes, Analyzer-owned macro auto-detection, an IIFE warning with detected counts, a no-repaste analyzer → obfuscator handoff, and the IIFE Turbo guide.
 - **758 tests / 64 suites green**; acceptance seeds 10001–50005 (MAXIMUM + BALANCED) all ≤ 1.45 MB with reference-matched execution on Luau 0.742 + PUC-Lua 5.4.8.
 
 ---
@@ -221,11 +221,11 @@ Open [http://localhost:3000](http://localhost:3000) for the four-page Studio:
 | Page | What it does |
 |------|--------------|
 | **Dashboard** | Engine health, presets, recent source summary, and shortcuts into the workflow |
-| **Analyzer** | CodeMirror 6 Luau editor with debounced AST analysis, visible lint squiggles, clickable findings, one-click/apply-all Turbo macro fixes, and **Send to Obfuscator** (source + settings, no re-paste) |
-| **Obfuscator** | Source/output editors, profile + engine settings, deterministic seed, auto-detect macros, copy/download, and run metadata |
+| **Analyzer** | CodeMirror 6 Luau editor with debounced AST analysis, visible lint squiggles, clickable findings, one-click/apply-all Turbo macro fixes, Quantum Exclusives automation, IIFE warning, and **Send to Obfuscator** (source + settings, no re-paste) |
+| **Obfuscator** | Source/output editors, profile + engine settings, deterministic seed, copy/download, and run metadata |
 | **Docs** | Profiles, options, API, troubleshooting, and the mandatory [How to Turbo an IIFE Script](http://localhost:3000/docs#iife) refactor guide |
 
-Studio defaults to **BALANCED** with the **Roblox** target. Auto-Detect Macros inserts `--@quantum:turbo` / `--@quantum:maximum` only where it is syntax-safe and idempotent; explicit tags always win.
+Studio defaults to **BALANCED** with the **Roblox** target. The Analyzer owns macro automation and inserts `--@quantum:turbo` / `--@quantum:maximum` only where it is syntax-safe and idempotent; explicit tags always win. The Obfuscator preserves those tags and never re-scans at protect time.
 
 Input caps and worker isolation:
 
@@ -295,11 +295,11 @@ Runs the AST hot-path analyzer used by the Studio editor. `options.tier` control
 }
 ```
 
-The response includes `valid`, `diagnostics` (line/column ranges, severity, code, message, `functionName`, optional `fix`), `macros`, and a `summary` with token/function/`Instance.new`/hot-call counts. Diagnostics without a safe fix return `fix: null` and an explanation.
+The response includes `valid`, `diagnostics` (line/column ranges, severity, code, message, `functionName`, optional `fix`), `macros`, and a `summary` with token/function/IIFE/`Instance.new`/hot-call counts. Diagnostics without a safe fix return `fix: null` and an explanation.
 
 ### `POST /api/obfuscate`
 
-Obfuscates Luau source with a protection profile and optional deterministic seed / macro auto-detection.
+Obfuscates Luau source with a protection profile and optional deterministic seed. External API callers can still request macro auto-detection.
 
 ```json
 {

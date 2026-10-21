@@ -32,6 +32,7 @@ export interface AnalyzerSummary {
   lines: number;
   tokens: number;
   functions: number;
+  iifeCount: number;
   instanceNew: number;
   renderStepped: number;
   heavyFunctions: number;
@@ -159,6 +160,23 @@ function functionCount(ast: Chunk): number {
 
 function isFunctionNode(node: AnyNode): boolean {
   return node.type === "FunctionStatement" || node.type === "LocalFunctionStatement" || node.type === "FunctionExpression";
+}
+
+function unwrapIifeCallee(node: AnyNode): AnyNode | null {
+  let current: unknown = node;
+  while (isNode(current) && (current.type === "ParenExpression" || current.type === "TypeAssertion")) {
+    current = current.expression;
+  }
+  return isNode(current) ? current : null;
+}
+
+function countIifes(ast: Chunk): number {
+  let count = 0;
+  walk(ast as unknown as AnyNode, (node) => {
+    if (node.type !== "CallExpression" || !isNode(node.callee)) return;
+    if (unwrapIifeCallee(node.callee)?.type === "FunctionExpression") count++;
+  });
+  return count;
 }
 
 function likelyRenderStepped(node: AnyNode): boolean {
@@ -372,6 +390,7 @@ export function analyzeScript(code: string, options: AnalyzerOptions = {}): Anal
       lines: sourceLines.length,
       tokens: lexed.tokens.filter((t) => t.type !== "EOF").length,
       functions: functionCount(ast),
+      iifeCount: countIifes(ast),
       instanceNew,
       renderStepped,
       heavyFunctions: heavyFunctionKeys.size,

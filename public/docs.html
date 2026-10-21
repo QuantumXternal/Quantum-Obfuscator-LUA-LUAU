@@ -224,11 +224,12 @@ local panel = buildPanel()</code></pre>
                   </tbody>
                 </table>
               </div>
-              <h3>Auto-detect macros</h3>
-              <p>When enabled, the backend scans the source immediately before obfuscation. It applies the same safety rules as the analyzer and injects Turbo or Maximum tags into a copy of the source. The original source is never mutated in the editor.</p>
+              <h3>Macro automation</h3>
+              <p>Studio keeps macro preparation in the Analyzer and compilation in the Obfuscator. The Obfuscator never re-scans the source at protect time; it preserves the Quantum tags already in the editor. The local API still exposes backend auto-detection for external callers.</p>
               <ul class="doc-list">
-                <li><strong>Analyzer Auto-Detect:</strong> the explicit Analyze button analyzes first, applies safe fixes, then re-analyzes the tagged result.</li>
-                <li><strong>Backend Auto-Detect:</strong> sends a copy with safe tags into the protection pipeline. The response reports <code>autoMacros.injected</code> and any skipped-function warnings.</li>
+                <li><strong>Analyzer Auto-Detect:</strong> the explicit Analyze button analyzes first, applies safe top-level fixes, then re-analyzes the tagged result. Auto Turbo level and Auto-detect live in the Quantum Exclusives panel.</li>
+                <li><strong>IIFE guard:</strong> if the source contains IIFEs, the Analyzer shows a warning and the detected count. Safe top-level functions can still be tagged; IIFE and nested code stay manual.</li>
+                <li><strong>API Auto-Detect:</strong> external callers may send <code>autoDetectMacros</code> and <code>turboLevel</code>. The backend scans a copy and reports <code>autoMacros.injected</code> plus skipped-function warnings.</li>
                 <li><strong>Live typing:</strong> never auto-applies a fix while you are editing; it only refreshes diagnostics.</li>
               </ul>
             </section>
@@ -283,7 +284,7 @@ const { output, durationMs, meta, autoMacros } = await response.json();</code></
                 </details>
                 <details>
                   <summary>My IIFE is not being tagged by Auto-Detect.</summary>
-                  <p>IIFEs are anonymous expressions. Refactor to a named top-level function using the checklist above, then run the analyzer again.</p>
+                  <p>IIFEs are anonymous expressions. The analyzer shows a warning with the detected count and leaves those sites manual. Refactor to a named top-level function using the checklist above, then run the analyzer again.</p>
                 </details>
                 <details>
                   <summary>I see an <code>antiTamper</code> feature but the script targets Generic.</summary>

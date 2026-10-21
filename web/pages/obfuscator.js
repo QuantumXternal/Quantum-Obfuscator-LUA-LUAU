@@ -6,7 +6,7 @@ import {
   loadSettings,
   saveDraft,
 } from "../state.js";
-import { renderSettings } from "../settings.js";
+import { renderProtectionSettings } from "../settings.js";
 import {
   byteLength,
   copyToClipboard,
@@ -53,7 +53,6 @@ export function initObfuscator() {
   const errorBox = document.querySelector("[data-obfuscator-error]");
   const errorText = document.querySelector("[data-obfuscator-error-text]");
   const logList = document.querySelector("[data-obfuscator-log]");
-  const autoBanner = document.querySelector("[data-auto-macro-banner]");
 
   let settings = loadSettings();
   let controller = null;
@@ -222,19 +221,6 @@ export function initObfuscator() {
       if (meta) {
         log(`Profile ${meta.profile} · VM ${meta.vmType}/${meta.vmLevel} · target ${meta.target}.`, "info");
       }
-      if (result.autoMacros?.injected) {
-        const tier = result.autoMacros.tier === "maximum" ? "Maximum" : "Turbo";
-        if (autoBanner) {
-          autoBanner.hidden = false;
-          autoBanner.textContent = `Auto-detect injected ${result.autoMacros.injected} ${tier} macro${result.autoMacros.injected === 1 ? "" : "s"} before obfuscation.`;
-        }
-        toast(`Injected ${result.autoMacros.injected} ${tier} macro${result.autoMacros.injected === 1 ? "" : "s"}.`, "success");
-        if (result.autoMacros.warnings?.length) {
-          log(`${result.autoMacros.warnings.length} auto-macro warning${result.autoMacros.warnings.length === 1 ? "" : "s"} (unsafe functions were skipped).`, "warning");
-        }
-      } else if (autoBanner) {
-        autoBanner.hidden = true;
-      }
       if (result.cached) toast("Served from the local engine cache.", "info");
       saveDraft("obfuscator", code);
     } catch (err) {
@@ -275,7 +261,6 @@ export function initObfuscator() {
     showEmptyOutput();
     clearError();
     updateInputMeta("");
-    if (autoBanner) autoBanner.hidden = true;
     document.querySelectorAll("[data-run-state]").forEach((el) => {
       el.textContent = "Ready";
       el.dataset.tone = "neutral";
@@ -306,7 +291,7 @@ export function initObfuscator() {
     }
   });
 
-  renderSettings(settingsHost, settings, (next) => {
+  renderProtectionSettings(settingsHost, settings, (next) => {
     settings = next;
   }, { showSeed: true });
 

@@ -1,7 +1,7 @@
 import { analyzeCode } from "../api.js";
 import { createEditor } from "../editor.js";
 import { loadSettings, loadDraft, saveDraft, setPendingSource } from "../state.js";
-import { renderSettings } from "../settings.js";
+import { renderAutomationSettings } from "../settings.js";
 import {
   byteLength,
   debounce,
@@ -84,6 +84,8 @@ export function initAnalyzer() {
   const openFileButton = document.querySelector("[data-open-file]");
   const exampleButton = document.querySelector("[data-load-example]");
   const settingsHost = document.querySelector("[data-analyzer-settings]");
+  const iifeWarning = document.querySelector("[data-iife-warning]");
+  const iifeCount = document.querySelector("[data-iife-count]");
   const logList = document.querySelector("[data-analyzer-log]");
 
   let settings = loadSettings();
@@ -186,6 +188,15 @@ export function initAnalyzer() {
     });
   }
 
+  function updateIifeWarning(count) {
+    if (!iifeWarning) return;
+    const total = Number(count) || 0;
+    iifeWarning.hidden = total === 0;
+    if (iifeCount && total > 0) {
+      iifeCount.textContent = `${total} IIFE${total === 1 ? "" : "s"} detected`;
+    }
+  }
+
   function createFinding(diagnostic, index) {
     const row = document.createElement("div");
     row.className = `finding-row severity-${diagnostic.severity}`;
@@ -274,6 +285,7 @@ export function initAnalyzer() {
     if (emptyState) emptyState.hidden = true;
     document.querySelector("[data-results-count]").textContent = `${result.diagnostics.length} finding${result.diagnostics.length === 1 ? "" : "s"}`;
     updateSummary(result, elapsed);
+    updateIifeWarning(result.summary.iifeCount);
     renderFindings(result);
     const fixCount = result.summary.autoFixable;
     if (applyAllButton) {
@@ -290,6 +302,7 @@ export function initAnalyzer() {
 
   function clearResults() {
     lastResult = null;
+    updateIifeWarning(0);
     if (emptyState) emptyState.hidden = false;
     if (results) results.replaceChildren();
     editor.clearServerDiagnostics();
@@ -434,7 +447,7 @@ export function initAnalyzer() {
     }
   });
 
-  renderSettings(settingsHost, settings, (next) => {
+  renderAutomationSettings(settingsHost, settings, (next) => {
     settings = next;
     scheduleAnalysis();
   });

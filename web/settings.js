@@ -14,73 +14,42 @@ const PROFILE_LABELS = {
   custom: "Custom",
 };
 
+const LURAPH_FLAGS = ["intenseVM", "gcFixes", "hardcodeGlobals", "staticEnv", "useDebugLib", "vmCompression"];
+
 function option(value, label) {
   return `<option value="${value}">${label}</option>`;
 }
 
-export function renderSettings(container, initialSettings, onChange, options = {}) {
-  if (!container) return null;
+function createSession(container, initialSettings, onChange) {
   let settings = structuredClone(initialSettings);
   let lastChangeSource = "init";
+  const savedLabel = container.querySelector("[data-settings-saved]");
 
-  container.innerHTML = `
-    <div class="settings-group">
-      <div class="settings-group-head">
-        <div>
-          <span class="eyebrow">Engine</span>
-          <h3>Protection profile</h3>
-        </div>
-        <span class="profile-chip" data-profile-chip>${PROFILE_LABELS[settings.profile] || "Balanced"}</span>
-      </div>
-      <label class="field">
-        <span class="field-label">Profile</span>
-        <select data-setting="profile">
-          ${option("turbo", "Turbo — native, fastest")}
-          ${option("balanced", "Balanced — stable VM")}
-          ${option("maximum", "Maximum — hardened VM")}
-          ${option("custom", "Custom — explicit controls")}
-        </select>
-        <span class="field-help" data-profile-help>${PROFILE_HINTS[settings.profile] || ""}</span>
-      </label>
-      <div class="field-grid">
-        <label class="field">
-          <span class="field-label">VM architecture</span>
-          <select data-setting="vmType">
-            ${option("register", "Register VM")}
-            ${option("stack", "Stack VM")}
-            ${option("none", "Native / no VM")}
-            ${option("custom", "Profile default")}
-          </select>
-        </label>
-        <label class="field">
-          <span class="field-label">Hardening grade</span>
-          <select data-setting="vmLevel">
-            ${option("debug", "Debug")}
-            ${option("normal", "Normal")}
-            ${option("max", "Maximum")}
-            ${option("custom", "Profile default")}
-          </select>
-        </label>
-      </div>
-      <div class="field-grid">
-        <label class="field">
-          <span class="field-label">Target environment</span>
-          <select data-setting="target">
-            ${option("roblox", "Roblox Studio")}
-            ${option("generic", "Generic Luau")}
-          </select>
-        </label>
-        ${
-          options.showSeed
-            ? `<label class="field">
-                <span class="field-label">Seed <span class="optional">optional</span></span>
-                <input data-setting="seed" type="text" spellcheck="false" autocomplete="off" placeholder="Random each run" />
-              </label>`
-            : ""
-        }
-      </div>
-    </div>
+  function commit(source) {
+    lastChangeSource = source;
+    saveSettings(settings);
+    if (savedLabel) {
+      savedLabel.textContent = "Saved locally";
+      savedLabel.classList.add("is-flash");
+      setTimeout(() => savedLabel.classList.remove("is-flash"), 700);
+    }
+    onChange?.(structuredClone(settings), { source });
+  }
 
+  return {
+    get settings() {
+      return settings;
+    },
+    getLastChangeSource: () => lastChangeSource,
+    setSettings(next) {
+      settings = structuredClone(next);
+    },
+    commit,
+  };
+}
+
+function luraphMarkup() {
+  return `
     <div class="settings-group">
       <div class="settings-group-head">
         <div>
@@ -132,18 +101,19 @@ export function renderSettings(container, initialSettings, onChange, options = {
         </span>
       </label>
     </div>
+  `;
+}
 
+export function renderAutomationSettings(container, initialSettings, onChange) {
+  if (!container) return null;
+  const session = createSession(container, initialSettings, onChange);
+
+  container.innerHTML = `
     <div class="settings-group">
-      <div class="settings-group-head">
-        <div>
-          <span class="eyebrow">Automation</span>
-          <h3>Quantum exclusives</h3>
-        </div>
-      </div>
       <label class="switch-row">
         <span class="switch-copy">
           <span class="check-title">Auto-detect macros</span>
-          <span class="check-help">Analyze safe heavy functions and inject Turbo tags before obfuscation.</span>
+          <span class="check-help">Tag safe top-level functions when you press Analyze. Nested and IIFE code always stays manual.</span>
         </span>
         <span class="switch">
           <input type="checkbox" data-setting="autoDetectMacros" />
@@ -159,6 +129,110 @@ export function renderSettings(container, initialSettings, onChange, options = {
         <span class="field-help">Applied only to functions the analyzer marks as safe.</span>
       </label>
     </div>
+    <div class="settings-actions">
+      <span class="settings-saved" data-settings-saved>Saved locally</span>
+      <span class="settings-saved">Analyzer only</span>
+    </div>
+  `;
+
+  const get = (name) => container.querySelector(`[data-setting="${name}"]`);
+
+  function syncDisabled() {
+    const turbo = get("turboLevel");
+    if (turbo) turbo.disabled = !session.settings.autoDetectMacros;
+  }
+
+  function applyToForm() {
+    get("autoDetectMacros").checked = session.settings.autoDetectMacros === true;
+    get("turboLevel").value = session.settings.turboLevel;
+    syncDisabled();
+  }
+
+  get("autoDetectMacros").addEventListener("change", (event) => {
+    session.settings.autoDetectMacros = event.target.checked;
+    syncDisabled();
+    session.commit("autoDetectMacros");
+  });
+  get("turboLevel").addEventListener("change", (event) => {
+    session.settings.turboLevel = event.target.value;
+    session.commit("turboLevel");
+  });
+
+  applyToForm();
+
+  return {
+    getSettings: () => structuredClone(session.settings),
+    getLastChangeSource: session.getLastChangeSource,
+    setSettings(next) {
+      session.setSettings(next);
+      applyToForm();
+    },
+  };
+}
+
+export function renderProtectionSettings(container, initialSettings, onChange, options = {}) {
+  if (!container) return null;
+  const session = createSession(container, initialSettings, onChange);
+
+  container.innerHTML = `
+    <div class="settings-group">
+      <div class="settings-group-head">
+        <div>
+          <span class="eyebrow">Engine</span>
+          <h3>Protection profile</h3>
+        </div>
+        <span class="profile-chip" data-profile-chip></span>
+      </div>
+      <label class="field">
+        <span class="field-label">Profile</span>
+        <select data-setting="profile">
+          ${option("turbo", "Turbo — native, fastest")}
+          ${option("balanced", "Balanced — stable VM")}
+          ${option("maximum", "Maximum — hardened VM")}
+          ${option("custom", "Custom — explicit controls")}
+        </select>
+        <span class="field-help" data-profile-help></span>
+      </label>
+      <div class="field-grid">
+        <label class="field">
+          <span class="field-label">VM architecture</span>
+          <select data-setting="vmType">
+            ${option("register", "Register VM")}
+            ${option("stack", "Stack VM")}
+            ${option("none", "Native / no VM")}
+            ${option("custom", "Profile default")}
+          </select>
+        </label>
+        <label class="field">
+          <span class="field-label">Hardening grade</span>
+          <select data-setting="vmLevel">
+            ${option("debug", "Debug")}
+            ${option("normal", "Normal")}
+            ${option("max", "Maximum")}
+            ${option("custom", "Profile default")}
+          </select>
+        </label>
+      </div>
+      <div class="field-grid">
+        <label class="field">
+          <span class="field-label">Target environment</span>
+          <select data-setting="target">
+            ${option("roblox", "Roblox Studio")}
+            ${option("generic", "Generic Luau")}
+          </select>
+        </label>
+        ${
+          options.showSeed
+            ? `<label class="field">
+                <span class="field-label">Seed <span class="optional">optional</span></span>
+                <input data-setting="seed" type="text" spellcheck="false" autocomplete="off" placeholder="Random each run" />
+              </label>`
+            : ""
+        }
+      </div>
+    </div>
+
+    ${luraphMarkup()}
 
     <div class="settings-actions">
       <button type="button" class="btn btn-ghost btn-sm" data-reset-settings>Reset defaults</button>
@@ -168,13 +242,12 @@ export function renderSettings(container, initialSettings, onChange, options = {
 
   const get = (name) => container.querySelector(`[data-setting="${name}"]`);
   const getLuraph = (name) => container.querySelector(`[data-luraph="${name}"]`);
-  const savedLabel = container.querySelector("[data-settings-saved]");
   const profileChip = container.querySelector("[data-profile-chip]");
   const profileHelp = container.querySelector("[data-profile-help]");
 
   function syncDisabled() {
-    const register = settings.vmType === "register";
-    const stack = settings.vmType === "stack";
+    const register = session.settings.vmType === "register";
+    const stack = session.settings.vmType === "stack";
     const intense = getLuraph("intenseVM");
     const debug = getLuraph("useDebugLib");
     const compression = getLuraph("vmCompression");
@@ -184,97 +257,80 @@ export function renderSettings(container, initialSettings, onChange, options = {
     container.querySelector('[data-check-row="intenseVM"]')?.classList.toggle("is-disabled", !register);
     container.querySelector('[data-check-row="useDebugLib"]')?.classList.toggle("is-disabled", !register);
     container.querySelector('[data-check-row="vmCompression"]')?.classList.toggle("is-disabled", !stack);
-    const turbo = get("turboLevel");
-    if (turbo) turbo.disabled = !settings.autoDetectMacros;
   }
 
   function applyToForm() {
-    get("profile").value = settings.profile;
-    get("vmType").value = settings.vmType;
-    get("vmLevel").value = settings.vmLevel;
-    get("target").value = settings.target;
+    get("profile").value = session.settings.profile;
+    get("vmType").value = session.settings.vmType;
+    get("vmLevel").value = session.settings.vmLevel;
+    get("target").value = session.settings.target;
     const seed = get("seed");
-    if (seed) seed.value = settings.seed || "";
-    get("autoDetectMacros").checked = settings.autoDetectMacros === true;
-    get("turboLevel").value = settings.turboLevel;
-    for (const name of ["intenseVM", "gcFixes", "hardcodeGlobals", "staticEnv", "useDebugLib", "vmCompression"]) {
+    if (seed) seed.value = session.settings.seed || "";
+    for (const name of LURAPH_FLAGS) {
       const checkbox = getLuraph(name);
-      if (checkbox) checkbox.checked = settings.luraph[name] === true;
+      if (checkbox) checkbox.checked = session.settings.luraph[name] === true;
     }
-    profileChip.textContent = PROFILE_LABELS[settings.profile] || "Custom";
-    profileHelp.textContent = PROFILE_HINTS[settings.profile] || PROFILE_HINTS.custom;
+    profileChip.textContent = PROFILE_LABELS[session.settings.profile] || "Custom";
+    profileHelp.textContent = PROFILE_HINTS[session.settings.profile] || PROFILE_HINTS.custom;
     syncDisabled();
-  }
-
-  function commit(source) {
-    lastChangeSource = source;
-    saveSettings(settings);
-    if (savedLabel) {
-      savedLabel.textContent = "Saved locally";
-      savedLabel.classList.add("is-flash");
-      setTimeout(() => savedLabel.classList.remove("is-flash"), 700);
-    }
-    onChange?.(structuredClone(settings), { source });
   }
 
   get("profile").addEventListener("change", (event) => {
-    settings.profile = event.target.value;
-    if (settings.profile !== "custom") {
-      const defaults = PROFILE_DEFAULTS[settings.profile];
-      settings.vmType = defaults.vmType;
-      settings.vmLevel = defaults.vmLevel;
+    session.settings.profile = event.target.value;
+    if (session.settings.profile !== "custom") {
+      const defaults = PROFILE_DEFAULTS[session.settings.profile];
+      session.settings.vmType = defaults.vmType;
+      session.settings.vmLevel = defaults.vmLevel;
     }
     applyToForm();
-    commit("profile");
+    session.commit("profile");
   });
   get("vmType").addEventListener("change", (event) => {
-    settings.vmType = event.target.value;
+    session.settings.vmType = event.target.value;
     syncDisabled();
-    commit("vmType");
+    session.commit("vmType");
   });
   get("vmLevel").addEventListener("change", (event) => {
-    settings.vmLevel = event.target.value;
-    commit("vmLevel");
+    session.settings.vmLevel = event.target.value;
+    session.commit("vmLevel");
   });
   get("target").addEventListener("change", (event) => {
-    settings.target = event.target.value;
-    commit("target");
+    session.settings.target = event.target.value;
+    session.commit("target");
   });
   const seed = get("seed");
   if (seed) {
     seed.addEventListener("input", (event) => {
-      settings.seed = event.target.value;
-      commit("seed");
+      session.settings.seed = event.target.value;
+      session.commit("seed");
     });
   }
-  get("autoDetectMacros").addEventListener("change", (event) => {
-    settings.autoDetectMacros = event.target.checked;
-    syncDisabled();
-    commit("autoDetectMacros");
-  });
-  get("turboLevel").addEventListener("change", (event) => {
-    settings.turboLevel = event.target.value;
-    commit("turboLevel");
-  });
   for (const checkbox of container.querySelectorAll("[data-luraph]")) {
     checkbox.addEventListener("change", (event) => {
-      settings.luraph[event.target.dataset.luraph] = event.target.checked;
-      commit("luraph");
+      session.settings.luraph[event.target.dataset.luraph] = event.target.checked;
+      session.commit("luraph");
     });
   }
   container.querySelector("[data-reset-settings]").addEventListener("click", () => {
-    settings = structuredClone(DEFAULT_SETTINGS);
+    const next = structuredClone(session.settings);
+    next.profile = DEFAULT_SETTINGS.profile;
+    next.vmType = DEFAULT_SETTINGS.vmType;
+    next.vmLevel = DEFAULT_SETTINGS.vmLevel;
+    next.target = DEFAULT_SETTINGS.target;
+    next.seed = DEFAULT_SETTINGS.seed;
+    next.luraph = structuredClone(DEFAULT_SETTINGS.luraph);
+    session.setSettings(next);
     applyToForm();
-    commit("reset");
+    session.commit("reset");
   });
 
   applyToForm();
 
   return {
-    getSettings: () => structuredClone(settings),
-    getLastChangeSource: () => lastChangeSource,
+    getSettings: () => structuredClone(session.settings),
+    getLastChangeSource: session.getLastChangeSource,
     setSettings(next) {
-      settings = structuredClone(next);
+      session.setSettings(next);
       applyToForm();
     },
   };

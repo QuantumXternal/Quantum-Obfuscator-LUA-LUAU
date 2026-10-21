@@ -121,8 +121,6 @@ export function buildObfuscateOptions(settings, seed) {
   const options = {
     profile: settings.profile,
     target: settings.target,
-    autoDetectMacros: settings.autoDetectMacros === true,
-    turboLevel: settings.turboLevel,
     luraph: {
       intenseVM: settings.luraph.intenseVM === true,
       useDebugLib: settings.luraph.useDebugLib === true,

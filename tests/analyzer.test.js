@@ -37,13 +37,21 @@ test("already tagged functions are reported without a replacement fix", () => {
 test("nested functions and IIFEs are not auto-tagged", () => {
   const nested = analyzeScript(`local function outer()\n  local function inner()\n    return Instance.new("Frame")\n  end\n  return inner()\nend\nprint(outer())\n`);
   expect(nested.summary.autoFixable).toBe(0);
+  expect(nested.summary.iifeCount).toBe(0);
   expect(nested.diagnostics[0].fix).toBeNull();
   expect(nested.diagnostics[0].message).toMatch(/Move it into a top-level named function/);
 
   const iife = analyzeScript(`(function()\n  local f = Instance.new("Frame")\n  return f\nend)()\n`);
   expect(iife.summary.autoFixable).toBe(0);
+  expect(iife.summary.iifeCount).toBe(1);
   expect(iife.diagnostics[0].fix).toBeNull();
   expect(iife.diagnostics[0].message).toMatch(/Move it into a top-level named function/);
+
+  const wrapped = analyzeScript(`local Module = (function()\n  return {}\nend)()\nprint(Module)\n`);
+  expect(wrapped.summary.iifeCount).toBe(1);
+
+  const callback = analyzeScript(`pcall(function()\n  return Instance.new("Frame")\nend)\n`);
+  expect(callback.summary.iifeCount).toBe(0);
 });
 
 test("anonymous callbacks inside top-level functions are not attributed to the parent", () => {
@@ -84,6 +92,7 @@ test("large fixture analysis matches the stress-test baseline", () => {
     lines: 1228,
     tokens: 8860,
     functions: 54,
+    iifeCount: 0,
     instanceNew: 90,
     renderStepped: 0,
     heavyFunctions: 20,

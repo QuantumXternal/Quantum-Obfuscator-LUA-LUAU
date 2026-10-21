@@ -1,12 +1,30 @@
 import { basicSetup } from "codemirror";
-import { Compartment, EditorState } from "@codemirror/state";
-import { EditorView, placeholder } from "@codemirror/view";
+import { Compartment, EditorState, StateEffect, StateField } from "@codemirror/state";
+import { Decoration, EditorView, placeholder } from "@codemirror/view";
 import { StreamLanguage, indentUnit } from "@codemirror/language";
 import { lua } from "@codemirror/legacy-modes/mode/lua";
 import { lintGutter, linter, setDiagnostics } from "@codemirror/lint";
 import { oneDark } from "@codemirror/theme-one-dark";
 
 const luaLanguage = StreamLanguage.define(lua);
+
+const setJumpLine = StateEffect.define();
+const jumpLineDecoration = Decoration.line({ class: "cm-jump-line" });
+
+const jumpLineField = StateField.define({
+  create: () => Decoration.none,
+  update(decorations, transaction) {
+    let next = decorations.map(transaction.changes);
+    for (const effect of transaction.effects) {
+      if (!effect.is(setJumpLine)) continue;
+      if (effect.value === null) return Decoration.none;
+      const lineNumber = clamp(Number(effect.value) || 1, 1, transaction.state.doc.lines);
+      next = Decoration.set([jumpLineDecoration.range(transaction.state.doc.line(lineNumber).from)]);
+    }
+    return next;
+  },
+  provide: (field) => EditorView.decorations.from(field),
+});
 
 const studioTheme = EditorView.theme(
   {
@@ -34,6 +52,10 @@ const studioTheme = EditorView.theme(
     ".cm-lineNumbers .cm-gutterElement": { minWidth: "32px", padding: "0 10px 0 6px" },
     ".cm-activeLine": { backgroundColor: "rgba(88, 215, 255, 0.045)" },
     ".cm-activeLineGutter": { backgroundColor: "rgba(88, 215, 255, 0.08)", color: "#88dff5" },
+    ".cm-jump-line": {
+      backgroundColor: "rgba(88, 215, 255, 0.13)",
+      boxShadow: "inset 3px 0 0 #58d7ff",
+    },
     ".cm-selectionBackground, &.cm-focused .cm-selectionBackground, ::selection": {
       backgroundColor: "rgba(76, 201, 240, 0.2) !important",
     },
@@ -86,6 +108,8 @@ export function createEditor(host, options = {}) {
   let currentDiagnostics = [];
   let hideTimer = null;
   let hoverTimer = null;
+  let jumpRequest = 0;
+  let jumpHighlightTimer = null;
   let activeDiagnostic = null;
   let lastPointer = null;
 
@@ -123,6 +147,7 @@ export function createEditor(host, options = {}) {
       EditorState.tabSize.of(2),
       oneDark,
       studioTheme,
+      jumpLineField,
       lintGutter({ tooltipFilter: () => [] }),
       linter(null, { tooltipFilter: () => [] }),
       placeholder(options.placeholder || "-- Paste or drop a Luau script here"),
@@ -299,22 +324,57 @@ export function createEditor(host, options = {}) {
     view.dispatch(setDiagnostics(view.state, []));
   }
 
+  function centerLine(lineNumber) {
+    const current = view.state.doc.line(clamp(lineNumber, 1, view.state.doc.lines));
+    view.dispatch({ effects: EditorView.scrollIntoView(current.from, { y: "center" }) });
+    return current;
+  }
+
   function goToLine(lineNumber, reveal = false) {
-    const line = view.state.doc.line(clamp(Number(lineNumber) || 1, 1, view.state.doc.lines));
+    const request = ++jumpRequest;
+    clearTimeout(jumpHighlightTimer);
+    const requested = clamp(Number(lineNumber) || 1, 1, view.state.doc.lines);
+    const line = view.state.doc.line(requested);
+
     view.dispatch({
       selection: { anchor: line.from, head: Math.min(line.from + 1, line.to) },
-      scrollIntoView: true,
+      effects: [
+        EditorView.scrollIntoView(line.from, { y: "center" }),
+        setJumpLine.of(requested),
+      ],
     });
+    host.scrollIntoView({ block: "center", inline: "nearest" });
     view.focus();
-    requestAnimationFrame(() => {
-      if (!reveal) return;
-      const diagnostic = serverDiagnostics.find((item) => item.line === lineNumber);
+
+    jumpHighlightTimer = setTimeout(() => {
+      if (request !== jumpRequest) return;
+      view.dispatch({ effects: setJumpLine.of(null) });
+    }, 1600);
+
+    const revealAtLine = (attempt = 0) => {
+      if (request !== jumpRequest) return;
+      const current = view.state.doc.line(clamp(requested, 1, view.state.doc.lines));
+      const coords = view.coordsAtPos(current.from);
+      if (!coords && attempt < 6) {
+        setTimeout(() => revealAtLine(attempt + 1), 30);
+        return;
+      }
+      const diagnostic = serverDiagnostics.find((item) => Number(item.line) === requested);
       if (!diagnostic) return;
-      const coords = view.coordsAtPos(line.from);
       showPopover(
         diagnostic,
         coords ? { clientX: coords.left + 24, clientY: coords.bottom - 4 } : { clientX: window.innerWidth / 2, clientY: 180 },
       );
+    };
+
+    requestAnimationFrame(() => {
+      if (request !== jumpRequest) return;
+      centerLine(requested);
+      requestAnimationFrame(() => {
+        if (request !== jumpRequest) return;
+        centerLine(requested);
+        if (reveal) setTimeout(revealAtLine, 30);
+      });
     });
   }
 
@@ -345,6 +405,8 @@ export function createEditor(host, options = {}) {
   }
 
   function destroy() {
+    jumpRequest++;
+    clearTimeout(jumpHighlightTimer);
     hidePopover();
     view.destroy();
   }

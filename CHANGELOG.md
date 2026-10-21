@@ -10,6 +10,13 @@ is the AST-only control: byte-identical before/after in every comparison.
 
 ## Unreleased — Quantum Studio (4-page web IDE)
 
+- fix(web): separate macro preparation from compilation. The Analyzer now owns
+  the Quantum Exclusives panel and adds an IIFE warning with a detected count;
+  the Obfuscator no longer sends `autoDetectMacros`/`turboLevel` and preserves
+  analyzer-prepared tags. Jump-to-line now uses an explicit CodeMirror
+  `scrollIntoView` effect, re-centers after layout, and flashes the target line.
+  MEASURED: `MJ_fixed.lua` (8,032 lines) reports 7 IIFEs. TESTS: focused 25
+  passing; full suite 64 suites / 758 tests green.
 - feat(web): replace the single-page UI with a dark, responsive CodeMirror 6
   Studio: Dashboard, Analyzer, Obfuscator, and Docs. Source/settings carry
   across Analyzer → Obfuscator without re-pasting; analysis, obfuscation,

@@ -69,8 +69,8 @@
       <main class="page page-compact">
         <div class="workspace-head">
           <div>
-            <h2>Find the expensive paths before the VM does.</h2>
-            <p>Static AST analysis for Roblox startup and render-loop hotspots. Safe functions get a one-click Turbo tag; nested and IIFE code gets an explicit review note.</p>
+            <h2>Prepare safe macros before the VM.</h2>
+            <p>Static AST analysis for Roblox startup and render-loop hotspots. Safe top-level functions get a one-click Turbo tag; nested and IIFE code stays manual.</p>
           </div>
           <div class="workspace-actions">
             <button type="button" class="btn btn-ghost btn-sm" data-load-example>Load example</button>
@@ -83,6 +83,15 @@
               Analyze
             </button>
             <input type="file" accept=".lua,.luau,.txt" data-analyzer-file hidden />
+          </div>
+        </div>
+
+        <div class="iife-warning" data-iife-warning hidden role="status" aria-live="polite">
+          <div class="iife-warning-icon" aria-hidden="true">!</div>
+          <div class="iife-warning-copy">
+            <strong>Warning: This script uses IIFEs.</strong>
+            <p>Macros cannot be auto-applied safely. Please extract the code to top-level functions manually.</p>
+            <span class="iife-warning-count" data-iife-count></span>
           </div>
         </div>
 
@@ -152,8 +161,8 @@
             <section class="panel settings-panel">
               <div class="panel-heading">
                 <div>
-                  <span class="eyebrow">Configuration</span>
-                  <h2>Protection settings</h2>
+                  <span class="eyebrow">Macro prep</span>
+                  <h2>Quantum Exclusives</h2>
                 </div>
               </div>
               <div data-analyzer-settings></div>
@@ -163,7 +172,7 @@
               <div class="transfer-copy">
                 <span class="eyebrow">Next step</span>
                 <h2>Send this build to the obfuscator.</h2>
-                <p>The current source and these settings are carried through browser storage. No re-paste, no refresh.</p>
+                <p>The current source and your saved workspace settings are carried through browser storage. No re-paste, no refresh.</p>
               </div>
               <button type="button" class="btn btn-primary btn-block" data-send-to-obfuscator>
                 Send to Obfuscator
