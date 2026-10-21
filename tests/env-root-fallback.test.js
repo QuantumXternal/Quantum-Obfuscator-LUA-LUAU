@@ -49,6 +49,39 @@ print(table.concat(t, ","), math.floor(4.9))
 
 const EXPECTED = "task-ok\twait-ok\ttable\ttable\tfunction\nfunction\n1,4,9\t4";
 
+const EXEC_PRELUDE = `
+local _keep_print = print
+_G = {}
+getgenv = function() return {} end
+getfenv = nil
+isfolder = function() return true end
+makefolder = function() end
+UserSettings = function() return {} end
+Drawing = {}
+getrawmetatable = function() end
+hookmetamethod = function() end
+mousemoverel = function() end
+syn = function() end
+fluxus = function() end
+`;
+
+const EXEC_SRC = `
+print(
+  isfolder("JOKER"),
+  type(makefolder),
+  type(UserSettings),
+  type(Drawing),
+  type(getrawmetatable),
+  type(hookmetamethod),
+  type(mousemoverel),
+  type(syn),
+  type(fluxus),
+  type(table.pack)
+)
+`;
+
+const EXEC_EXPECTED = "true\tfunction\tfunction\ttable\tfunction\tfunction\tfunction\tfunction\tfunction\tfunction";
+
 const BASE = {
   renameLocals: false,
   preserveGlobals: true,
@@ -59,9 +92,9 @@ const BASE = {
   polymorphicSeed: 4242,
 };
 
-function run(exe, artifact, shim) {
+function run(exe, artifact, shim, prelude = PRELUDE) {
   const f = join(TMP, `art-${process.pid}-${Math.floor(Math.random() * 1e9)}.lua`);
-  writeFileSync(f, (shim ? SHIMTEXT + "\n" : "") + PRELUDE + artifact, "utf8");
+  writeFileSync(f, (shim ? SHIMTEXT + "\n" : "") + prelude + artifact, "utf8");
   const r = spawnSync(exe, [f], { encoding: "utf8", timeout: 120000, maxBuffer: 32 * 1024 * 1024 });
   rmSync(f, { force: true });
   return {
@@ -87,6 +120,20 @@ for (const [vmType, vmLevel] of [
     if (HAS_PUC) {
       expect({ exe: "puc", ...run(LUA54, artifact, true) }).toEqual({
         exe: "puc", status: 0, stdout: EXPECTED, stderr: "",
+      });
+    }
+  }, 180000);
+
+  t(`${vmType}/${vmLevel}: empty getgenv keeps executor file/Drawing globals`, () => {
+    const artifact = quiet(() => runObfuscatePipeline(EXEC_SRC, { ...BASE, vmType, vmLevel }));
+    if (HAS_LUAU) {
+      expect({ exe: "luau", ...run(LUAU, artifact, false, EXEC_PRELUDE) }).toEqual({
+        exe: "luau", status: 0, stdout: EXEC_EXPECTED, stderr: "",
+      });
+    }
+    if (HAS_PUC) {
+      expect({ exe: "puc", ...run(LUA54, artifact, true, EXEC_PRELUDE) }).toEqual({
+        exe: "puc", status: 0, stdout: EXEC_EXPECTED, stderr: "",
       });
     }
   }, 180000);

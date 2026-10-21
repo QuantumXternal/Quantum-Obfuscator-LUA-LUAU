@@ -6,6 +6,7 @@ import { compile as compileAST } from "./Compiler.js";
 import { splitLongLiteral, joinBounded, luaQuotedFromBytes, boundCommaSeparatedLine, longStringLevel } from "./limits.js";
 import { bit32InstallerLua } from "./bit32-fallback.js";
 import { buildEnvRootExpr } from "./envRoot.js";
+import { ALL_GLOBALS, CORE_GLOBALS, EXECUTOR_GLOBALS } from "./env-globals.js";
 import { prependOutputHeader } from "./watermark.js";
 
 // Emit a (possibly very long) encoded fragment as one or more bounded-width
@@ -2293,36 +2294,6 @@ function serializeProtos(
   return `{${items.join(",")}}`;
 }
 
-const CORE_GLOBALS = [
-  "print", "warn", "error", "assert", "type", "typeof", "tostring", "tonumber",
-  "pcall", "xpcall", "select", "unpack", "pairs", "ipairs", "next",
-  "rawget", "rawset", "rawequal", "rawlen", "setmetatable", "getmetatable",
-  "string", "table", "math", "bit32", "coroutine", "os", "debug", "utf8", "buffer",
-  "game", "workspace", "script", "Instance",
-  "Vector3", "Vector2", "CFrame", "Color3", "BrickColor", "UDim", "UDim2",
-  "Enum", "Ray", "Region3", "Rect", "TweenInfo",
-  "NumberSequence", "ColorSequence", "NumberRange", "Random", "DateTime",
-  "RaycastParams", "OverlapParams",
-  "tick", "time", "wait", "task", "spawn", "delay",
-  "require", "loadstring", "load", "getfenv", "setfenv", "newproxy",
-  "_G", "shared", "settings", "stats", "UserSettings", "version",
-];
-
-const EXECUTOR_GLOBALS = [
-  "getgenv", "getrenv", "getsenv", "getrawmetatable", "setrawmetatable",
-  "hookfunction", "hookmetamethod", "newcclosure", "iscclosure", "islclosure",
-  "checkcaller", "cloneref", "getconnections", "firesignal",
-  "getgc", "getinstances", "getnilinstances", "getscripts", "getrunningscripts",
-  "getloadedmodules", "getcallingscript",
-  "readfile", "writefile", "appendfile", "loadfile", "listfiles", "isfile", "isfolder",
-  "makefolder", "delfolder", "delfile",
-  "setclipboard", "queue_on_teleport",
-  "setthreadidentity", "getthreadidentity",
-  "getnamecallmethod", "setnamecallmethod",
-  "isreadonly", "setreadonly", "identifyexecutor",
-  "request", "syn", "Drawing", "crypt", "base64", "http",
-];
-
 function luaEsc(s: string): string {
   return '"' + Array.from(s).map(c => {
     const code = c.charCodeAt(0);
@@ -2451,7 +2422,7 @@ function buildEnvSetup(
   lines.push(`local function ${collatzDec}(${bp}) local ${cn}=${collatzSeed};local ${ct}={};for ${ci}=1,#${bp} do local ${ck}=${bBA}(${cn},0xFF);${ct}[${ci}]=${bSC}(${bBX}(${bp}[${ci}],${ck}));if ${cn}%2==0 then ${cn}=${bBR}(${cn},1) else ${cn}=${bBA}(${cn}*3+1,0x7FFFFFFF) end;if ${cn}<=1 then ${cn}=${bBX}(${collatzSeed},${ci}) end end;return ${bTC}(${ct}) end`);
 
   const tblEsc = luaEsc("table");
-  lines.push(`local ${genv}=${buildEnvRootExpr(CORE_GLOBALS)}`);
+  lines.push(`local ${genv}=${buildEnvRootExpr(ALL_GLOBALS)}`);
 
   const mtStyle = Math.floor(rng() * 3);
   const fbP = randomName(2);

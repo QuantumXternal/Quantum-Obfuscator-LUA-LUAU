@@ -7,6 +7,7 @@ import { join as _dumpJoin } from "path";
 import { encryptAndEncode, compressToBase85, compressBytesToBase85 } from "./lzma.js";
 import { generateBootstrap } from "./bootstrap-template.js";
 import { buildEnvRootExpr } from "./envRoot.js";
+import { ALL_GLOBALS, CORE_GLOBALS, EXECUTOR_GLOBALS } from "./env-globals.js";
 import { bit32InstallerLua } from "./bit32-fallback.js";
 import { joinBounded, luaQuotedFromBytes, boundCommaSeparatedLine } from "./limits.js";
 import { prependOutputHeader } from "./watermark.js";
@@ -1741,11 +1742,11 @@ function buildHandlerBodies(n: NameMap, ctx: BuildCtx, usedOps?: Set<number>): M
  *   4. inline `_G` - final candidate when present (standalone)
  *   5. direct-globals snapshot - always present; candidate-only keys are
  *      copied in without overwriting captured globals, so an empty/partial
- *      getgenv() cannot hide wait/task/game.
+ *      getgenv() cannot hide wait/task/game or executor file/Drawing APIs.
  * Self-contained expression: references only globals, safe in any fragment.
  */
 function envRootLua(): string {
-  return buildEnvRootExpr(CORE_GLOBALS);
+  return buildEnvRootExpr(ALL_GLOBALS);
 }
 function buildBuiltinCaptures(ctx: BuildCtx): { code: string; assignOnly: string } {
   const n = ctx.names;
@@ -2244,96 +2245,6 @@ function buildVMRuntime(ctx: BuildCtx, assignStyle: boolean = false): string {
 
   return L.join("\n");
 }
-
-const CORE_GLOBALS = [
-
-  "print","warn","error","assert","type","typeof","tostring","tonumber",
-  "pcall","xpcall","select","unpack","pairs","ipairs","next",
-  "rawget","rawset","rawequal","rawlen","setmetatable","getmetatable",
-  "collectgarbage","dofile","gcinfo",
-
-  "string","table","math","bit32","coroutine","os","debug","utf8","buffer",
-
-  "game","workspace","script","Instance","Enum",
-
-  "Vector3","Vector2","CFrame","Color3","BrickColor",
-  "UDim","UDim2","Ray","Region3","Rect","TweenInfo",
-  "NumberSequence","ColorSequence","NumberRange",
-  "NumberSequenceKeypoint","ColorSequenceKeypoint",
-  "PhysicalProperties","Axes","Faces","PathWaypoint",
-  "Random","DateTime","RaycastParams","OverlapParams",
-  "Font","FloatCurveKey","RotationCurveKey",
-
-  "tick","time","wait","task","spawn","delay",
-
-  "require","loadstring","load","getfenv","setfenv","newproxy",
-
-  "_G","shared","settings","stats","UserSettings","version",
-];
-
-const EXECUTOR_GLOBALS = [
-
-  "getgenv","getrenv","getsenv","getrawmetatable","setrawmetatable",
-
-  "hookfunction","hookfunc","hookmetamethod","newcclosure",
-  "clonefunction","cloneref","compareinstances",
-
-  "iscclosure","islclosure","isexecutorclosure","checkclosure","isourclosure",
-  "checkcaller",
-
-  "getconnections","firesignal","fireclickdetector","fireproximityprompt","firetouchinterest",
-
-  "getgc","getinstances","getnilinstances","getscripts","getrunningscripts",
-  "getloadedmodules","getcallingscript","getactors",
-
-  "getscriptbytecode","dumpstring","getscripthash","getscriptclosure","decompile",
-
-  "readfile","writefile","appendfile","loadfile","listfiles",
-  "isfile","isfolder","makefolder","delfolder","delfile",
-
-  "setclipboard","toclipboard","getclipboard","setrbxclipboard",
-
-  "queue_on_teleport","queueonteleport",
-
-  "setthreadidentity","getthreadidentity",
-  "setidentity","getidentity","setthreadcontext","getthreadcontext",
-
-  "getnamecallmethod","setnamecallmethod",
-
-  "isreadonly","setreadonly",
-
-  "gethiddenproperty","sethiddenproperty","isscriptable","setscriptable",
-
-  "identifyexecutor","getexecutorname",
-
-  "request","http_request","syn","http","WebSocket",
-
-  "cache",
-
-  "Drawing","cleardrawcache","isrenderobj",
-
-  "crypt","base64",
-
-  "lz4compress","lz4decompress",
-
-  "mouse1click","mouse1press","mouse1release",
-  "mouse2click","mouse2press","mouse2release",
-  "mousemoveabs","mousemoverel","mousescroll",
-
-  "gethui","getcustomasset","getcallbackvalue","messagebox",
-  "isrbxactive","isgameactive","setfpscap",
-
-  "getregistry","getreg","getstack",
-
-  "rconsoleclear","rconsolecreate","rconsoledestroy",
-  "rconsoleinput","rconsoleprint","rconsolesettitle","rconsolename",
-  "consoleclear","consolecreate","consoledestroy",
-  "consoleinput","consoleprint","consolesettitle",
-
-  "run_on_actor","runonactor",
-
-  "getstack",
-];
 
 interface LoadWrapperNames {
   o: string; ty: string; sf: string; pc: string; f: string;

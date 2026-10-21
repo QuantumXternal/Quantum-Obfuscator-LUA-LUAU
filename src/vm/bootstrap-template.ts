@@ -1,6 +1,7 @@
 import { longStringLevel, splitLongLiteral } from "./limits.js";
 import { bit32InstallerLua } from "./bit32-fallback.js";
 import { buildEnvRootExpr } from "./envRoot.js";
+import { ALL_GLOBALS } from "./env-globals.js";
 
 export interface BootstrapConfig {
   vmBlob: string;
@@ -158,20 +159,11 @@ const CAP_PACK = `((type(string)=="table" and string.pack) or ${FALLBACK_PACK})`
  *   4. _G                   - final candidate when present
  *   5. direct-globals snapshot - always present; candidate-only keys are
  *      copied in without overwriting captured globals, so an empty/partial
- *      getgenv() cannot hide wait/task/game.
+ *      getgenv() cannot hide wait/task/game or executor file/Drawing APIs.
  * Self-contained: references only globals, so it can sit anywhere in a
  * shuffled fragment layer.
  */
-const ENV_ROOT_GLOBALS = [
-  "table", "string", "math", "bit32", "pcall", "xpcall", "select", "type",
-  "ipairs", "pairs", "next", "tostring", "tonumber", "rawget", "rawset",
-  "setmetatable", "getmetatable", "unpack", "loadstring", "load", "error",
-  "assert", "coroutine", "os", "utf8", "buffer", "task", "game", "workspace",
-  "script", "Instance", "Enum", "typeof", "tick", "time", "wait", "spawn",
-  "delay", "newproxy", "collectgarbage", "debug", "print", "warn", "shared",
-  "require",
-];
-const ENV_ROOT_EXPR = buildEnvRootExpr(ENV_ROOT_GLOBALS);
+const ENV_ROOT_EXPR = buildEnvRootExpr(ALL_GLOBALS);
 
 export function generateBootstrap(config: BootstrapConfig): string {
   const { vmBlob, vmOrigLen, compLen, xorKey, invSbox, checksum, chunkName = "Quantum", rng } = config;

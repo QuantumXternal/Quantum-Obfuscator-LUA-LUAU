@@ -162,10 +162,13 @@ describe("reg-path LZ4 payload corruption", () => {
     const re = /\[(=*)\[/g;
     let m = null;
     let last = null;
-    while ((m = re.exec(art)) !== null) last = m;
+    while ((m = re.exec(art)) !== null) {
+      const start = m.index + m[0].length;
+      const close = art.indexOf("]" + m[1] + "]", start);
+      if (close > start) last = { start, close };
+    }
     expect(last).not.toBeNull();
-    const start = last.index + last[0].length;
-    const pos = start + 40;
+    const pos = last.start + Math.max(1, Math.floor((last.close - last.start) / 2) - 1);
     const short = art.slice(0, pos) + art.slice(pos + 3);
     expect(short).not.toBe(art);
     for (const [exe, shim, args] of [
