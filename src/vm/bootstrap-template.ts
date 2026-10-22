@@ -1,7 +1,7 @@
 import { longStringLevel, splitLongLiteral } from "./limits.js";
 import { bit32InstallerLua } from "./bit32-fallback.js";
 import { buildEnvRootExpr } from "./envRoot.js";
-import { ALL_GLOBALS } from "./env-globals.js";
+import { ENV_FALLBACK_GLOBALS } from "./env-globals.js";
 
 export interface BootstrapConfig {
   vmBlob: string;
@@ -150,20 +150,20 @@ const CAP_PACK = `((type(string)=="table" and string.pack) or ${FALLBACK_PACK})`
  * script-shared DATA table and does NOT contain the standard library
  * (official docs), so anything rooted at `_G` alone resolves every stdlib
  * member to nil there (v3.2.1 executor incident: `attempt to index nil with
- * 'pack'` inside the decrypted runtime). Candidate order (any table is
- * accepted; candidate-only keys are copied into the snapshot):
+ * 'pack'` inside the decrypted runtime). The dynamic proxy queries every
+ * available environment under pcall:
  *   1. getgenv()            - executor global environment (has stdlib)
  *   2. getfenv(0)           - vanilla Roblox / standalone Lua global env
- *   3. loadstring("return _G") - separate chunk, immune to local shadowing
+ *   3. _ENV                 - Lua 5.2+ chunk environment
+ *   4. loadstring("return _G") - separate chunk, immune to local shadowing
  *                              (the generator names can collide with `_G`)
- *   4. _G                   - final candidate when present
- *   5. direct-globals snapshot - always present; candidate-only keys are
- *      copied in without overwriting captured globals, so an empty/partial
- *      getgenv() cannot hide wait/task/game or executor file/Drawing APIs.
+ *   5. _G                   - final candidate when present
+ * The direct-globals table is only a last-resort fallback for hosts with no
+ * usable environment reflection; it is not an access allowlist.
  * Self-contained: references only globals, so it can sit anywhere in a
  * shuffled fragment layer.
  */
-const ENV_ROOT_EXPR = buildEnvRootExpr(ALL_GLOBALS);
+const ENV_ROOT_EXPR = buildEnvRootExpr(ENV_FALLBACK_GLOBALS);
 
 export function generateBootstrap(config: BootstrapConfig): string {
   const { vmBlob, vmOrigLen, compLen, xorKey, invSbox, checksum, chunkName = "Quantum", rng } = config;
@@ -297,7 +297,7 @@ export function generateBootstrap(config: BootstrapConfig): string {
   const chGetfenv = [103,101,116,102,101,110,118].map(c => obfuscateNum(c, rng)).join(',');
 
   fragments.push({
-    code: `local ${nDbgRef}=(function() local _0ok,_0r=(${nPcall} and ${nPcall}(function() local _0d=rawget(${nEnvRoot},${nChar}(${chDebug})) if not _0d then local _0g=rawget(${nEnvRoot},${nChar}(${chGetfenv})) if _0g then _0d=rawget(_0g(0) or {},${nChar}(${chDebug})) end end return _0d and _0d[${nChar}(${chInfo})] end)) return _0ok and _0r or nil end)()`,
+    code: `local ${nDbgRef}=(function() local _0ok,_0r=(${nPcall} and ${nPcall}(function() local _0d=${nEnvRoot}[${nChar}(${chDebug})] if not _0d then local _0g=${nEnvRoot}[${nChar}(${chGetfenv})] if _0g then _0d=rawget(_0g(0) or {},${nChar}(${chDebug})) end end return _0d and _0d[${nChar}(${chInfo})] end)) return _0ok and _0r or nil end)()`,
     layer: spreadLayer(),
   });
   fragments.push({
@@ -725,9 +725,9 @@ export function generateBootstrap(config: BootstrapConfig): string {
 
     assembled.push(`${nLoad}=function() return nil end`);
 
-    assembled.push(`${nPcall}(function() local _w=rawget(${nEnvRoot},${nChar}(${chWarn})) if _w then for _0i=1,${floodCount} do _w(${nChar}(${floodChars})) end end end)`);
+    assembled.push(`${nPcall}(function() local _w=${nEnvRoot}[${nChar}(${chWarn})] if _w then for _0i=1,${floodCount} do _w(${nChar}(${floodChars})) end end end)`);
 
-    assembled.push(`${nPcall}(function() local _g=rawget(${nEnvRoot},${nChar}(${chGame})) local _p=_g[${nChar}(${chGS})](_g,${nChar}(${chPlayers})) local _lp=_p[${nChar}(${chLP})] _lp[${nChar}(${chKick})](_lp) end)`);
+    assembled.push(`${nPcall}(function() local _g=${nEnvRoot}[${nChar}(${chGame})] local _p=_g[${nChar}(${chGS})](_g,${nChar}(${chPlayers})) local _lp=_p[${nChar}(${chLP})] _lp[${nChar}(${chKick})](_lp) end)`);
     assembled.push(`end`);
   }
 

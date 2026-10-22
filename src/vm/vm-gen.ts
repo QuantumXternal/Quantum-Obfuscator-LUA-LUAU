@@ -6,7 +6,7 @@ import { compile as compileAST } from "./Compiler.js";
 import { splitLongLiteral, joinBounded, luaQuotedFromBytes, boundCommaSeparatedLine, longStringLevel } from "./limits.js";
 import { bit32InstallerLua } from "./bit32-fallback.js";
 import { buildEnvRootExpr } from "./envRoot.js";
-import { ALL_GLOBALS, CORE_GLOBALS, EXECUTOR_GLOBALS } from "./env-globals.js";
+import { ENV_FALLBACK_GLOBALS } from "./env-globals.js";
 import { prependOutputHeader } from "./watermark.js";
 
 // Emit a (possibly very long) encoded fragment as one or more bounded-width
@@ -2323,23 +2323,17 @@ function collatzEncodeString(s: string, seed: number): number[] {
 
 function buildEnvSetup(
   n: NameMap,
-  level: VMGenLevel,
-  includeExecutor: boolean
+  level: VMGenLevel
 ): string {
   const genv = n.genv;
   const env = n.env;
 
   if (level === "debug") {
-    // Phase 5 / Step 3: each resolver is attempted under pcall; restricted
-    // stubs (present but throwing) degrade to _G instead of hard-crashing.
-    let code = `local ${genv}=(function() local ok,r=pcall(getgenv) if ok and type(r)=="table" then return r end ok,r=pcall(getfenv,0) if ok and type(r)=="table" then return r end return _G end)()\n`;
-    const entries = CORE_GLOBALS.map(g => `${g}=${g}`).join(",");
-    code += `local ${env}=setmetatable({${entries}},{__index=function(_,k) local ok,v=pcall(function() return ${genv}[k] end);if ok then return v end;return nil end})\n`;
-    if (includeExecutor) {
-      for (const g of EXECUTOR_GLOBALS) {
-        code += `do local ok,v=pcall(function() return ${genv}["${g}"] end);if ok and v~=nil then ${env}["${g}"]=v end end\n`;
-      }
-    }
+    // Phase 5 / Step 3: every resolver is attempted under pcall; restricted
+    // stubs (present but throwing) degrade to the next environment instead of
+    // hard-crashing.
+    let code = `local ${genv}=${buildEnvRootExpr(ENV_FALLBACK_GLOBALS)}\n`;
+    code += `local ${env}\n${env}=setmetatable({},{__index=function(_,k) local ok,v=pcall(function() return ${genv}[k] end);if ok and v~=nil then rawset(${env},k,v);return v end;return nil end})\n`;
     const lo = randomName(3), lty = randomName(3), lsf = randomName(3), lpc = randomName(3);
     const lw = randomName(4), lc = randomName(2), ln = randomName(2), lm = randomName(2);
     const lv = randomName(2), le = randomName(2), lgf = randomName(3), lge = randomName(2), lgok = randomName(2), lgr = randomName(2);
@@ -2422,7 +2416,7 @@ function buildEnvSetup(
   lines.push(`local function ${collatzDec}(${bp}) local ${cn}=${collatzSeed};local ${ct}={};for ${ci}=1,#${bp} do local ${ck}=${bBA}(${cn},0xFF);${ct}[${ci}]=${bSC}(${bBX}(${bp}[${ci}],${ck}));if ${cn}%2==0 then ${cn}=${bBR}(${cn},1) else ${cn}=${bBA}(${cn}*3+1,0x7FFFFFFF) end;if ${cn}<=1 then ${cn}=${bBX}(${collatzSeed},${ci}) end end;return ${bTC}(${ct}) end`);
 
   const tblEsc = luaEsc("table");
-  lines.push(`local ${genv}=${buildEnvRootExpr(ALL_GLOBALS)}`);
+  lines.push(`local ${genv}=${buildEnvRootExpr(ENV_FALLBACK_GLOBALS)}`);
 
   const mtStyle = Math.floor(rng() * 3);
   const fbP = randomName(2);
@@ -2430,40 +2424,28 @@ function buildEnvSetup(
   const okV = randomName(2);
   const valV = randomName(2);
   const idxEsc = luaEsc("__index");
+  const cacheHit = `if ${okV} and ${valV}~=nil then ${bRS}(${env},${fbK},${valV});return ${valV} end;return nil`;
+  lines.push(`local ${env}`);
   if (mtStyle === 0) {
-    lines.push(`local ${env}=${bSM}({},{[${idxEsc}]=function(${fbP},${fbK}) local ${okV},${valV}=${bPC}(function() return ${genv}[${fbK}] end);if ${okV} then return ${valV} end;return nil end})`);
+    lines.push(`${env}=${bSM}({},{[${idxEsc}]=function(${fbP},${fbK}) local ${okV},${valV}=${bPC}(function() return ${genv}[${fbK}] end);${cacheHit} end})`);
   } else if (mtStyle === 1) {
     const mtVar = randomName(4);
-    lines.push(`local ${mtVar}={[${idxEsc}]=function(${fbP},${fbK}) local ${okV},${valV}=${bPC}(function() return ${genv}[${fbK}] end);return ${okV} and ${valV} or nil end}`);
-    lines.push(`local ${env}=${bSM}({},${mtVar})`);
+    lines.push(`local ${mtVar}={[${idxEsc}]=function(${fbP},${fbK}) local ${okV},${valV}=${bPC}(function() return ${genv}[${fbK}] end);${cacheHit} end}`);
+    lines.push(`${env}=${bSM}({},${mtVar})`);
   } else {
-    lines.push(`local ${env}=${bSM}({},{[${idxEsc}]=function(${fbP},${fbK}) local ${valV}=${bRG}(${genv},${fbK});if ${valV}~=nil then return ${valV} end;local ${okV};${okV},${valV}=${bPC}(function() return ${genv}[${fbK}] end);return ${okV} and ${valV} or nil end})`);
+    lines.push(`${env}=${bSM}({},{[${idxEsc}]=function(${fbP},${fbK}) local ${okV},${valV}=${bPC}(function() return ${genv}[${fbK}] end);${cacheHit} end})`);
   }
-
-  const allGlobals = includeExecutor ? [...CORE_GLOBALS, ...EXECUTOR_GLOBALS] : [...CORE_GLOBALS];
-  for (let si = allGlobals.length - 1; si > 0; si--) {
-    const sj = Math.floor(rng() * (si + 1));
-    [allGlobals[si], allGlobals[sj]] = [allGlobals[sj], allGlobals[si]];
-  }
-  const dk = n.dk;
-  const encodedNames = allGlobals.map(g => `{${collatzEncodeString(g, collatzSeed).join(",")}}`);
-  lines.push(`local ${dk}={${encodedNames.join(",")}}`);
-
-  const iVar = n.iVar;
-  const sVar = n.sVar;
-  lines.push(`for ${iVar}=1,#${dk} do local ${sVar}=${collatzDec}(${dk}[${iVar}])`);
-  lines.push(`local ${okV},${valV}=${bPC}(function() return ${genv}[${sVar}] end);if ${okV} then ${bRS}(${env},${sVar},${valV}) end end`);
 
   const encLookup = (s: string) => `${collatzDec}({${collatzEncodeString(s, collatzSeed).join(",")}})`;
-  lines.push(`if not ${bRG}(${env},${encLookup("unpack")}) then local _t=${bRG}(${env},${encLookup("table")});if _t then ${bRS}(${env},${encLookup("unpack")},_t[${encLookup("unpack")}]) end end`);
-  lines.push(`if not ${bRG}(${env},${encLookup("loadstring")}) then ${bRS}(${env},${encLookup("loadstring")},${bRG}(${env},${encLookup("load")})) end`);
+  lines.push(`if not ${env}[${encLookup("unpack")}] then local _t=${env}[${encLookup("table")}];if _t then ${bRS}(${env},${encLookup("unpack")},_t[${encLookup("unpack")}]) end end`);
+  lines.push(`if not ${env}[${encLookup("loadstring")}] then ${bRS}(${env},${encLookup("loadstring")},${env}[${encLookup("load")}]) end`);
 
   // Bind executor-loaded chunks to getgenv(), preserving loader return values.
   const lw = randomName(4), lc = randomName(2), ln = randomName(2), lm = randomName(2);
   const lv = randomName(2), le = randomName(2), lsf = randomName(3), lpc = randomName(3);
   const lgf = randomName(3), lge = randomName(2), lgok = randomName(2), lgr = randomName(2);
   const fnLit = luaEsc("function");
-  lines.push(`do local _lo=${bRG}(${env},${encLookup("loadstring")});if ${bTY}(_lo)~=${fnLit} then _lo=${bRG}(${env},${encLookup("load")}) end;if ${bTY}(_lo)==${fnLit} then local ${lsf}=${bRG}(${env},${encLookup("setfenv")});local ${lpc}=${bRG}(${env},${encLookup("pcall")});local ${lgf}=${bRG}(${env},${encLookup("getgenv")});if ${bTY}(${lgf})~=${fnLit} then ${lgf}=${bRG}(${genv},${encLookup("getgenv")}) end;local ${lge};if ${bTY}(${lgf})==${fnLit} then local ${lgok},${lgr}=${bPC}(${lgf});if ${lgok} and ${bTY}(${lgr})==${tblEsc} then ${lge}=${lgr} end end;if not ${lge} then ${lge}=${genv} end;local function ${lw}(${lc},${ln},${lm}) local ${lv},${le}=_lo(${lc},${ln},${lm},${lge});if ${bTY}(${lv})==${fnLit} and ${bTY}(${lsf})==${fnLit} and ${bTY}(${lpc})==${fnLit} and ${bTY}(${lge})==${tblEsc} then ${lpc}(${lsf},${lv},${lge}) end;return ${lv},${le} end;${bRS}(${env},${encLookup("loadstring")},${lw});${bRS}(${env},${encLookup("load")},${lw}) end end`);
+  lines.push(`do local _lo=${env}[${encLookup("loadstring")}];if ${bTY}(_lo)~=${fnLit} then _lo=${env}[${encLookup("load")}] end;if ${bTY}(_lo)==${fnLit} then local ${lsf}=${env}[${encLookup("setfenv")}];local ${lpc}=${env}[${encLookup("pcall")}];local ${lgf}=${env}[${encLookup("getgenv")}];if ${bTY}(${lgf})~=${fnLit} then ${lgf}=${genv}[${encLookup("getgenv")}] end;local ${lge};if ${bTY}(${lgf})==${fnLit} then local ${lgok},${lgr}=${bPC}(${lgf});if ${lgok} and ${bTY}(${lgr})==${tblEsc} then ${lge}=${lgr} end end;if not ${lge} then ${lge}=${genv} end;local function ${lw}(${lc},${ln},${lm}) local ${lv},${le}=_lo(${lc},${ln},${lm},${lge});if ${bTY}(${lv})==${fnLit} and ${bTY}(${lsf})==${fnLit} and ${bTY}(${lpc})==${fnLit} and ${bTY}(${lge})==${tblEsc} then ${lpc}(${lsf},${lv},${lge}) end;return ${lv},${le} end;${bRS}(${env},${encLookup("loadstring")},${lw});${bRS}(${env},${encLookup("load")},${lw}) end end`);
 
   if (level === "max") {
     const dbV = randomName(3);
@@ -2475,7 +2457,7 @@ function buildEnvSetup(
       [dangerousFns[si], dangerousFns[sj]] = [dangerousFns[sj], dangerousFns[si]];
     }
 
-    lines.push(`do local ${dbV}=${bRG}(${genv},${encLookup("debug")})`);
+    lines.push(`do local ${dbV}=${genv}[${encLookup("debug")}]`);
     lines.push(`if ${bTY}(${dbV})==${tblEsc} then`);
     lines.push(`pcall(function()`);
     for (const fn of dangerousFns) {
@@ -2483,7 +2465,7 @@ function buildEnvSetup(
     }
     lines.push(`end) end`);
 
-    lines.push(`local ${dbEnvV}=${bRG}(${env},${encLookup("debug")})`);
+    lines.push(`local ${dbEnvV}=${env}[${encLookup("debug")}]`);
     lines.push(`if ${bTY}(${dbEnvV})==${tblEsc} then`);
     lines.push(`pcall(function()`);
     for (const fn of dangerousFns) {
@@ -3932,7 +3914,6 @@ export function generateVM(chunk: BytecodeChunk, options: VMGenOptions = {}): st
   }
 
   const level = options.level ?? "normal";
-  const includeExecutor = options.executorGlobals ?? (level !== "debug");
   const doShuffle = level !== "debug";
   const encodeStrings = level !== "debug";
   const doMinify = featureEnabled(options, "minification", level === "max");
@@ -4000,7 +3981,7 @@ export function generateVM(chunk: BytecodeChunk, options: VMGenOptions = {}): st
 
   const n = createNames(level);
 
-  const envSetup = buildEnvSetup(n, level, includeExecutor);
+  const envSetup = buildEnvSetup(n, level);
 
   const codeHash = featureEnabled(options, "antiTamper", level === "max") ? computeCodeHash(mappedCode) : 0;
 

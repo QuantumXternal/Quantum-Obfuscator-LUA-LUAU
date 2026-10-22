@@ -84,4 +84,9 @@ export const EXECUTOR_GLOBALS = [
   "run_on_actor", "runonactor",
 ];
 
-export const ALL_GLOBALS: readonly string[] = [...CORE_GLOBALS, ...EXECUTOR_GLOBALS];
+/**
+ * Last-resort snapshot for hosts where no environment reflection is usable.
+ * The runtime resolves globals dynamically first; this list is never used as
+ * an access allowlist.
+ */
+export const ENV_FALLBACK_GLOBALS: readonly string[] = [...CORE_GLOBALS, ...EXECUTOR_GLOBALS];

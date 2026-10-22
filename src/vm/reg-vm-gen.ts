@@ -7,7 +7,7 @@ import { join as _dumpJoin } from "path";
 import { encryptAndEncode, compressToBase85, compressBytesToBase85 } from "./lzma.js";
 import { generateBootstrap } from "./bootstrap-template.js";
 import { buildEnvRootExpr } from "./envRoot.js";
-import { ALL_GLOBALS, CORE_GLOBALS, EXECUTOR_GLOBALS } from "./env-globals.js";
+import { ENV_FALLBACK_GLOBALS } from "./env-globals.js";
 import { bit32InstallerLua } from "./bit32-fallback.js";
 import { joinBounded, luaQuotedFromBytes, boundCommaSeparatedLine } from "./limits.js";
 import { prependOutputHeader } from "./watermark.js";
@@ -1726,27 +1726,24 @@ function buildHandlerBodies(n: NameMap, ctx: BuildCtx, usedOps?: Set<number>): M
 }
 
 /**
- * v4 executor hardening: robust globals-root resolver for the decrypted
+ * v4 executor hardening: dynamic globals-root resolver for the decrypted
  * runtime. Roblox's `_G` is a script-shared DATA table and does NOT contain
- * the standard library (official docs), so rooting captures at
- * `loadstring("return _G")()` resolves every stdlib member to nil there —
- * the v3.2.x executor incident reported exactly that as
- * `[string "Quantum"]:43: attempt to index nil with 'pack'`.
- * Candidate order (any table is accepted; candidate-only keys are copied):
+ * the standard library, and an executor's `getgenv()` may be present but
+ * empty. The proxy queries every available environment under pcall:
  *   1. getgenv()  - executor global environment (carries stdlib)
  *   2. getfenv(0) - vanilla Roblox / standalone Lua global env
- *   3. loadstring("return _G") - a SEPARATE chunk, so the read is immune to
+ *   3. _ENV       - Lua 5.2+ chunk environment
+ *   4. loadstring("return _G") - a SEPARATE chunk, so the read is immune to
  *      the runtime's own locals: the generator can name a local `_G` (2-char
  *      pool collision, seen in the wild), which would shadow the global for
  *      any inline read.
- *   4. inline `_G` - final candidate when present (standalone)
- *   5. direct-globals snapshot - always present; candidate-only keys are
- *      copied in without overwriting captured globals, so an empty/partial
- *      getgenv() cannot hide wait/task/game or executor file/Drawing APIs.
+ *   5. inline `_G` - final candidate when present (standalone)
+ * The direct-globals table is only a last-resort fallback for hosts with no
+ * usable environment reflection; it is not an access allowlist.
  * Self-contained expression: references only globals, safe in any fragment.
  */
 function envRootLua(): string {
-  return buildEnvRootExpr(ALL_GLOBALS);
+  return buildEnvRootExpr(ENV_FALLBACK_GLOBALS);
 }
 function buildBuiltinCaptures(ctx: BuildCtx): { code: string; assignOnly: string } {
   const n = ctx.names;
@@ -2267,13 +2264,8 @@ function buildEnvSetup(ctx: BuildCtx): string {
 
   if (ctx.level === "debug") {
     L.push(`local ${n.genv}=${envRootLua()}`);
-    const entries = CORE_GLOBALS.map(g => `${g}=${g}`).join(",");
-    L.push(`local ${n.env}=setmetatable({${entries}},{__index=function(_,k) local ok,v=pcall(function() return ${n.genv}[k] end);if ok then return v end;return nil end})`);
-    if (ctx.includeExecutor) {
-      for (const g of EXECUTOR_GLOBALS) {
-        L.push(`do local ok,v=pcall(function() return ${n.genv}["${g}"] end);if ok and v~=nil then ${n.env}["${g}"]=v end end`);
-      }
-    }
+    L.push(`local ${n.env}`);
+    L.push(`${n.env}=setmetatable({},{__index=function(_,k) local ok,v=pcall(function() return ${n.genv}[k] end);if ok and v~=nil then rawset(${n.env},k,v);return v end;return nil end})`);
     const w = loadWrapperNames();
     const fnLit = JSON.stringify("function");
     L.push(`do local ${w.o}=${n.env}[${JSON.stringify("loadstring")}];local ${w.ty}=${n.env}[${JSON.stringify("type")}];if ${w.ty} and ${w.ty}(${w.o})~=${fnLit} then ${w.o}=${n.env}[${JSON.stringify("load")}] end;if ${w.ty} and ${w.ty}(${w.o})==${fnLit} then local ${w.sf}=${n.env}[${JSON.stringify("setfenv")}];local ${w.pc}=${n.env}[${JSON.stringify("pcall")}];local ${w.gf}=${n.env}[${JSON.stringify("getgenv")}];if ${w.ty}(${w.gf})~=${fnLit} then ${w.gf}=${n.genv}[${JSON.stringify("getgenv")}] end;local ${w.ge};if ${w.ty}(${w.gf})==${fnLit} and ${w.ty}(${w.pc})==${fnLit} then local ${w.gok},${w.gr}=${w.pc}(${w.gf});if ${w.gok} and ${w.ty}(${w.gr})=="table" then ${w.ge}=${w.gr} end end;if not ${w.ge} then ${w.ge}=${n.genv} end;local function ${w.f}(${w.c},${w.n},${w.m}) local ${w.v},${w.e}=${w.o}(${w.c},${w.n},${w.m},${w.ge});if ${w.ty}(${w.v})==${fnLit} and ${w.sf} and ${w.pc} and ${w.ty}(${w.sf})==${fnLit} and ${w.ty}(${w.pc})==${fnLit} and ${w.ty}(${w.ge})=="table" then ${w.pc}(${w.sf},${w.v},${w.ge}) end;return ${w.v},${w.e} end;${n.env}[${JSON.stringify("loadstring")}]=${w.f};${n.env}[${JSON.stringify("load")}]=${w.f} end end`);
@@ -2292,24 +2284,12 @@ function buildEnvSetup(ctx: BuildCtx): string {
   const dec = randomName(4);
   L.push(`local function ${dec}(_t) local _s="";for _i=1,#_t do _s=_s..string.char(math.floor(tonumber(${n.bBxor}(math.floor(tonumber(_t[_i]) or 0) % 256,${n.bBand}(${envKey}+(_i-1)*${envStep},0xFF))) or 0) % 256) end;return _s end`);
 
-  // v4: robust root resolver — `_G` alone is a bare data table on Roblox
-  // (no stdlib), which starved the env proxy of every global it prefetches.
+  // v4: dynamic root resolver — every global resolves through all available
+  // environments; the static snapshot is only a last-resort fallback.
   L.push(`local ${n.genv}=${envRootLua()}`);
 
-  L.push(`local ${n.env}=${n.bSetmeta}({},{[${dec}(${encS("__index")})]=function(_,k) local ok,v=${n.bPcall}(function() return ${n.genv}[k] end);if ok then return v end;return nil end})`);
-
-  const allGlobals = ctx.includeExecutor ? [...CORE_GLOBALS, ...EXECUTOR_GLOBALS] : [...CORE_GLOBALS];
-
-  for (let si = allGlobals.length - 1; si > 0; si--) {
-    const sj = Math.floor(rng() * (si + 1));
-    [allGlobals[si], allGlobals[sj]] = [allGlobals[sj], allGlobals[si]];
-  }
-  const namesTable = randomName(3);
-  L.push(`local ${namesTable}={${allGlobals.map(g => encS(g)).join(",")}}`);
-
-  const iV = randomName(2);
-  const nV = randomName(2);
-  L.push(`for ${iV}=1,#${namesTable} do local ${nV}=${dec}(${namesTable}[${iV}]);local ok,v=${n.bPcall}(function() return ${n.genv}[${nV}] end);if ok and v~=nil then ${n.env}[${nV}]=v end end`);
+  L.push(`local ${n.env}`);
+  L.push(`${n.env}=${n.bSetmeta}({},{[${dec}(${encS("__index")})]=function(_,k) local ok,v=${n.bPcall}(function() return ${n.genv}[k] end);if ok and v~=nil then ${n.env}[k]=v;return v end;return nil end})`);
 
   L.push(`do local _u=${dec}(${encS("unpack")});if not ${n.env}[_u] then local _t=${n.env}[${dec}(${encS("table")})];if _t then ${n.env}[_u]=_t[_u] end end end`);
   L.push(`do local _ls=${dec}(${encS("loadstring")});if not ${n.env}[_ls] then ${n.env}[_ls]=${n.env}[${dec}(${encS("load")})] end end`);
@@ -2335,28 +2315,10 @@ function buildEnvFragments(ctx: BuildCtx): { fragments: Fragment[]; forwardDecls
   forwardDecls.push(dec, n.genv, n.env);
 
   fragments.push({ code: `${dec}=function(_t) local _s="";for _i=1,#_t do _s=_s..string.char(math.floor(tonumber(${n.bBxor}(math.floor(tonumber(_t[_i]) or 0) % 256,${n.bBand}(${envKey}+(_i-1)*${envStep},0xFF))) or 0) % 256) end;return _s end`, layer: 0 });
-  // v4: robust root resolver (see ENV_ROOT_LUA) — replaces the v3.2.x
-  // `loadstring("return _G")()` root, which is stdlib-less on Roblox.
+  // v4: dynamic root resolver (see envRootLua) — every global resolves
+  // through all available environments; static names are fallback-only.
   fragments.push({ code: `${n.genv}=${envRootLua()}`, layer: 1 });
-  fragments.push({ code: `${n.env}=${n.bSetmeta}({},{[${dec}(${encS("__index")})]=function(_,k) local ok,v=${n.bPcall}(function() return ${n.genv}[k] end);if ok then return v end;return nil end})`, layer: 2 });
-
-  const allGlobals = ctx.includeExecutor ? [...CORE_GLOBALS, ...EXECUTOR_GLOBALS] : [...CORE_GLOBALS];
-  for (let si = allGlobals.length - 1; si > 0; si--) {
-    const sj = Math.floor(rng() * (si + 1));
-    [allGlobals[si], allGlobals[sj]] = [allGlobals[sj], allGlobals[si]];
-  }
-  const batchCount = 2 + Math.floor(rng() * 3);
-  const batchSize = Math.ceil(allGlobals.length / batchCount);
-  for (let b = 0; b < batchCount; b++) {
-    const batch = allGlobals.slice(b * batchSize, (b + 1) * batchSize);
-    if (batch.length === 0) continue;
-    const nt = randomName(3);
-    forwardDecls.push(nt);
-    fragments.push({ code: `${nt}={${batch.map(g => encS(g)).join(",")}}`, layer: 0 });
-    const iV = randomName(2);
-    const nV = randomName(2);
-    fragments.push({ code: `for ${iV}=1,#${nt} do local ${nV}=${dec}(${nt}[${iV}]);local ok,v=${n.bPcall}(function() return ${n.genv}[${nV}] end);if ok and v~=nil then ${n.env}[${nV}]=v end end`, layer: 3 });
-  }
+  fragments.push({ code: `${n.env}=${n.bSetmeta}({},{[${dec}(${encS("__index")})]=function(_,k) local ok,v=${n.bPcall}(function() return ${n.genv}[k] end);if ok and v~=nil then ${n.env}[k]=v;return v end;return nil end})`, layer: 2 });
 
   fragments.push({ code: `do local _u=${dec}(${encS("unpack")});if not ${n.env}[_u] then local _t=${n.env}[${dec}(${encS("table")})];if _t then ${n.env}[_u]=_t[_u] end end end`, layer: 3 });
   fragments.push({ code: `do local _ls=${dec}(${encS("loadstring")});if not ${n.env}[_ls] then ${n.env}[_ls]=${n.env}[${dec}(${encS("load")})] end end`, layer: 3 });
