@@ -1,7 +1,6 @@
 import { longStringLevel, splitLongLiteral } from "./limits.js";
 import { bit32InstallerLua } from "./bit32-fallback.js";
 import { buildEnvRootExpr } from "./envRoot.js";
-import { ENV_FALLBACK_GLOBALS } from "./env-globals.js";
 
 export interface BootstrapConfig {
   vmBlob: string;
@@ -155,15 +154,14 @@ const CAP_PACK = `((type(string)=="table" and string.pack) or ${FALLBACK_PACK})`
  *   1. getgenv()            - executor global environment (has stdlib)
  *   2. getfenv(0)           - vanilla Roblox / standalone Lua global env
  *   3. _ENV                 - Lua 5.2+ chunk environment
- *   4. loadstring("return _G") - separate chunk, immune to local shadowing
- *                              (the generator names can collide with `_G`)
+ *   4. loadstring("return _G") - safe accessor for the direct `_G` table
  *   5. _G                   - final candidate when present
- * The direct-globals table is only a last-resort fallback for hosts with no
- * usable environment reflection; it is not an access allowlist.
+ * There is no static fallback list. The root also installs a yield-safe
+ * task/wait shim before returning the sandbox proxy.
  * Self-contained: references only globals, so it can sit anywhere in a
  * shuffled fragment layer.
  */
-const ENV_ROOT_EXPR = buildEnvRootExpr(ENV_FALLBACK_GLOBALS);
+const ENV_ROOT_EXPR = buildEnvRootExpr();
 
 export function generateBootstrap(config: BootstrapConfig): string {
   const { vmBlob, vmOrigLen, compLen, xorKey, invSbox, checksum, chunkName = "Quantum", rng } = config;

@@ -1,7 +1,7 @@
 // Executor env-root regression: a present-but-empty getgenv() must not hide
-// the standard library or Roblox globals captured at chunk load time.
-// The live failure was `[string "Quantum"]:279: attempt to index nil with
-// 'wait'` on a host whose getgenv() returned an empty table.
+// the standard library or Roblox globals captured at chunk load time. The
+// dynamic proxy reaches the real getfenv/_ENV/_G sources instead of a static
+// allowlist snapshot.
 import { existsSync, mkdtempSync, writeFileSync, readFileSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join, dirname } from "path";
@@ -31,7 +31,6 @@ const PRELUDE = `
 local _keep_print = print
 _G = {}
 getgenv = function() return {} end
-getfenv = nil
 task = { wait = function() return "task-ok" end }
 wait = function() return "wait-ok" end
 game = { GetService = function(_, name) return { Name = name } end }
@@ -53,7 +52,6 @@ const EXEC_PRELUDE = `
 local _keep_print = print
 _G = {}
 getgenv = function() return {} end
-getfenv = nil
 isfolder = function() return true end
 makefolder = function() end
 UserSettings = function() return {} end

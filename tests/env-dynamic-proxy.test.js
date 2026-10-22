@@ -40,7 +40,6 @@ _G = {
   quantum_future_api = { ping = function() return "future-ok" end },
 }
 getgenv = _G.getgenv
-getfenv = nil
 `;
 
 const SRC = `

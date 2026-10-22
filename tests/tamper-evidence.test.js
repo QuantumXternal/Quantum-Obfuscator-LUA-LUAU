@@ -76,9 +76,10 @@ t("payload flips never yield the valid result (tamper-evident)", () => {
   // Recalibrated for the shared environment-root snapshot in the loader
   // wrappers: old +1005 now lands on a benign decoder digit; +1002 is the
   // adjacent live character-code entry and breaks loudly. The dynamic
-  // environment proxy moved the old +312 onto a benign slot; +309 is a live
-  // entry and still breaks loudly.
-  const positions = [0, 1, 40, 50, 60, 100, 218, 309, 1002, 5000]
+  // environment proxy moved the old +312 onto a benign slot; the subsequent
+  // yield-shim rewrite moved +309 onto a benign slot too, so +311 is the
+  // adjacent live character-code entry and breaks loudly.
+  const positions = [0, 1, 40, 50, 60, 100, 218, 311, 1002, 4900]
     .map((k) => start + k).filter((p) => p < art.length);
   expect(positions.length).toBeGreaterThan(0);
   for (const p of positions) {

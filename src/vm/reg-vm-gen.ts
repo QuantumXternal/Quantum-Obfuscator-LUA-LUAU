@@ -7,7 +7,6 @@ import { join as _dumpJoin } from "path";
 import { encryptAndEncode, compressToBase85, compressBytesToBase85 } from "./lzma.js";
 import { generateBootstrap } from "./bootstrap-template.js";
 import { buildEnvRootExpr } from "./envRoot.js";
-import { ENV_FALLBACK_GLOBALS } from "./env-globals.js";
 import { bit32InstallerLua } from "./bit32-fallback.js";
 import { joinBounded, luaQuotedFromBytes, boundCommaSeparatedLine } from "./limits.js";
 import { prependOutputHeader } from "./watermark.js";
@@ -1738,12 +1737,12 @@ function buildHandlerBodies(n: NameMap, ctx: BuildCtx, usedOps?: Set<number>): M
  *      pool collision, seen in the wild), which would shadow the global for
  *      any inline read.
  *   5. inline `_G` - final candidate when present (standalone)
- * The direct-globals table is only a last-resort fallback for hosts with no
- * usable environment reflection; it is not an access allowlist.
+ * There is no static fallback list. The root also installs a yield-safe
+ * task/wait shim before returning the sandbox proxy.
  * Self-contained expression: references only globals, safe in any fragment.
  */
 function envRootLua(): string {
-  return buildEnvRootExpr(ENV_FALLBACK_GLOBALS);
+  return buildEnvRootExpr();
 }
 function buildBuiltinCaptures(ctx: BuildCtx): { code: string; assignOnly: string } {
   const n = ctx.names;
@@ -1912,7 +1911,7 @@ function buildVMRuntime(ctx: BuildCtx, assignStyle: boolean = false): string {
   L.push(`local ${n.top}=0`);
 
   const nTwVm = ctx.level !== "debug" ? randomName(2) : "_tw";
-  L.push(`local ${nTwVm};do local _t=${n.env}["task"];if _t then ${nTwVm}=_t["wait"] end end`);
+  L.push(`local ${nTwVm};do local _t=${n.env}["task"];if ${n.bType}(_t)=="table" then local _w=_t["wait"];if ${n.bType}(_w)=="function" then ${nTwVm}=_w end end end`);
   // Retired-instruction counter for the periodic yield heartbeat. The opcode
   // index is a logical PC (it jumps backward in loops and starts at 1), so a
   // position-based modulo either never fires in loops or yields on entry; a
@@ -2258,6 +2257,29 @@ function loadWrapperNames(): LoadWrapperNames {
   };
 }
 
+function buildTaskShimInstall(ctx: BuildCtx): string {
+  const n = ctx.names;
+  const L: string[] = [];
+  L.push(`do`);
+  L.push(`local _ts=${n.env}["task"]`);
+  L.push(`local _t={}`);
+  L.push(`if ${n.bType}(_ts)=="table" then _t["delay"]=_ts["delay"];_t["spawn"]=_ts["spawn"];_t["wait"]=_ts["wait"] end`);
+  L.push(`local _w=${n.env}["wait"]`);
+  L.push(`if ${n.bType}(_w)~="function" then _w=_t["wait"] end`);
+  L.push(`local _c=${n.env}["coroutine"]`);
+  L.push(`if ${n.bType}(_w)~="function" then local _rs=${n.env}["RunService"];local _hb=${n.bType}(_rs)=="table" and _rs["Heartbeat"] or nil;local _hw=${n.bType}(_hb)=="table" and _hb["Wait"] or nil;if ${n.bType}(_hw)=="function" then _w=function(_d) local _ok,_dt=${n.bPcall}(_hw,_hb);if _ok and ${n.bType}(_dt)=="number" and _dt>0 then return _dt end;return 0 end end end`);
+  L.push(`if ${n.bType}(_w)~="function" then _w=function(_d) local _iy,_y;if ${n.bType}(_c)=="table" then _iy=_c["isyieldable"];_y=_c["yield"] end;if ${n.bType}(_iy)=="function" and ${n.bType}(_y)=="function" then local _ok,_cy=${n.bPcall}(_iy);if _ok and _cy==true then _y() return 0 end end;return 0 end end`);
+  L.push(`if ${n.bType}(_t["spawn"])~="function" then _t["spawn"]=function(_f,...) if ${n.bType}(_f)~="function" or ${n.bType}(_c)~="table" then return nil end;local _cr,_re=_c["create"],_c["resume"];if ${n.bType}(_cr)~="function" or ${n.bType}(_re)~="function" then return nil end;local _th=_cr(_f);_re(_th,...);return _th end end`);
+  L.push(`if ${n.bType}(_t["delay"])~="function" then _t["delay"]=function(_d,_f,...) if ${n.bType}(_f)~="function" or ${n.bType}(_c)~="table" then return nil end;local _cr,_re=_c["create"],_c["resume"];if ${n.bType}(_cr)~="function" or ${n.bType}(_re)~="function" then return nil end;local _a={...};local _th=_cr(function() if ${n.bType}(_d)=="number" and _d>0 then _w(_d) end;if ${n.bType}(${n.tUnpack})=="function" then _f(${n.tUnpack}(_a)) else _f() end end);_re(_th);return _th end end`);
+  L.push(`if ${n.bType}(_t["wait"])~="function" then _t["wait"]=_w end`);
+  L.push(`${n.env}["task"]=_t`);
+  L.push(`${n.env}["wait"]=_w`);
+  L.push(`${n.env}["_safe_task"]=_t`);
+  L.push(`${n.env}["_safe_wait"]=_w`);
+  L.push(`end`);
+  return L.join("\n");
+}
+
 function buildEnvSetup(ctx: BuildCtx): string {
   const n = ctx.names;
   const L: string[] = [];
@@ -2269,6 +2291,7 @@ function buildEnvSetup(ctx: BuildCtx): string {
     const w = loadWrapperNames();
     const fnLit = JSON.stringify("function");
     L.push(`do local ${w.o}=${n.env}[${JSON.stringify("loadstring")}];local ${w.ty}=${n.env}[${JSON.stringify("type")}];if ${w.ty} and ${w.ty}(${w.o})~=${fnLit} then ${w.o}=${n.env}[${JSON.stringify("load")}] end;if ${w.ty} and ${w.ty}(${w.o})==${fnLit} then local ${w.sf}=${n.env}[${JSON.stringify("setfenv")}];local ${w.pc}=${n.env}[${JSON.stringify("pcall")}];local ${w.gf}=${n.env}[${JSON.stringify("getgenv")}];if ${w.ty}(${w.gf})~=${fnLit} then ${w.gf}=${n.genv}[${JSON.stringify("getgenv")}] end;local ${w.ge};if ${w.ty}(${w.gf})==${fnLit} and ${w.ty}(${w.pc})==${fnLit} then local ${w.gok},${w.gr}=${w.pc}(${w.gf});if ${w.gok} and ${w.ty}(${w.gr})=="table" then ${w.ge}=${w.gr} end end;if not ${w.ge} then ${w.ge}=${n.genv} end;local function ${w.f}(${w.c},${w.n},${w.m}) local ${w.v},${w.e}=${w.o}(${w.c},${w.n},${w.m},${w.ge});if ${w.ty}(${w.v})==${fnLit} and ${w.sf} and ${w.pc} and ${w.ty}(${w.sf})==${fnLit} and ${w.ty}(${w.pc})==${fnLit} and ${w.ty}(${w.ge})=="table" then ${w.pc}(${w.sf},${w.v},${w.ge}) end;return ${w.v},${w.e} end;${n.env}[${JSON.stringify("loadstring")}]=${w.f};${n.env}[${JSON.stringify("load")}]=${w.f} end end`);
+    L.push(buildTaskShimInstall(ctx));
     return L.join("\n") + "\n";
   }
 
@@ -2293,6 +2316,7 @@ function buildEnvSetup(ctx: BuildCtx): string {
 
   L.push(`do local _u=${dec}(${encS("unpack")});if not ${n.env}[_u] then local _t=${n.env}[${dec}(${encS("table")})];if _t then ${n.env}[_u]=_t[_u] end end end`);
   L.push(`do local _ls=${dec}(${encS("loadstring")});if not ${n.env}[_ls] then ${n.env}[_ls]=${n.env}[${dec}(${encS("load")})] end end`);
+  L.push(buildTaskShimInstall(ctx));
 
   return L.join("\n") + "\n";
 }
@@ -2322,6 +2346,7 @@ function buildEnvFragments(ctx: BuildCtx): { fragments: Fragment[]; forwardDecls
 
   fragments.push({ code: `do local _u=${dec}(${encS("unpack")});if not ${n.env}[_u] then local _t=${n.env}[${dec}(${encS("table")})];if _t then ${n.env}[_u]=_t[_u] end end end`, layer: 3 });
   fragments.push({ code: `do local _ls=${dec}(${encS("loadstring")});if not ${n.env}[_ls] then ${n.env}[_ls]=${n.env}[${dec}(${encS("load")})] end end`, layer: 3 });
+  fragments.push({ code: buildTaskShimInstall(ctx), layer: 3 });
 
   // Keep executor loaders bound to getgenv(): a loaded UI file must see the
   // same globals as the main chunk, including executors that return a chunk

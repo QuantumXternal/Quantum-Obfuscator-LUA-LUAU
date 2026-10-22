@@ -6,7 +6,6 @@ import { compile as compileAST } from "./Compiler.js";
 import { splitLongLiteral, joinBounded, luaQuotedFromBytes, boundCommaSeparatedLine, longStringLevel } from "./limits.js";
 import { bit32InstallerLua } from "./bit32-fallback.js";
 import { buildEnvRootExpr } from "./envRoot.js";
-import { ENV_FALLBACK_GLOBALS } from "./env-globals.js";
 import { prependOutputHeader } from "./watermark.js";
 
 // Emit a (possibly very long) encoded fragment as one or more bounded-width
@@ -1140,8 +1139,6 @@ function buildAlphabet(): string {
   return std.slice(0, 62) + rep.join("");
 }
 
-const WRAPPER_ENV_GLOBALS = ["table", "loadstring", "load", "bit32", "tostring"];
-
 export function wrapCustomCipher(source: string, seed?: number | string): string {
   applySeedParam(seed);
 
@@ -1263,7 +1260,7 @@ export function wrapCustomCipher(source: string, seed?: number | string): string
   // but blocked (throws) or absent; a bare `getfenv(0)` hard-crashes there.
   // pcall-guarded call, table-typed result, else _G. Semantics preserved:
   // prefers getfenv(0) exactly as before on hosts where it works.
-  lines.push(`local ${vEnv}=${buildEnvRootExpr(WRAPPER_ENV_GLOBALS)}`);
+  lines.push(`local ${vEnv}=${buildEnvRootExpr()}`);
 
   const builtinLines: string[] = [
     `local ${vTc}=${vEnv}[${vSc}(116,97,98,108,101)][${vSc}(99,111,110,99,97,116)]`,
@@ -1631,7 +1628,7 @@ export function wrapNestedVM(source: string, seed?: number | string): string {
   emitHoneypot();
 
   // Phase 5 / Step 3: same restricted-executor guard as the primary path.
-  L.push(`local ${vEnv}=${buildEnvRootExpr(WRAPPER_ENV_GLOBALS)}`);
+  L.push(`local ${vEnv}=${buildEnvRootExpr()}`);
   const builtins = [
     `local ${vTc}=${vEnv}[${vSc}(${encSC('table')})][${vSc}(${encSC('concat')})]`,
     `local ${vLd}=${vEnv}[${vSc}(${encSC('loadstring')})] or ${vEnv}[${vSc}(${encSC('load')})]`,
@@ -1903,7 +1900,7 @@ export function wrapStubVM(source: string, seed?: number | string): string {
     L.push(`local ${a_sb}=${tv}[1][("${encStr('byte')}")]`);
   }
 
-  L.push(`local ${pvv},${efv}=true,${buildEnvRootExpr(WRAPPER_ENV_GLOBALS)}`);
+  L.push(`local ${pvv},${efv}=true,${buildEnvRootExpr()}`);
 
   L.push(`local ${b32v}=${efv}[${a_sc}(${encSC('bit32')})]`);
   const b32Methods: [string, string][] = [
@@ -2332,7 +2329,7 @@ function buildEnvSetup(
     // Phase 5 / Step 3: every resolver is attempted under pcall; restricted
     // stubs (present but throwing) degrade to the next environment instead of
     // hard-crashing.
-    let code = `local ${genv}=${buildEnvRootExpr(ENV_FALLBACK_GLOBALS)}\n`;
+    let code = `local ${genv}=${buildEnvRootExpr()}\n`;
     code += `local ${env}\n${env}=setmetatable({},{__index=function(_,k) local ok,v=pcall(function() return ${genv}[k] end);if ok and v~=nil then rawset(${env},k,v);return v end;return nil end})\n`;
     const lo = randomName(3), lty = randomName(3), lsf = randomName(3), lpc = randomName(3);
     const lw = randomName(4), lc = randomName(2), ln = randomName(2), lm = randomName(2);
@@ -2416,7 +2413,7 @@ function buildEnvSetup(
   lines.push(`local function ${collatzDec}(${bp}) local ${cn}=${collatzSeed};local ${ct}={};for ${ci}=1,#${bp} do local ${ck}=${bBA}(${cn},0xFF);${ct}[${ci}]=${bSC}(${bBX}(${bp}[${ci}],${ck}));if ${cn}%2==0 then ${cn}=${bBR}(${cn},1) else ${cn}=${bBA}(${cn}*3+1,0x7FFFFFFF) end;if ${cn}<=1 then ${cn}=${bBX}(${collatzSeed},${ci}) end end;return ${bTC}(${ct}) end`);
 
   const tblEsc = luaEsc("table");
-  lines.push(`local ${genv}=${buildEnvRootExpr(ENV_FALLBACK_GLOBALS)}`);
+  lines.push(`local ${genv}=${buildEnvRootExpr()}`);
 
   const mtStyle = Math.floor(rng() * 3);
   const fbP = randomName(2);
