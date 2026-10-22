@@ -4,9 +4,9 @@ import { refactorIifes, hoistDoBlockParent } from "../dist/engine/iifeRefactor.j
 function makeLargeScript() {
   const lines = [];
   for (let i = 0; i < 2250; i++) {
-    lines.push(`local v${i} = (function() return ${i} end)()`);
+    lines.push(`local v${i} = (function() local f = Instance.new("Frame") return f end)()`);
     lines.push("do");
-    lines.push(`  (function() return ${i} end)()`);
+    lines.push(`  (function() local f = Instance.new("Frame") return f end)()`);
     lines.push("end");
   }
   return lines.join("\n");
@@ -26,6 +26,10 @@ test("refactorIifes converts every top-level and nested IIFE in a 9,000-line scr
   expect(result.refactored).toBeGreaterThan(0);
   expect(result.remaining).toBe(0);
   expect(result.warnings).toEqual([]);
+  expect(result.code).toContain("__q_iife_wrap_1");
+  expect(result.code).not.toContain("--@quantum:turbo");
+  const analysis = analyzeScript(result.code);
+  expect(analysis.diagnostics.some((d) => d.fix)).toBe(true);
 });
 
 test("six do blocks with break expose parent-hoist actions", () => {

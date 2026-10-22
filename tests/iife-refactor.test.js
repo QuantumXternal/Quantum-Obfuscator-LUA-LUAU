@@ -103,14 +103,14 @@ test("reports the requested tier without auto-tagging", () => {
   const code = `local value = (function() return 1 end)()\n`;
   const result = refactorIifes(code, { tier: "maximum" });
   expect(result.tier).toBe("maximum");
-  expect(result.code.startsWith("--@quantum:maximum\nlocal function __q_iife_wrap_1()")).toBe(true);
+  expect(result.code.startsWith("local function __q_iife_wrap_1()")).toBe(true);
   });
 
 test("preserves CRLF line endings", () => {
   const code = `local a = 1\r\nlocal b = (function()\r\n  return a\r\nend)()\r\nprint(b)\r\n`;
   const result = refactorIifes(code);
   expect(result.refactored).toBe(1);
-  expect(result.code).toContain("\r\n--@quantum:turbo\r\nlocal function __q_iife_wrap_1()");
+  expect(result.code).toContain("\r\nlocal function __q_iife_wrap_1()");
     expect(result.code.split("\n").every((line) => line.endsWith("\r") || line === "")).toBe(true);
 });
 
@@ -171,7 +171,7 @@ test("the analyzer sees generated functions without macro tags", () => {
   expect(analysis.valid).toBe(true);
   expect(analysis.summary.iifeCount).toBe(0);
   expect(analysis.summary.iifeRefactorable).toBe(0);
-  expect(analysis.macros.turbos).toHaveLength(1);
+  expect(analysis.macros.turbos).toHaveLength(0);
 });
 
 test("hoists a do block's top-level loop into a tagged wrapper", () => {
@@ -180,7 +180,7 @@ test("hoists a do block's top-level loop into a tagged wrapper", () => {
   expect(result.hoisted).toBe(1);
   expect(result.parentLine).toBe(2);
   expect(result.warnings).toEqual([]);
-  expect(result.code).toContain("--@quantum:turbo\nlocal function __q_do_wrap_1()");
+  expect(result.code).toContain("local function __q_do_wrap_1()");
   expect(result.code).toContain("__q_do_wrap_1()");
   expect(result.code).toContain("if count == 2 then break end");
   expectValid(result.code);

@@ -595,8 +595,7 @@ function applySites(
     }
     const name = nextName();
     const insertion = insertions.get(site.statementStart) ?? { indent: site.indent, parts: [] };
-    const tag = site.directiveTier ? "" : `--@quantum:${tier}${eol}`;
-    insertion.parts.push(`${site.indent}${tag}${site.indent}local function ${name}() return ${originalCall} end${eol}`);
+    insertion.parts.push(`${site.indent}local function ${name}() return ${originalCall} end${eol}`);
     insertions.set(site.statementStart, insertion);
 
     edits.push({
@@ -945,15 +944,13 @@ export function hoistDoBlockParent(
     return { code, hoisted: 0, warnings, tier, line: targetLine, parentLine };
   }
 
-  const tagTier = directive.tier ?? tier;
   const nextName = makeNameFactory(initial.ast, "__q_do_wrap_");
   const name = nextName();
   const eol = code.includes("\r\n") ? "\r\n" : "\n";
   const body = code.slice(parentStart, endOffset);
-  const tagLine = directive.tier ? "" : `${indent}--@quantum:${tagTier}${eol}`;
   const params = hasVararg ? "..." : "";
   const callArgs = hasVararg ? "(...)" : "()";
-  let replacement = `${tagLine}${indent}local function ${name}(${params})${eol}${body}`;
+  let replacement = `${indent}local function ${name}(${params})${eol}${body}`;
   if (!/[\r\n]$/.test(body)) replacement += eol;
   replacement += `${indent}end${eol}`;
   replacement += wrapSuffix
@@ -973,7 +970,7 @@ export function hoistDoBlockParent(
     code: output,
     hoisted: 1,
     warnings,
-    tier: tagTier,
+    tier,
     line: targetLine,
     parentLine,
   };
