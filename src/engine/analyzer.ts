@@ -13,6 +13,11 @@ export interface AnalyzerIifeRefactor {
   line: number;
 }
 
+export interface AnalyzerHoistRefactor {
+  /** 1-based line where the enclosing do block starts. */
+  line: number;
+}
+
 export interface AnalyzerFix {
   /** 1-based source line where the directive should be inserted. */
   line: number;
@@ -31,7 +36,9 @@ export interface AnalyzerDiagnostic {
   message: string;
   functionName: string | null;
   fix: AnalyzerFix | null;
+  fixable: boolean;
   refactor?: AnalyzerIifeRefactor | null;
+  hoist?: AnalyzerHoistRefactor | null;
 }
 
 export interface AnalyzerSummary {
@@ -79,7 +86,13 @@ interface HeavyHit {
   detail: string;
 }
 
-const MAX_DIAGNOSTICS = 500;
+const HOISTABLE_TOP_LEVEL_STATEMENTS = new Set([
+  "DoStatement",
+  "WhileStatement",
+  "ForNumericStatement",
+  "ForInStatement",
+  "IfStatement",
+]);
 
 function isNode(value: unknown): value is AnyNode {
   return !!value && typeof value === "object" && typeof (value as AnyNode).type === "string";
@@ -186,25 +199,59 @@ function countIifes(ast: Chunk): number {
   return count;
 }
 
+function unwrapParens(node: AnyNode): AnyNode {
+  let current = node;
+  while (current.type === "ParenExpression" || current.type === "TypeAssertion") {
+    if (!isNode(current.expression)) break;
+    current = current.expression;
+  }
+  return current;
+}
+
+function isRenderSteppedReference(node: unknown): boolean {
+  if (!isNode(node)) return false;
+  const value = unwrapParens(node);
+  if (value.type === "MemberExpression" && value.property === "RenderStepped") return true;
+  if (value.type === "IndexExpression" && stringValue(value.index) === "RenderStepped") return true;
+  return value.type === "Identifier" && value.name === "RenderStepped";
+}
+
+function hasInlineCallback(args: unknown): boolean {
+  if (!Array.isArray(args)) return false;
+  return args.some((arg) => isNode(arg) && unwrapParens(arg).type === "FunctionExpression");
+}
+
 function likelyRenderStepped(node: AnyNode): boolean {
-  if (node.type === "MemberExpression" && node.property === "RenderStepped") return true;
-  if (node.type === "MethodCallExpression" && node.method === "RenderStepped") return true;
-  if (node.type === "IndexExpression" && stringValue(node.index) === "RenderStepped") return true;
+  if (node.type === "MethodCallExpression" && node.method === "Connect") {
+    return isRenderSteppedReference(node.object) && hasInlineCallback(node.args);
+  }
+  if (node.type === "CallExpression") {
+    const callee = isNode(node.callee) ? unwrapParens(node.callee) : null;
+    if (
+      callee?.type === "MemberExpression" &&
+      callee.property === "Connect" &&
+      isRenderSteppedReference(callee.object)
+    ) {
+      return hasInlineCallback(node.args);
+    }
+  }
   return false;
+}
+
+function lineInsideIife(line: number, sites: IifeSite[]): boolean {
+  return sites.some((site) => line >= site.line && line <= site.endLine);
 }
 
 export function analyzeScript(code: string, options: AnalyzerOptions = {}): AnalyzerResult {
   const tier: AnalyzerTier = options.tier === "maximum" ? "maximum" : "turbo";
   const sourceLines = code.split(/\r?\n/);
   const diagnostics: AnalyzerDiagnostic[] = [];
-  let truncated = false;
 
-  const pushDiagnostic = (diag: AnalyzerDiagnostic) => {
-    if (diagnostics.length >= MAX_DIAGNOSTICS) {
-      truncated = true;
-      return;
-    }
-    diagnostics.push(diag);
+  const pushDiagnostic = (diag: Omit<AnalyzerDiagnostic, "fixable">) => {
+    diagnostics.push({
+      ...diag,
+      fixable: Boolean(diag.fix || diag.refactor || diag.hoist),
+    });
   };
 
   const lexed = lex(code);
@@ -303,15 +350,21 @@ export function analyzeScript(code: string, options: AnalyzerOptions = {}): Anal
     if (site.name) nameCounts.set(site.name, (nameCounts.get(site.name) ?? 0) + 1);
   }
 
-  const heavyHits: { site: FunctionSite | null; hit: HeavyHit }[] = [];
-  const scanNode = (node: AnyNode, site: FunctionSite | null) => {
-    // A nested function has its own execution boundary. Do not attribute its
-    // heavy calls to the enclosing top-level function: a macro on the outer
-    // function is not a safe fix for an unnamed callback or nested helper.
-    if (site && node !== site.node && isFunctionNode(node)) {
-      forEachChild(node, (child) => scanNode(child, null));
-      return;
-    }
+  interface ScanContext {
+    site: FunctionSite | null;
+    topStatement: AnyNode;
+    doBlock: AnyNode | null;
+  }
+
+  const heavyHits: {
+    site: FunctionSite | null;
+    hit: HeavyHit;
+    topStatement: AnyNode;
+    doBlock: AnyNode | null;
+  }[] = [];
+
+  const scanNode = (node: AnyNode, context: ScanContext) => {
+    const doBlock = node.type === "DoStatement" ? node : context.doBlock;
     if (node.type === "CallExpression") {
       const callee = node.callee;
       if (
@@ -322,39 +375,44 @@ export function analyzeScript(code: string, options: AnalyzerOptions = {}): Anal
       ) {
         const className = Array.isArray(node.args) ? stringValue(node.args[0]) : null;
         heavyHits.push({
-          site,
+          site: context.site,
           hit: {
             code: "instance-new",
             node,
             detail: className ? `Instance.new("${className}")` : "Instance.new(...)",
           },
+          topStatement: context.topStatement,
+          doBlock,
         });
       }
     }
     if (likelyRenderStepped(node)) {
       heavyHits.push({
-        site,
+        site: context.site,
         hit: { code: "render-stepped", node, detail: "RenderStepped per-frame event" },
+        topStatement: context.topStatement,
+        doBlock,
       });
     }
-    forEachChild(node, (child) => scanNode(child, site));
+    forEachChild(node, (child) => scanNode(child, { ...context, doBlock }));
   };
 
   for (const stmt of ast.body as unknown as AnyNode[]) {
     const site = topLevelNodes.get(stmt) ?? null;
-    if (site) scanNode(site.node, site);
-    else scanNode(stmt, null);
+    scanNode(site ? site.node : stmt, { site, topStatement: stmt, doBlock: null });
   }
 
   const heavyFunctionKeys = new Set<string>();
   const fixableLines = new Set<number>();
-  for (const { site, hit } of heavyHits) {
+  for (const { site, hit, topStatement, doBlock } of heavyHits) {
     const loc = nodeLoc(hit.node);
     const name = site?.name ?? null;
     const label = name ? `'${name}'` : "this code";
     const already = site?.node.tier;
     const duplicate = name ? (nameCounts.get(name) ?? 0) > 1 : false;
+    const insideIife = lineInsideIife(loc.start.line, iifeSites);
     let fix: AnalyzerFix | null = null;
+    let hoist: AnalyzerHoistRefactor | null = null;
     let message: string;
 
     if (hit.code === "instance-new") {
@@ -366,7 +424,15 @@ export function analyzeScript(code: string, options: AnalyzerOptions = {}): Anal
     if (already) {
       message += ` This function is already tagged for ${String(already).toUpperCase()}.`;
     } else if (!site) {
-      message += " Move it into a top-level named function or tag the enclosing top-level function manually.";
+      if (doBlock && !insideIife && HOISTABLE_TOP_LEVEL_STATEMENTS.has(topStatement.type)) {
+        hoist = { line: nodeLoc(doBlock).start.line };
+        message +=
+          " Apply Fix can hoist the enclosing top-level block into a tagged wrapper without breaking break, continue, or return.";
+      } else if (insideIife) {
+        message += " Refactor the enclosing IIFE first; nested IIFEs cannot be hoisted safely.";
+      } else {
+        message += " Move it into a top-level named function or tag the enclosing top-level function manually.";
+      }
     } else if (!name) {
       message += " This function has no taggable top-level name; extract it to a named function first.";
     } else if (duplicate) {
@@ -392,6 +458,7 @@ export function analyzeScript(code: string, options: AnalyzerOptions = {}): Anal
       message,
       functionName: name,
       fix,
+      hoist,
     });
   }
 
@@ -430,7 +497,7 @@ export function analyzeScript(code: string, options: AnalyzerOptions = {}): Anal
       heavyFunctions: heavyFunctionKeys.size,
       autoFixable: fixableLines.size,
       errors,
-      truncated,
+      truncated: false,
     },
   };
 }

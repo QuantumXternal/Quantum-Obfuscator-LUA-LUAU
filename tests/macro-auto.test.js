@@ -34,12 +34,12 @@ test("preserves CRLF line endings while inserting the directive", () => {
   expect(result.code.split("\n").every((line) => line.endsWith("\r") || line === "")).toBe(true);
 });
 
-test("skips nested functions and reports that no safe site exists", () => {
+test("tags the enclosing top-level function for a nested hot call", () => {
   const code = `local function outer()\n  local function inner()\n    return Instance.new("Frame")\n  end\n  return inner()\nend\nprint(outer())\n`;
   const result = injectHeavyMacros(code, "turbo");
-  expect(result.injected).toBe(0);
-  expect(result.code).toBe(code);
-  expect(result.warnings[0]).toMatch(/no safe top-level function/);
+  expect(result.injected).toBe(1);
+  expect(result.warnings).toEqual([]);
+  expect(result.code).toBe(`--@quantum:turbo\n${code}`);
 });
 
 test("skips syntax-invalid source without changing it", () => {

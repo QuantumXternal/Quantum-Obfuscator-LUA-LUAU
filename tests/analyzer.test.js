@@ -34,12 +34,13 @@ test("already tagged functions are reported without a replacement fix", () => {
   expect(result.diagnostics[0].message).toMatch(/already tagged for TURBO/);
 });
 
-test("nested functions and IIFEs are not auto-tagged", () => {
+test("nested functions are attributed to the enclosing top-level function", () => {
   const nested = analyzeScript(`local function outer()\n  local function inner()\n    return Instance.new("Frame")\n  end\n  return inner()\nend\nprint(outer())\n`);
-  expect(nested.summary.autoFixable).toBe(0);
+  expect(nested.summary.autoFixable).toBe(1);
   expect(nested.summary.iifeCount).toBe(0);
-  expect(nested.diagnostics[0].fix).toBeNull();
-  expect(nested.diagnostics[0].message).toMatch(/Move it into a top-level named function/);
+  expect(nested.diagnostics[0].functionName).toBe("outer");
+  expect(nested.diagnostics[0].fix).toEqual({ line: 1, insertText: "--@quantum:turbo\n", tier: "turbo" });
+  expect(nested.diagnostics[0].message).toMatch(/inside 'outer'/);
 
   const iife = analyzeScript(`(function()\n  local f = Instance.new("Frame")\n  return f\nend)()\n`);
   expect(iife.summary.autoFixable).toBe(0);
@@ -69,11 +70,11 @@ test("nested functions and IIFEs are not auto-tagged", () => {
   expect(callback.summary.iifeCount).toBe(0);
 });
 
-test("anonymous callbacks inside top-level functions are not attributed to the parent", () => {
+test("anonymous callbacks inside top-level functions are attributed to the parent", () => {
   const result = analyzeScript(`local function outer()\n  return pcall(function()\n    return Instance.new("Frame")\n  end)\nend\nprint(outer())\n`);
-  expect(result.summary.autoFixable).toBe(0);
-  expect(result.diagnostics[0].functionName).toBeNull();
-  expect(result.diagnostics[0].fix).toBeNull();
+  expect(result.summary.autoFixable).toBe(1);
+  expect(result.diagnostics[0].functionName).toBe("outer");
+  expect(result.diagnostics[0].fix.line).toBe(1);
 });
 
 test("duplicate top-level names are not auto-tagged", () => {
@@ -91,12 +92,45 @@ test("RenderStepped sites are detected and fixable", () => {
   expect(result.diagnostics[0].fix.line).toBe(1);
 });
 
+test("do blocks without a top-level function offer a parent hoist", () => {
+  const result = analyzeScript(`local count = 0\nfor i = 1, 5 do\n  do\n    local f = Instance.new("Frame")\n    count += 1\n    if count == 2 then break end\n  end\nend\nprint(count)\n`);
+  expect(result.valid).toBe(true);
+  expect(result.summary.autoFixable).toBe(0);
+  expect(result.diagnostics).toHaveLength(1);
+  expect(result.diagnostics[0]).toMatchObject({
+    code: "instance-new",
+    functionName: null,
+    fix: null,
+    hoist: { line: 3 },
+    fixable: true,
+  });
+});
+
+test("RenderStepped property access without an inline callback is not a hot site", () => {
+  const result = analyzeScript(`local Loops = {}\nfunction Loops:Add(draw)\n  local connection = RunService.RenderStepped:Connect(draw)\n  return connection\nend\n`);
+  expect(result.summary.renderStepped).toBe(0);
+  expect(result.diagnostics).toHaveLength(0);
+});
+
 test("syntax errors make the analysis invalid and disable fixes", () => {
   const result = analyzeScript(`local function broken(\n`);
   expect(result.valid).toBe(false);
   expect(result.summary.errors).toBeGreaterThan(0);
   expect(result.summary.autoFixable).toBe(0);
   expect(result.diagnostics[0]).toMatchObject({ severity: "error", code: "parse-error", fix: null });
+});
+
+test("diagnostics are not capped at 500", () => {
+  const code = Array.from(
+    { length: 520 },
+    (_, index) => `local function make${index}()\n  return Instance.new("Frame")\nend\n`,
+  ).join("");
+  const result = analyzeScript(code);
+  expect(result.valid).toBe(true);
+  expect(result.diagnostics).toHaveLength(520);
+  expect(result.summary.autoFixable).toBe(520);
+  expect(result.summary.truncated).toBe(false);
+  expect(result.diagnostics.every((diagnostic) => diagnostic.fixable)).toBe(true);
 });
 
 test("large fixture analysis matches the stress-test baseline", () => {

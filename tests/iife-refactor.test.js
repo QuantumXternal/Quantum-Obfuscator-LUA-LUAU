@@ -1,5 +1,5 @@
 import { analyzeScript } from "../dist/engine/analyzer.js";
-import { collectIifeSites, refactorIifes } from "../dist/engine/iifeRefactor.js";
+import { collectIifeSites, hoistDoBlockParent, refactorIifes } from "../dist/engine/iifeRefactor.js";
 import { lex } from "../dist/lexer/Lexer.js";
 import { parse, parseWithErrors } from "../dist/parser/Parser.js";
 
@@ -15,14 +15,14 @@ function sitesFor(code) {
   return collectIifeSites(parse(lexed.tokens), code, lexed);
 }
 
-test("refactors a direct top-level IIFE into a tagged local function", () => {
+test("refactors a direct top-level IIFE into an untagged local function", () => {
   const code = `(function(a)\n  return a + 1\nend)(41)\n`;
   const result = refactorIifes(code);
   expect(result.refactored).toBe(1);
   expect(result.remaining).toBe(0);
   expect(result.warnings).toEqual([]);
   expect(result.code).toBe(
-    `--@quantum:turbo\nlocal function __quantum_iife_1(a)\n  return a + 1\nend\n__quantum_iife_1(41)\n`,
+    `local function __quantum_iife_1(a)\n  return a + 1\nend\n__quantum_iife_1(41)\n`,
   );
   expectValid(result.code);
 });
@@ -39,7 +39,7 @@ test("refactors every safe top-level site with unique names", () => {
   const code = `local first = (function() return 1 end)()\nlocal second = (function() return 2 end)()\nprint(first, second)\n`;
   const result = refactorIifes(code);
   expect(result.refactored).toBe(2);
-  expect(result.code.match(/--@quantum:turbo/g)).toHaveLength(2);
+  expect(result.code).not.toContain("--@quantum:turbo");
   expect(result.code).toContain("local function __quantum_iife_1()");
   expect(result.code).toContain("local function __quantum_iife_2()");
   expect(result.code).toContain("local first = __quantum_iife_1()");
@@ -105,18 +105,20 @@ test("preserves an existing directive instead of adding a duplicate", () => {
   expectValid(result.code);
 });
 
-test("uses the requested tier when no directive exists", () => {
+test("reports the requested tier without auto-tagging", () => {
   const code = `local value = (function() return 1 end)()\n`;
   const result = refactorIifes(code, { tier: "maximum" });
   expect(result.tier).toBe("maximum");
-  expect(result.code.startsWith("--@quantum:maximum\nlocal function")).toBe(true);
+  expect(result.code.startsWith("local function __quantum_iife_1()")).toBe(true);
+  expect(result.code).not.toContain("--@quantum:");
 });
 
 test("preserves CRLF line endings", () => {
   const code = `local a = 1\r\nlocal b = (function()\r\n  return a\r\nend)()\r\nprint(b)\r\n`;
   const result = refactorIifes(code);
   expect(result.refactored).toBe(1);
-  expect(result.code).toContain("--@quantum:turbo\r\nlocal function __quantum_iife_1()");
+  expect(result.code).toContain("\r\nlocal function __quantum_iife_1()");
+  expect(result.code).not.toContain("--@quantum:turbo");
   expect(result.code.split("\n").every((line) => line.endsWith("\r") || line === "")).toBe(true);
 });
 
@@ -171,11 +173,48 @@ test("is idempotent after a successful refactor", () => {
   expect(second.code).toBe(first.code);
 });
 
-test("the analyzer sees generated functions and their macro tags", () => {
+test("the analyzer sees generated functions without macro tags", () => {
   const result = refactorIifes(`local value = (function() return 1 end)()\nprint(value)\n`);
   const analysis = analyzeScript(result.code);
   expect(analysis.valid).toBe(true);
   expect(analysis.summary.iifeCount).toBe(0);
   expect(analysis.summary.iifeRefactorable).toBe(0);
-  expect(analysis.macros.turbos).toHaveLength(1);
+  expect(analysis.macros.turbos).toHaveLength(0);
+});
+
+test("hoists a do block's top-level loop into a tagged wrapper", () => {
+  const code = `local count = 0\nfor i = 1, 5 do\n  do\n    local f = Instance.new("Frame")\n    count = count + 1\n    if count == 2 then break end\n  end\nend\nprint(count)\n`;
+  const result = hoistDoBlockParent(code, { line: 3 });
+  expect(result.hoisted).toBe(1);
+  expect(result.parentLine).toBe(2);
+  expect(result.warnings).toEqual([]);
+  expect(result.code).toContain("--@quantum:turbo\nlocal function __quantum_do_wrap_1()");
+  expect(result.code).toContain("__quantum_do_wrap_1()");
+  expect(result.code).toContain("if count == 2 then break end");
+  expectValid(result.code);
+});
+
+test("hoisting a block with a direct return wraps the remaining chunk and propagates it", () => {
+  const code = `local count = 0\ndo\n  local f = Instance.new("Frame")\n  count = count + 1\n  if count == 2 then return 7 end\nend\nprint("after", count)\n`;
+  const result = hoistDoBlockParent(code, { line: 2 });
+  expect(result.hoisted).toBe(1);
+  expect(result.code).toContain("print(\"after\", count)");
+  expect(result.code).toContain("return __quantum_do_wrap_1(...)");
+  expectValid(result.code);
+});
+
+test("parent hoisting refuses a do block nested inside an IIFE", () => {
+  const code = `do\n  (function()\n    do\n      local f = Instance.new("Frame")\n    end\n  end)()\nend\n`;
+  const result = hoistDoBlockParent(code, { line: 3 });
+  expect(result.hoisted).toBe(0);
+  expect(result.code).toBe(code);
+  expect(result.warnings[0]).toMatch(/inside an IIFE/);
+});
+
+test("parent hoisting requires a valid line", () => {
+  const code = `do\n  local f = Instance.new("Frame")\nend\n`;
+  const result = hoistDoBlockParent(code, { line: 0 });
+  expect(result.hoisted).toBe(0);
+  expect(result.code).toBe(code);
+  expect(result.warnings[0]).toMatch(/positive 'line'/);
 });

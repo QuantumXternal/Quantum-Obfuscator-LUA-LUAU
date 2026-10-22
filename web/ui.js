@@ -15,10 +15,19 @@ export function formatDuration(ms) {
 
 export function debounce(fn, wait = 300) {
   let timer = null;
-  return (...args) => {
+  const wrapped = (...args) => {
     clearTimeout(timer);
-    timer = setTimeout(() => fn(...args), wait);
+    timer = setTimeout(() => {
+      timer = null;
+      fn(...args);
+    }, wait);
   };
+  wrapped.cancel = () => {
+    clearTimeout(timer);
+    timer = null;
+  };
+  wrapped.pending = () => timer !== null;
+  return wrapped;
 }
 
 export function toast(message, type = "info", timeout = 3600) {

@@ -1,4 +1,4 @@
-import { analyzeCode, refactorIifes } from "../api.js";
+import { analyzeCode, hoistDoParent, refactorIifes } from "../api.js";
 import { createEditor } from "../editor.js";
 import { loadSettings, loadDraft, saveDraft, setPendingSource } from "../state.js";
 import { renderAutomationSettings } from "../settings.js";
@@ -142,6 +142,11 @@ export function initAnalyzer() {
   const scheduleLiveAnalysis = debounce(() => runAnalysis({ source: "live" }), 1000);
   const scheduleAnalysis = debounce(() => runAnalysis({ source: "fix" }), 180);
 
+  function cancelScheduledAnalysis() {
+    scheduleLiveAnalysis.cancel?.();
+    scheduleAnalysis.cancel?.();
+  }
+
   function updateSourceMeta(code) {
     const lines = code ? code.split(/\r?\n/).length : 0;
     const bytes = byteLength(code);
@@ -218,6 +223,7 @@ export function initAnalyzer() {
         log(warning, "info");
         return;
       }
+      cancelScheduledAnalysis();
       suppressFixAnalysis = true;
       editor.setValue(result.code);
       suppressFixAnalysis = false;
@@ -231,6 +237,40 @@ export function initAnalyzer() {
       if (err?.name === "AbortError") return;
       toast(err.message || "IIFE refactor failed.", "error", 5200);
       log(err.message || "IIFE refactor failed.", "error");
+    } finally {
+      if (button) setButtonBusy(button, false);
+    }
+  }
+
+  async function applyHoist(code, line, button) {
+    if (!code.trim()) {
+      toast("Add some Luau before hoisting a do block.", "error");
+      return;
+    }
+    if (button) setButtonBusy(button, true);
+    try {
+      const tier = settings.turboLevel === "heavy" ? "maximum" : "turbo";
+      const result = await hoistDoParent(code, tier, line);
+      if (!result.hoisted) {
+        const warning = result.warnings?.[0] || `No hoistable do block found at line ${line}.`;
+        toast(warning, "info", 5200);
+        log(warning, "info");
+        return;
+      }
+      cancelScheduledAnalysis();
+      suppressFixAnalysis = true;
+      editor.setValue(result.code);
+      suppressFixAnalysis = false;
+      saveDraft("analyzer", result.code);
+      updateSourceMeta(result.code);
+      const message = `Hoisted the do block at line ${line} into a tagged top-level wrapper.`;
+      toast(message, "success");
+      log(message, "success");
+      await runAnalysis({ source: "hoist" });
+    } catch (err) {
+      if (err?.name === "AbortError") return;
+      toast(err.message || "Do block hoist failed.", "error", 5200);
+      log(err.message || "Do block hoist failed.", "error");
     } finally {
       if (button) setButtonBusy(button, false);
     }
@@ -288,8 +328,9 @@ export function initAnalyzer() {
         event.preventDefault();
         event.stopPropagation();
         if (event.currentTarget?.dataset.findingAction !== "fix") return;
-        editor.applyFix(diagnostic.fix);
-        log(`Inserted ${diagnostic.fix.insertText.trim()} above line ${diagnostic.fix.line}.`, "success");
+        if (editor.applyFix(diagnostic.fix)) {
+          log(`Inserted ${diagnostic.fix.insertText.trim()} above line ${diagnostic.fix.line}.`, "success");
+        }
       });
       row.appendChild(fix);
     } else if (diagnostic.refactor) {
@@ -306,6 +347,20 @@ export function initAnalyzer() {
         refactorAtLine(diagnostic.refactor.line, refactor);
       });
       row.appendChild(refactor);
+    } else if (diagnostic.hoist) {
+      const hoist = document.createElement("button");
+      hoist.type = "button";
+      hoist.className = "btn btn-secondary btn-xs finding-fix finding-action finding-action-hoist";
+      hoist.dataset.findingAction = "hoist";
+      hoist.textContent = "Hoist parent";
+      hoist.setAttribute("aria-label", `Hoist the do block at line ${diagnostic.hoist.line} into a tagged wrapper`);
+      hoist.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        if (event.currentTarget?.dataset.findingAction !== "hoist") return;
+        applyHoist(editor.getValue(), diagnostic.hoist.line, hoist);
+      });
+      row.appendChild(hoist);
     } else {
       const tag = document.createElement("span");
       tag.className = `finding-state ${diagnostic.severity}`;
@@ -338,12 +393,6 @@ export function initAnalyzer() {
     const fragment = document.createDocumentFragment();
     diagnostics.forEach((diagnostic, index) => fragment.appendChild(createFinding(diagnostic, index)));
     results.appendChild(fragment);
-    if (result.summary.truncated) {
-      const note = document.createElement("div");
-      note.className = "findings-note";
-      note.textContent = "Diagnostics were capped at 500 items.";
-      results.appendChild(note);
-    }
   }
 
   function render(result, elapsed) {
@@ -399,6 +448,7 @@ export function initAnalyzer() {
   }
 
   async function runAnalysis({ applyFixes = false, button = null, source = "manual" } = {}) {
+    cancelScheduledAnalysis();
     const code = editor.getValue();
     if (!code.trim()) {
       clearResults();

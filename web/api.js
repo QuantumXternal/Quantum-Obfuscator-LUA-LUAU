@@ -54,6 +54,10 @@ export function refactorIifes(code, tier, line, signal) {
   return request("/api/refactor-iifes", { code, line, options: { tier } }, signal);
 }
 
+export function hoistDoParent(code, tier, line, signal) {
+  return request("/api/hoist-do-parent", { code, line, options: { tier } }, signal);
+}
+
 export function obfuscateCode(code, options, signal) {
   return request("/api/obfuscate", { code, options }, signal);
 }

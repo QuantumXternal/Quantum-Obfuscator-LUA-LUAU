@@ -23,7 +23,7 @@ A from-scratch Luau obfuscation engine in TypeScript: complete Lexer → Parser 
 - **Clean loader failures** — payload loads run through pcall guards (`Quantum: payload load failed`); corrupted or truncated payloads produce the single `Quantum Protection V2` error on both runtimes, and `wrapNestedVM` passes >1.5 MB sources through instead of doubling pre-decode work.
 - **Determinism retained** — same-seed builds stay byte-identical across CLI/API/UI (`benchmarks/seed-parity.mjs`, 6/6).
 - **Quantum Studio (new)** — a four-page, local-first CodeMirror 6 workspace with AST hot-path analysis, clickable lint fixes, Analyzer-owned macro auto-detection, an IIFE banner with safe-site counts and one-click top-level IIFE refactoring, a no-repaste analyzer → obfuscator handoff, and the IIFE Turbo guide.
-- **776 tests / 65 suites green**; acceptance seeds 10001–50005 (MAXIMUM + BALANCED) all ≤ 1.45 MB with reference-matched execution on Luau 0.742 + PUC-Lua 5.4.8.
+- **808 tests / 71 suites green**; acceptance seeds 10001–50005 (MAXIMUM + BALANCED) all ≤ 1.45 MB with reference-matched execution on Luau 0.742 + PUC-Lua 5.4.8.
 
 ---
 
@@ -295,7 +295,7 @@ Runs the AST hot-path analyzer used by the Studio editor. `options.tier` control
 }
 ```
 
-The response includes `valid`, `diagnostics` (line/column ranges, severity, code, message, `functionName`, optional `fix`), `macros`, and a `summary` with token/function/IIFE/`Instance.new`/hot-call counts plus `iifeRefactorable`. Safe IIFE findings include a `refactor: { line }` action; nested or unsafe sites return `refactor: null`. Diagnostics without a safe fix return `fix: null` and an explanation.
+The response includes `valid`, `diagnostics` (line/column ranges, severity, code, message, `functionName`, optional `fix`), `macros`, and a `summary` with token/function/IIFE/`Instance.new`/hot-call counts plus `iifeRefactorable`. Safe IIFE findings include a `refactor: { line }` action; nested or unsafe sites return `refactor: null`. Do blocks that contain `break`, `continue`, or `return` without a taggable top-level function include a `hoist: { line }` action. Diagnostics without a safe fix return `fix: null` and an explanation.
 
 ### `POST /api/refactor-iifes`
 
@@ -310,6 +310,10 @@ Refactors safe top-level IIFEs into named local functions with Quantum macro tag
 ```
 
 The response includes `code` (unchanged when nothing was refactored), `refactored`, `remaining`, `warnings`, and the resolved `tier`. Invalid `line` values return `400`; a valid line with no matching safe IIFE returns `200` with `refactored: 0`.
+
+### `POST /api/hoist-do-parent`
+
+Hoists a `do ... end` block that contains `break`, `continue`, or `return` into a tagged top-level `__quantum_do_wrap_N` wrapper. Pass a positive 1-based `line` inside the block. Unsupported parents, IIFEs, and conflicting directives are reported in `warnings` with `hoisted: false`. The response includes `code`, `hoisted`, `warnings`, `tier`, `line`, and `parentLine`.
 
 ### `POST /api/obfuscate`
 
@@ -453,7 +457,7 @@ Standard script executors frequently restrict the environment. Quantum output de
 
 ## Verification & Trust
 
-- **776 tests across 65 suites** green, including RNG draw-order canaries that pin byte-identity of legacy unseeded paths and Studio analyzer/macro/settings coverage
+- **808 tests across 71 suites** green, including RNG draw-order canaries that pin byte-identity of legacy unseeded paths and Studio analyzer/macro/settings coverage
 - **24/24 dual-VM execution matrix** on Luau 0.742 and PUC-Lua 5.4.8 (with a compat shim), covering plain, custom-cipher, nested, stub, and triple-stacked configurations
 - **Determinism measured**: pipeline (seed `1234`) `f9fef00e…856c`; seeded cipher wrapper `33276098…8f01`; seeded triple-stack chain `b638694e…bd67` — all byte-identical on repeated builds
 - **Adversarial**: ClydeDeobfuscator 5/5 REFUSE, Luraph V15 5/5 GARBAGE — full evidence in [SECURITY.md](./SECURITY.md)

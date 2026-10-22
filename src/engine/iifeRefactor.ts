@@ -104,6 +104,14 @@ const DIRECT_TOP_LEVEL_STATEMENTS = new Set([
 
 const MAX_PASSES = 64;
 
+const HOISTABLE_PARENT_TYPES = new Set([
+  "DoStatement",
+  "WhileStatement",
+  "IfStatement",
+  "ForNumericStatement",
+  "ForInStatement",
+]);
+
 function isNode(value: unknown): value is AnyNode {
   return !!value && typeof value === "object" && typeof (value as AnyNode).type === "string";
 }
@@ -512,14 +520,14 @@ export function collectIifeSites(
   }));
 }
 
-function makeNameFactory(ast: Chunk): () => string {
+function makeNameFactory(ast: Chunk, prefix = "__quantum_iife_"): () => string {
   const used = collectNames(ast);
   let counter = 0;
   return () => {
     let name = "";
     do {
       counter++;
-      name = `__quantum_iife_${counter}`;
+      name = `${prefix}${counter}`;
     } while (used.has(name));
     used.add(name);
     return name;
@@ -530,7 +538,6 @@ function applySites(
   code: string,
   ast: Chunk,
   sites: InternalIifeSite[],
-  tier: IifeRefactorTier,
   eol: string,
 ): { code: string; refactored: number } {
   const nextName = makeNameFactory(ast);
@@ -544,13 +551,8 @@ function applySites(
       continue;
     }
     const name = nextName();
-    const tagTier = site.directiveTier ?? tier;
     const insertion = insertions.get(site.statementStart) ?? { indent: site.indent, parts: [] };
-    const banner =
-      site.directiveTier && insertion.parts.length === 0
-        ? ""
-        : `${site.indent}--@quantum:${tagTier}${eol}`;
-    insertion.parts.push(`${banner}${site.indent}local function ${name}${functionSource}${eol}`);
+    insertion.parts.push(`${site.indent}local function ${name}${functionSource}${eol}`);
     insertions.set(site.statementStart, insertion);
 
     const suffix = code.slice(site.calleeEnd, site.callEnd);
@@ -629,7 +631,7 @@ export function refactorIifes(
       );
       return { code, refactored: 0, remaining: sites.length, warnings, tier, line: targetLine };
     }
-    const applied = applySites(code, initial.ast, [target], tier, eol);
+    const applied = applySites(code, initial.ast, [target], eol);
     const validation = parseSource(applied.code);
     if (!validation.valid || !validation.ast || !validation.lexed) {
       warnings.push(`Auto-refactor produced invalid code; the source was left unchanged. ${validation.error ?? ""}`.trim());
@@ -654,7 +656,7 @@ export function refactorIifes(
   for (let pass = 0; pass < MAX_PASSES; pass++) {
     const targets = currentSites.filter((site) => site.safe);
     if (targets.length === 0) break;
-    const applied = applySites(output, currentAst, targets, tier, eol);
+    const applied = applySites(output, currentAst, targets, eol);
     if (applied.refactored === 0) break;
     const validation = parseSource(applied.code);
     if (!validation.valid || !validation.ast || !validation.lexed) {
@@ -688,5 +690,229 @@ export function refactorIifes(
     warnings,
     tier,
     line: null,
+  };
+}
+
+export interface DoHoistResult {
+  code: string;
+  hoisted: number;
+  warnings: string[];
+  tier: IifeRefactorTier;
+  line: number | null;
+  parentLine: number | null;
+}
+
+function isFunctionLike(node: AnyNode): boolean {
+  return (
+    node.type === "FunctionExpression" ||
+    node.type === "FunctionStatement" ||
+    node.type === "LocalFunctionStatement"
+  );
+}
+
+function containsDirect(node: AnyNode, type: string): boolean {
+  let found = false;
+  const visit = (current: AnyNode) => {
+    if (found) return;
+    if (current !== node && isFunctionLike(current)) return;
+    if (current.type === type) {
+      found = true;
+      return;
+    }
+    forEachChild(current, visit);
+  };
+  visit(node);
+  return found;
+}
+
+function doOwners(ast: Chunk): Map<AnyNode, AnyNode> {
+  const owners = new Map<AnyNode, AnyNode>();
+  const visit = (node: AnyNode, top: AnyNode) => {
+    if (node.type === "DoStatement") owners.set(node, top);
+    forEachChild(node, (child) => visit(child, top));
+  };
+  for (const statement of ast.body as unknown as AnyNode[]) visit(statement, statement);
+  return owners;
+}
+
+function rangeSize(node: AnyNode): number {
+  const loc = node.loc;
+  if (!loc) return Number.MAX_SAFE_INTEGER;
+  return Math.abs(loc.end.offset - loc.start.offset);
+}
+
+function findDoForLine(owners: Map<AnyNode, AnyNode>, line: number): AnyNode | null {
+  const candidates = [...owners.keys()].filter((node) => {
+    const loc = node.loc;
+    return !!loc && line >= loc.start.line && line <= loc.end.line;
+  });
+  if (candidates.length === 0) return null;
+  candidates.sort((a, b) => rangeSize(a) - rangeSize(b));
+  return candidates[0] ?? null;
+}
+
+function ifExpressionStarts(ast: Chunk): Set<number> {
+  const starts = new Set<number>();
+  const visit = (node: AnyNode) => {
+    if (node.type === "IfElseExpression" && node.loc) starts.add(node.loc.start.offset);
+    forEachChild(node, visit);
+  };
+  for (const statement of ast.body as unknown as AnyNode[]) visit(statement);
+  return starts;
+}
+
+function findBlockEndOffset(
+  tokens: Token[],
+  startOffset: number,
+  type: string,
+  expressionIfStarts: Set<number>,
+): number | null {
+  const startIndex = tokens.findIndex((token) => token.loc.start.offset === startOffset);
+  if (startIndex < 0) return null;
+  let depth = type === "DoStatement" || type === "IfStatement" ? 1 : 0;
+  const loop = type === "WhileStatement" || type === "ForNumericStatement" || type === "ForInStatement";
+  for (let index = startIndex + 1; index < tokens.length; index++) {
+    const token = tokens[index]!;
+    if (token.type !== "Keyword") continue;
+    const value = String(token.value);
+    if (value === "if" && expressionIfStarts.has(token.loc.start.offset)) continue;
+    if (value === "function" || value === "if" || value === "repeat") {
+      depth++;
+      continue;
+    }
+    if (value === "do") {
+      if (loop && depth === 0) depth = 1;
+      else depth++;
+      continue;
+    }
+    if (value === "until") {
+      if (depth > 0) depth--;
+      continue;
+    }
+    if (value === "end") {
+      depth--;
+      if (depth === 0) return token.loc.end.offset;
+    }
+  }
+  return null;
+}
+
+export function hoistDoBlockParent(
+  code: string,
+  options: IifeRefactorOptions = {},
+): DoHoistResult {
+  const tier: IifeRefactorTier = options.tier === "maximum" ? "maximum" : "turbo";
+  const targetLine =
+    Number.isInteger(options.line) && (options.line as number) > 0
+      ? (options.line as number)
+      : null;
+  const warnings: string[] = [];
+  if (targetLine === null) {
+    warnings.push("A positive 'line' option pointing at the do block is required.");
+    return { code, hoisted: 0, warnings, tier, line: null, parentLine: null };
+  }
+
+  const initial = parseSource(code);
+  if (!initial.valid || !initial.ast || !initial.lexed) {
+    warnings.push(`Source has syntax errors; no parent block was hoisted. ${initial.error ?? ""}`.trim());
+    return { code, hoisted: 0, warnings, tier, line: targetLine, parentLine: null };
+  }
+
+  const owners = doOwners(initial.ast);
+  const doBlock = findDoForLine(owners, targetLine);
+  if (!doBlock) {
+    warnings.push(`No do block starts on or contains line ${targetLine}.`);
+    return { code, hoisted: 0, warnings, tier, line: targetLine, parentLine: null };
+  }
+  const parent = owners.get(doBlock)!;
+  const parentLine = parent.loc?.start.line ?? null;
+  if (!HOISTABLE_PARENT_TYPES.has(parent.type)) {
+    const hint =
+      parent.type === "FunctionStatement" || parent.type === "LocalFunctionStatement"
+        ? "Use the normal function macro fix instead."
+        : "Refactor the enclosing IIFE or assignment first.";
+    warnings.push(`Cannot hoist line ${targetLine}: its top-level statement is ${parent.type}. ${hint}`);
+    return { code, hoisted: 0, warnings, tier, line: targetLine, parentLine };
+  }
+
+  const iifeSites = collectInternal(initial.ast, code, initial.lexed);
+  if (iifeSites.some((site) => targetLine >= site.line && targetLine <= site.endLine)) {
+    warnings.push(
+      `Cannot hoist line ${targetLine}: the do block is inside an IIFE. Refactor the enclosing IIFE first.`,
+    );
+    return { code, hoisted: 0, warnings, tier, line: targetLine, parentLine };
+  }
+
+  const parentStart = parent.loc?.start.offset;
+  if (parentStart === undefined) {
+    warnings.push("Could not determine the parent block source range.");
+    return { code, hoisted: 0, warnings, tier, line: targetLine, parentLine };
+  }
+
+  const statements = initial.ast.body as unknown as AnyNode[];
+  const parentIndex = statements.indexOf(parent);
+  const wrapSuffix = containsDirect(doBlock, "ReturnStatement");
+  const parentEnd = findBlockEndOffset(
+    initial.lexed.tokens,
+    parentStart,
+    parent.type,
+    ifExpressionStarts(initial.ast),
+  );
+  if (parentEnd === null) {
+    warnings.push("Could not find the end of the parent block; the source was left unchanged.");
+    return { code, hoisted: 0, warnings, tier, line: targetLine, parentLine };
+  }
+  let endOffset = wrapSuffix ? code.length : parentEnd;
+  if (endOffset < parentStart) {
+    warnings.push("Could not determine a safe source range for the hoisted wrapper.");
+    return { code, hoisted: 0, warnings, tier, line: targetLine, parentLine };
+  }
+
+  const contentNodes =
+    wrapSuffix && parentIndex >= 0 ? statements.slice(parentIndex) : [parent];
+  const hasVararg = contentNodes.some((node) => containsDirect(node, "VarargExpression"));
+  const starts = lineStartsFor(code);
+  const parentStartLine = parent.loc?.start.line ?? 1;
+  const lineStart = starts[parentStartLine - 1] ?? 0;
+  const prefix = code.slice(lineStart, parentStart);
+  const indent = /^[ \t]*$/.test(prefix) ? prefix : "";
+  const lookupDirective = makeDirectiveLookup(code, initial.lexed.tokens, initial.lexed.comments);
+  const directive = lookupDirective(parentStartLine);
+  if (directive.conflict) {
+    warnings.push("Conflicting Quantum directives above the parent block; the source was left unchanged.");
+    return { code, hoisted: 0, warnings, tier, line: targetLine, parentLine };
+  }
+
+  const tagTier = directive.tier ?? tier;
+  const nextName = makeNameFactory(initial.ast, "__quantum_do_wrap_");
+  const name = nextName();
+  const eol = code.includes("\r\n") ? "\r\n" : "\n";
+  const body = code.slice(parentStart, endOffset);
+  const tagLine = directive.tier ? "" : `${indent}--@quantum:${tagTier}${eol}`;
+  const params = hasVararg ? "..." : "";
+  const callArgs = hasVararg ? "(...)" : "()";
+  let replacement = `${tagLine}${indent}local function ${name}(${params})${eol}${body}`;
+  if (!/[\r\n]$/.test(body)) replacement += eol;
+  replacement += `${indent}end${eol}`;
+  replacement += wrapSuffix
+    ? `${indent}return ${name}(...)${eol}`
+    : `${indent}${name}()${eol}`;
+
+  const output = code.slice(0, parentStart) + replacement + code.slice(endOffset);
+  const validation = parseSource(output);
+  if (!validation.valid || !validation.ast) {
+    warnings.push(
+      `Parent hoisting produced invalid code; the source was left unchanged. ${validation.error ?? ""}`.trim(),
+    );
+    return { code, hoisted: 0, warnings, tier, line: targetLine, parentLine };
+  }
+
+  return {
+    code: output,
+    hoisted: 1,
+    warnings,
+    tier: tagTier,
+    line: targetLine,
+    parentLine,
   };
 }

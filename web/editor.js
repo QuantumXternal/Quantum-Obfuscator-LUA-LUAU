@@ -217,12 +217,29 @@ export function createEditor(host, options = {}) {
     return best;
   }
 
+  function normalizedInsertText(text) {
+    const source = view.state.doc.toString();
+    const eol = source.includes("\r\n") ? "\r\n" : "\n";
+    return String(text).replace(/\r\n|\r|\n/g, eol);
+  }
+
+  function insertTextAlreadyPresent(line, text) {
+    const firstLine = String(text).split(/\r\n|\r|\n/, 1)[0] ?? "";
+    if (firstLine.length === 0 || line.from + firstLine.length > line.to) return false;
+    return view.state.doc.sliceString(line.from, line.from + firstLine.length) === firstLine;
+  }
+
   function applyFix(fix) {
     if (!fix || !fix.insertText) return false;
     const line = lineForDiagnostic(fix);
+    const insertText = normalizedInsertText(fix.insertText);
+    if (insertTextAlreadyPresent(line, insertText)) {
+      hidePopover();
+      return false;
+    }
     view.dispatch({
-      changes: { from: line.from, insert: fix.insertText },
-      selection: { anchor: line.from + fix.insertText.length },
+      changes: { from: line.from, insert: insertText },
+      selection: { anchor: line.from + insertText.length },
       scrollIntoView: true,
     });
     hidePopover();
@@ -382,6 +399,7 @@ export function createEditor(host, options = {}) {
     const seen = new Set();
     const unique = fixes
       .filter((fix) => fix && Number.isFinite(fix.line) && fix.insertText)
+      .map((fix) => ({ ...fix, insertText: normalizedInsertText(fix.insertText) }))
       .filter((fix) => {
         const key = `${fix.line}:${fix.insertText}`;
         if (seen.has(key)) return false;
@@ -390,14 +408,18 @@ export function createEditor(host, options = {}) {
       })
       .sort((a, b) => b.line - a.line);
     if (!unique.length) return 0;
+    let applied = 0;
     for (const fix of unique) {
       const line = view.state.doc.line(clamp(fix.line, 1, view.state.doc.lines));
+      if (insertTextAlreadyPresent(line, fix.insertText)) continue;
       view.dispatch({ changes: { from: line.from, insert: fix.insertText } });
+      applied++;
     }
+    if (applied === 0) return 0;
     view.focus();
     hidePopover();
     onFixApplied(unique[unique.length - 1]);
-    return unique.length;
+    return applied;
   }
 
   function focus() {

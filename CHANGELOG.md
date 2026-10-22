@@ -10,6 +10,22 @@ is the AST-only control: byte-identical before/after in every comparison.
 
 ## Unreleased — Quantum Studio (4-page web IDE)
 
+- fix(studio): repair analyzer apply-fix flow, auto-reanalyze after refactor, and
+  remove size limits. `src/engine/analyzer.ts` no longer caps diagnostics at
+  500, reports `fixable` consistently, attributes nested hot calls to their
+  nearest enclosing top-level function, and corrects RenderStepped detection so
+  property access cannot masquerade as a render loop. The refactor path cancels
+  stale debounced analyses, editor fixes are CRLF-safe and duplicate-safe, and
+  `web/ui.js` debounce supports cancellation. Parent Hoisting adds
+  `src/engine/iifeRefactor.ts` `hoistDoBlockParent`, `POST /api/hoist-do-parent`,
+  `web/api.js` `hoistDoParent`, and a per-finding **Hoist parent** action for
+  `do ... end` blocks containing `break`, `continue`, or `return`.
+  MEASURED: full suite 71 suites / 808 tests green; Lua 5.4.8 and Luau 0.742
+  parent-hoist runtime checks pass. RISK: only documented supported loop
+  parents are hoisted; nested IIFEs remain manual.
+  TESTS: `tests/analyzer.test.js`, `tests/iife-refactor.test.js`,
+  `tests/macro-auto.test.js`, `tests/parent-hoist-runtime.test.js`,
+  `tests/ui-debounce.test.js`.
 - feat(analyzer): safe top-level IIFE auto-refactor with per-line and global
   actions. `src/engine/iifeRefactor.ts` lifts only direct top-level IIFEs into
   tagged `local function` declarations, preserves arguments/comments/CRLF,

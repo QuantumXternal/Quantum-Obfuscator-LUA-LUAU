@@ -1683,6 +1683,18 @@ h4 {
   border-color: rgba(247, 198, 92, 0.52);
 }
 
+.finding-row .finding-action-hoist {
+  color: var(--green);
+  background: var(--green-soft);
+  border-color: rgba(67, 224, 161, 0.34);
+}
+
+.finding-row .finding-action-hoist:hover:not(:disabled) {
+  color: #b9ffe3;
+  background: rgba(67, 224, 161, 0.16);
+  border-color: rgba(67, 224, 161, 0.52);
+}
+
 .findings-note {
   padding: 10px;
   color: var(--muted-2);
