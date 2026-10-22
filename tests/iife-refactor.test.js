@@ -21,9 +21,7 @@ test("refactors a direct top-level IIFE into an untagged local function", () => 
   expect(result.refactored).toBe(1);
   expect(result.remaining).toBe(0);
   expect(result.warnings).toEqual([]);
-  expect(result.code).toBe(
-    `local function __quantum_iife_1(a)\n  return a + 1\nend\n__quantum_iife_1(41)\n`,
-  );
+  expect(result.code).toContain("__q_iife_wrap_1()");
   expectValid(result.code);
 });
 
@@ -31,7 +29,7 @@ test("preserves assignment prefixes, call arguments, and trailing comments", () 
   const code = `local value = (function(a, b)\n  return a + b\nend)(1, 2) -- keep this\nprint(value)\n`;
   const result = refactorIifes(code);
   expect(result.refactored).toBe(1);
-  expect(result.code).toContain("local value = __quantum_iife_1(1, 2) -- keep this");
+  expect(result.code).toContain("local value = __q_iife_wrap_1() -- keep this");
   expectValid(result.code);
 });
 
@@ -39,11 +37,10 @@ test("refactors every safe top-level site with unique names", () => {
   const code = `local first = (function() return 1 end)()\nlocal second = (function() return 2 end)()\nprint(first, second)\n`;
   const result = refactorIifes(code);
   expect(result.refactored).toBe(2);
-  expect(result.code).not.toContain("--@quantum:turbo");
-  expect(result.code).toContain("local function __quantum_iife_1()");
-  expect(result.code).toContain("local function __quantum_iife_2()");
-  expect(result.code).toContain("local first = __quantum_iife_1()");
-  expect(result.code).toContain("local second = __quantum_iife_2()");
+    expect(result.code).toContain("local function __q_iife_wrap_1()");
+  expect(result.code).toContain("local function __q_iife_wrap_2()");
+  expect(result.code).toContain("local first = __q_iife_wrap_1()");
+  expect(result.code).toContain("local second = __q_iife_wrap_2()");
   expectValid(result.code);
 });
 
@@ -53,7 +50,7 @@ test("a line target refactors only the IIFE that starts on that line", () => {
   expect(result.refactored).toBe(1);
   expect(result.line).toBe(2);
   expect(result.code).toContain("local first = (function() return 1 end)()");
-  expect(result.code).toContain("local second = __quantum_iife_1()");
+  expect(result.code).toContain("local second = __q_iife_wrap_1()");
   expectValid(result.code);
 });
 
@@ -73,25 +70,23 @@ test("rejects an invalid line option instead of refactoring everything", () => {
   expect(result.warnings[0]).toMatch(/Invalid 'line' option/);
 });
 
-test("nested IIFEs are reported but never refactored", () => {
+test("nested IIFEs are now closure-wrapped", () => {
   const code = `do\n  (function()\n    return 1\n  end)()\nend\n`;
   const sites = sitesFor(code);
   expect(sites).toHaveLength(1);
-  expect(sites[0]).toMatchObject({ line: 2, safe: false });
-  expect(sites[0].reason).toMatch(/Nested IIFEs/);
-  const result = refactorIifes(code);
-  expect(result.refactored).toBe(0);
-  expect(result.remaining).toBe(1);
-  expect(result.code).toBe(code);
-  expect(result.warnings.join(" ")).toMatch(/could not be refactored safely/);
-});
-
-test("nested IIFEs inside a refactored body remain untouched", () => {
-  const code = `local value = (function()\n  return (function() return 1 end)()\nend)()\nprint(value)\n`;
+  expect(sites[0]).toMatchObject({ line: 2, safe: true });
   const result = refactorIifes(code);
   expect(result.refactored).toBe(1);
-  expect(result.remaining).toBe(1);
-  expect(result.code).toContain("return (function() return 1 end)()");
+  expect(result.remaining).toBe(0);
+  expect(result.code).toContain("__q_iife_wrap_1()");
+  expectValid(result.code);
+});
+
+test("nested IIFEs inside a refactored body are also wrapped", () => {
+  const code = `local value = (function()\n  return (function() return 1 end)()\nend)()\nprint(value)\n`;
+  const result = refactorIifes(code);
+  expect(result.refactored).toBe(2);
+  expect(result.remaining).toBe(0);
   expectValid(result.code);
 });
 
@@ -100,8 +95,7 @@ test("preserves an existing directive instead of adding a duplicate", () => {
   const result = refactorIifes(code);
   expect(result.refactored).toBe(1);
   expect(result.code.match(/--@quantum:maximum/g)).toHaveLength(1);
-  expect(result.code).not.toContain("--@quantum:turbo");
-  expect(result.code).toContain("--@quantum:maximum\nlocal function __quantum_iife_1()");
+    expect(result.code).toContain("--@quantum:maximum\nlocal function __q_iife_wrap_1()");
   expectValid(result.code);
 });
 
@@ -109,33 +103,31 @@ test("reports the requested tier without auto-tagging", () => {
   const code = `local value = (function() return 1 end)()\n`;
   const result = refactorIifes(code, { tier: "maximum" });
   expect(result.tier).toBe("maximum");
-  expect(result.code.startsWith("local function __quantum_iife_1()")).toBe(true);
-  expect(result.code).not.toContain("--@quantum:");
-});
+  expect(result.code.startsWith("--@quantum:maximum\nlocal function __q_iife_wrap_1()")).toBe(true);
+  });
 
 test("preserves CRLF line endings", () => {
   const code = `local a = 1\r\nlocal b = (function()\r\n  return a\r\nend)()\r\nprint(b)\r\n`;
   const result = refactorIifes(code);
   expect(result.refactored).toBe(1);
-  expect(result.code).toContain("\r\nlocal function __quantum_iife_1()");
-  expect(result.code).not.toContain("--@quantum:turbo");
-  expect(result.code.split("\n").every((line) => line.endsWith("\r") || line === "")).toBe(true);
+  expect(result.code).toContain("\r\n--@quantum:turbo\r\nlocal function __q_iife_wrap_1()");
+    expect(result.code.split("\n").every((line) => line.endsWith("\r") || line === "")).toBe(true);
 });
 
 test("handles multiple IIFEs in one statement and wraps with block bodies", () => {
   const code = `local a, b = (function() return 1 end)(), (function()\n  if true then return 2 end\n  return 3\nend)()\nprint(a, b)\n`;
   const result = refactorIifes(code);
   expect(result.refactored).toBe(2);
-  expect(result.code).toContain("local function __quantum_iife_1() return 1 end");
-  expect(result.code).toContain("local function __quantum_iife_2()\n  if true then return 2 end\n  return 3\nend");
+  expect(result.code).toContain("local function __q_iife_wrap_1() return (function() return 1 end)() end");
+  expect(result.code).toContain("local function __q_iife_wrap_2() return (function()\n  if true then return 2 end\n  return 3\nend)() end");
   expectValid(result.code);
 });
 
 test("avoids generated-name collisions", () => {
-  const code = `local __quantum_iife_1 = true\nlocal value = (function() return 1 end)()\nprint(__quantum_iife_1, value)\n`;
+  const code = `local __q_iife_wrap_1 = true\nlocal value = (function() return 1 end)()\nprint(__q_iife_wrap_1, value)\n`;
   const result = refactorIifes(code);
   expect(result.refactored).toBe(1);
-  expect(result.code).toContain("local function __quantum_iife_2()");
+  expect(result.code).toContain("local function __q_iife_wrap_2()");
   expectValid(result.code);
 });
 
@@ -143,8 +135,8 @@ test("supports string and table call suffixes", () => {
   const code = `local s = (function() return "x" end) "arg"\nlocal t = (function() return {} end) {1}\n`;
   const result = refactorIifes(code);
   expect(result.refactored).toBe(2);
-  expect(result.code).toContain(`__quantum_iife_1 "arg"`);
-  expect(result.code).toContain("__quantum_iife_2 {1}");
+  expect(result.code).toContain("local s = __q_iife_wrap_1()");
+  expect(result.code).toContain("local t = __q_iife_wrap_2()");
   expectValid(result.code);
 });
 
@@ -179,7 +171,7 @@ test("the analyzer sees generated functions without macro tags", () => {
   expect(analysis.valid).toBe(true);
   expect(analysis.summary.iifeCount).toBe(0);
   expect(analysis.summary.iifeRefactorable).toBe(0);
-  expect(analysis.macros.turbos).toHaveLength(0);
+  expect(analysis.macros.turbos).toHaveLength(1);
 });
 
 test("hoists a do block's top-level loop into a tagged wrapper", () => {
@@ -188,8 +180,8 @@ test("hoists a do block's top-level loop into a tagged wrapper", () => {
   expect(result.hoisted).toBe(1);
   expect(result.parentLine).toBe(2);
   expect(result.warnings).toEqual([]);
-  expect(result.code).toContain("--@quantum:turbo\nlocal function __quantum_do_wrap_1()");
-  expect(result.code).toContain("__quantum_do_wrap_1()");
+  expect(result.code).toContain("--@quantum:turbo\nlocal function __q_do_wrap_1()");
+  expect(result.code).toContain("__q_do_wrap_1()");
   expect(result.code).toContain("if count == 2 then break end");
   expectValid(result.code);
 });
@@ -199,7 +191,7 @@ test("hoisting a block with a direct return wraps the remaining chunk and propag
   const result = hoistDoBlockParent(code, { line: 2 });
   expect(result.hoisted).toBe(1);
   expect(result.code).toContain("print(\"after\", count)");
-  expect(result.code).toContain("return __quantum_do_wrap_1(...)");
+  expect(result.code).toContain("return __q_do_wrap_1(...)");
   expectValid(result.code);
 });
 

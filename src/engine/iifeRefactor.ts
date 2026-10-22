@@ -356,7 +356,9 @@ function collectInternal(
     safeContext: boolean,
     insideIife: boolean,
     statement: Statement | LastStatement,
+    insideGeneratedWrapper: boolean,
   ) => {
+    if (insideGeneratedWrapper) return;
     const callLoc = (call.loc ?? {
       start: { line: 1, column: 1, offset: 0 },
       end: { line: 1, column: 1, offset: 0 },
@@ -374,13 +376,11 @@ function collectInternal(
       calleeEnd = wrapper.end;
       functionEnd = wrapper.functionEnd;
     }
-    let safe = safeContext && !insideIife;
+    let safe = !insideGeneratedWrapper;
     let reason: string | null = null;
 
-    if (!safeContext) {
-      reason = "Nested IIFEs must be lifted to the top level manually.";
-    } else if (insideIife) {
-      reason = "IIFE is nested inside another IIFE; refactor the outer IIFE first.";
+    if (insideGeneratedWrapper) {
+      reason = "IIFE is already inside a generated wrapper.";
     } else if (callee.typeAsserted) {
       safe = false;
       reason = "Type-asserted IIFEs are not auto-refactored.";
@@ -413,72 +413,114 @@ function collectInternal(
     else statements.set(statement, new Set([site]));
   };
 
-  function visitNode(node: AnyNode, safeContext: boolean, insideIife: boolean): void {
+  function isGeneratedWrapperName(name: unknown): boolean {
+    return typeof name === "string" && /^__q_(iife_wrap|do_wrap)_\d+$/.test(name);
+  }
+
+  function visitNode(node: AnyNode, safeContext: boolean, insideIife: boolean, insideGeneratedWrapper: boolean): void {
     if (isStatement(node)) {
-      visitStatement(node as unknown as Statement | LastStatement, safeContext);
+      visitStatement(node as unknown as Statement | LastStatement, safeContext, insideGeneratedWrapper);
       return;
     }
     if (node.type === "FunctionExpression") {
       for (const child of node.body as unknown as AnyNode[]) {
-        visitStatement(child as unknown as Statement | LastStatement, false);
+        visitStatement(child as unknown as Statement | LastStatement, false, insideGeneratedWrapper);
       }
       return;
     }
     if (node.type === "CallExpression") {
       const callee = unwrapIifeCallee(node.callee);
       if (callee) {
-        addSite(node, callee, safeContext, insideIife, currentStatement!);
+        addSite(node, callee, safeContext, insideIife, currentStatement!, insideGeneratedWrapper);
         for (const child of callee.fn.body as unknown as AnyNode[]) {
-          visitStatement(child as unknown as Statement | LastStatement, false);
+          visitStatement(child as unknown as Statement | LastStatement, false, insideGeneratedWrapper);
         }
         for (const arg of (node.args as unknown as AnyNode[]) ?? []) {
-          visitNode(arg, safeContext, true);
+          visitNode(arg, safeContext, true, insideGeneratedWrapper);
         }
         return;
       }
     }
-    forEachChild(node, (child) => visitNode(child, safeContext, insideIife));
+    forEachChild(node, (child) => visitNode(child, safeContext, insideIife, insideGeneratedWrapper));
   }
 
-  function visitStatement(statement: Statement | LastStatement, safeContext: boolean): void {
+  function visitStatement(statement: Statement | LastStatement, safeContext: boolean, insideGeneratedWrapper: boolean): void {
     const previous = currentStatement;
     currentStatement = statement;
     const safe = safeContext && DIRECT_TOP_LEVEL_STATEMENTS.has(statement.type);
+    const generatedHere =
+      insideGeneratedWrapper ||
+      (statement.type === "FunctionStatement" &&
+        isGeneratedWrapperName((statement as any).name?.base?.name)) ||
+      (statement.type === "LocalFunctionStatement" && isGeneratedWrapperName((statement as any).name)) ||
+      (statement.type === "LocalStatement" &&
+        (statement as any).vars?.length === 1 &&
+        (statement as any).values?.length === 1 &&
+        (statement as any).values[0]?.type === "FunctionExpression" &&
+        isGeneratedWrapperName((statement as any).vars[0]?.name)) ||
+      (statement.type === "AssignmentStatement" &&
+        (statement as any).vars?.length === 1 &&
+        (statement as any).values?.length === 1 &&
+        (statement as any).vars[0]?.type === "Identifier" &&
+        (statement as any).values[0]?.type === "FunctionExpression" &&
+        isGeneratedWrapperName((statement as any).vars[0]?.name));
     switch (statement.type) {
+      case "FunctionStatement":
+      case "LocalFunctionStatement": {
+        for (const child of ((statement as any).body as AnyNode[]) ?? []) {
+          visitStatement(child as unknown as Statement | LastStatement, false, generatedHere);
+        }
+        break;
+      }
       case "FunctionCallStatement":
-        visitNode(statement.call as unknown as AnyNode, safe, false);
+        visitNode(statement.call as unknown as AnyNode, safe, false, generatedHere);
         break;
-      case "AssignmentStatement":
+      case "AssignmentStatement": {
+        const nestedGenerated =
+          generatedHere ||
+          ((statement as any).vars?.length === 1 &&
+            (statement as any).values?.length === 1 &&
+            (statement as any).vars[0]?.type === "Identifier" &&
+            (statement as any).values[0]?.type === "FunctionExpression" &&
+            isGeneratedWrapperName((statement as any).vars[0]?.name));
         for (const variable of (statement.vars as unknown as AnyNode[]) ?? []) {
-          visitNode(variable, safe, false);
+          visitNode(variable, safe, false, generatedHere);
         }
         for (const value of (statement.values as unknown as AnyNode[]) ?? []) {
-          visitNode(value, safe, false);
+          visitNode(value, safe, false, nestedGenerated);
         }
         break;
+      }
       case "CompoundAssignmentStatement":
-        visitNode(statement.var as unknown as AnyNode, safe, false);
-        visitNode(statement.value as unknown as AnyNode, safe, false);
+        visitNode(statement.var as unknown as AnyNode, safe, false, generatedHere);
+        visitNode(statement.value as unknown as AnyNode, safe, false, generatedHere);
         break;
-      case "LocalStatement":
+      case "LocalStatement": {
+        const nestedGenerated =
+          generatedHere ||
+          ((statement as any).vars?.length === 1 &&
+            (statement as any).values?.length === 1 &&
+            (statement as any).values[0]?.type === "FunctionExpression" &&
+            isGeneratedWrapperName((statement as any).vars[0]?.name));
         for (const value of (statement.values as unknown as AnyNode[]) ?? []) {
-          visitNode(value, safe, false);
+          visitNode(value, safe, false, nestedGenerated);
         }
         break;
+      }
       case "ReturnStatement":
         for (const value of (statement.values as unknown as AnyNode[]) ?? []) {
-          visitNode(value, safe, false);
+          visitNode(value, safe, false, generatedHere);
         }
         break;
       default:
-        forEachChild(statement as unknown as AnyNode, (child) => visitNode(child, false, false));
+        forEachChild(statement as unknown as AnyNode, (child) => visitNode(child, false, false, generatedHere));
         break;
     }
     currentStatement = previous;
   }
 
   for (const statement of ast.body as unknown as AnyNode[]) {
-    visitStatement(statement as unknown as Statement | LastStatement, true);
+    visitStatement(statement as unknown as Statement | LastStatement, true, false);
   }
 
   for (const [statement, group] of statements) {
@@ -520,7 +562,7 @@ export function collectIifeSites(
   }));
 }
 
-function makeNameFactory(ast: Chunk, prefix = "__quantum_iife_"): () => string {
+function makeNameFactory(ast: Chunk, prefix = "__q_iife_wrap_"): () => string {
   const used = collectNames(ast);
   let counter = 0;
   return () => {
@@ -539,6 +581,7 @@ function applySites(
   ast: Chunk,
   sites: InternalIifeSite[],
   eol: string,
+  tier: IifeRefactorTier = "turbo",
 ): { code: string; refactored: number } {
   const nextName = makeNameFactory(ast);
   const insertions = new Map<number, { indent: string; parts: string[] }>();
@@ -546,20 +589,20 @@ function applySites(
   let refactored = 0;
 
   for (const site of [...sites].sort((a, b) => a.callStart - b.callStart)) {
-    const functionSource = code.slice(site.functionStart + "function".length, site.functionEnd);
-    if (!/^\s*[<(]/.test(functionSource)) {
+    const originalCall = code.slice(site.callStart, site.callEnd);
+    if (!originalCall.trim()) {
       continue;
     }
     const name = nextName();
     const insertion = insertions.get(site.statementStart) ?? { indent: site.indent, parts: [] };
-    insertion.parts.push(`${site.indent}local function ${name}${functionSource}${eol}`);
+    const tag = site.directiveTier ? "" : `--@quantum:${tier}${eol}`;
+    insertion.parts.push(`${site.indent}${tag}${site.indent}local function ${name}() return ${originalCall} end${eol}`);
     insertions.set(site.statementStart, insertion);
 
-    const suffix = code.slice(site.calleeEnd, site.callEnd);
     edits.push({
       offset: site.callStart,
       end: site.callEnd,
-      text: `${name}${suffix}`,
+      text: `${name}()`,
       order: 0,
     });
     refactored++;
@@ -631,7 +674,7 @@ export function refactorIifes(
       );
       return { code, refactored: 0, remaining: sites.length, warnings, tier, line: targetLine };
     }
-    const applied = applySites(code, initial.ast, [target], eol);
+    const applied = applySites(code, initial.ast, [target], eol, tier);
     const validation = parseSource(applied.code);
     if (!validation.valid || !validation.ast || !validation.lexed) {
       warnings.push(`Auto-refactor produced invalid code; the source was left unchanged. ${validation.error ?? ""}`.trim());
@@ -654,9 +697,17 @@ export function refactorIifes(
   let currentSites = sites;
   let refactored = 0;
   for (let pass = 0; pass < MAX_PASSES; pass++) {
-    const targets = currentSites.filter((site) => site.safe);
+    const safeSites = currentSites.filter((site) => site.safe);
+    const targets = safeSites.filter((site) =>
+      !safeSites.some(
+        (other) =>
+          other !== site &&
+          site.callStart <= other.callStart &&
+          other.callEnd <= site.callEnd,
+      ),
+    );
     if (targets.length === 0) break;
-    const applied = applySites(output, currentAst, targets, eol);
+    const applied = applySites(output, currentAst, targets, eol, tier);
     if (applied.refactored === 0) break;
     const validation = parseSource(applied.code);
     if (!validation.valid || !validation.ast || !validation.lexed) {
@@ -725,13 +776,24 @@ function containsDirect(node: AnyNode, type: string): boolean {
   return found;
 }
 
+function isLoopOrFunctionStatement(type: string): boolean {
+  return (
+    type === "WhileStatement" ||
+    type === "ForNumericStatement" ||
+    type === "ForInStatement" ||
+    type === "FunctionStatement" ||
+    type === "LocalFunctionStatement"
+  );
+}
+
 function doOwners(ast: Chunk): Map<AnyNode, AnyNode> {
   const owners = new Map<AnyNode, AnyNode>();
-  const visit = (node: AnyNode, top: AnyNode) => {
-    if (node.type === "DoStatement") owners.set(node, top);
-    forEachChild(node, (child) => visit(child, top));
+  const visit = (node: AnyNode, ancestor: AnyNode | null) => {
+    const nextAncestor = isLoopOrFunctionStatement(node.type) ? node : ancestor;
+    if (node.type === "DoStatement") owners.set(node, ancestor ?? node);
+    forEachChild(node, (child) => visit(child, nextAncestor));
   };
-  for (const statement of ast.body as unknown as AnyNode[]) visit(statement, statement);
+  for (const statement of ast.body as unknown as AnyNode[]) visit(statement, null);
   return owners;
 }
 
@@ -884,7 +946,7 @@ export function hoistDoBlockParent(
   }
 
   const tagTier = directive.tier ?? tier;
-  const nextName = makeNameFactory(initial.ast, "__quantum_do_wrap_");
+  const nextName = makeNameFactory(initial.ast, "__q_do_wrap_");
   const name = nextName();
   const eol = code.includes("\r\n") ? "\r\n" : "\n";
   const body = code.slice(parentStart, endOffset);

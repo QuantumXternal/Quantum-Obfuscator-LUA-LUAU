@@ -57,10 +57,9 @@ test("nested functions are attributed to the enclosing top-level function", () =
 
   const nestedIife = analyzeScript(`do\n  (function()\n    return Instance.new("Frame")\n  end)()\nend\n`);
   expect(nestedIife.summary.iifeCount).toBe(1);
-  expect(nestedIife.summary.iifeRefactorable).toBe(0);
+  expect(nestedIife.summary.iifeRefactorable).toBe(1);
   const nestedDiagnostic = nestedIife.diagnostics.find((d) => d.code === "iife");
-  expect(nestedDiagnostic.refactor).toBeNull();
-  expect(nestedDiagnostic.message).toMatch(/cannot be auto-refactored safely/);
+  expect(nestedDiagnostic.refactor).not.toBeNull();
 
   const wrapped = analyzeScript(`local Module = (function()\n  return {}\nend)()\nprint(Module)\n`);
   expect(wrapped.summary.iifeCount).toBe(1);

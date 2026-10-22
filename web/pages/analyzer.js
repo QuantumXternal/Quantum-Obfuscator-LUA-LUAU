@@ -495,7 +495,7 @@ export function initAnalyzer() {
     }
   }
 
-  analyzeButton?.addEventListener("click", () => runAnalysis({ applyFixes: true, button: analyzeButton }));
+  analyzeButton?.addEventListener("click", () => runAnalysis({ source: "manual", button: analyzeButton }));
   refactorAllButton?.addEventListener("click", () => refactorAll(refactorAllButton));
   applyAllButton?.addEventListener("click", async () => {
     const fixes = lastResult ? dedupeFixes(lastResult.diagnostics) : [];
@@ -561,7 +561,7 @@ export function initAnalyzer() {
   document.addEventListener("keydown", (event) => {
     if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
       event.preventDefault();
-      runAnalysis({ applyFixes: true, button: analyzeButton });
+      runAnalysis({ source: "manual", button: analyzeButton });
     }
   });
 
