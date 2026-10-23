@@ -1,4 +1,11 @@
 import { analyzeCode, hoistDoParent, refactorIifes } from "../api.js";
+import {
+  buildFindingView,
+  dedupeFixes,
+  describeGroup,
+  fixesForView,
+  formatApplyAllLabel,
+} from "../analyzer-findings.js";
 import { createEditor } from "../editor.js";
 import { loadSettings, loadDraft, saveDraft, setPendingSource } from "../state.js";
 import { renderAutomationSettings } from "../settings.js";
@@ -59,19 +66,6 @@ RunService.RenderStepped:Connect(function(deltaTime)
 end)
 `;
 
-function dedupeFixes(diagnostics) {
-  const seen = new Set();
-  const fixes = [];
-  for (const diagnostic of diagnostics) {
-    if (!diagnostic.fix) continue;
-    const key = `${diagnostic.fix.line}:${diagnostic.fix.insertText}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    fixes.push(diagnostic.fix);
-  }
-  return fixes;
-}
-
 export function initAnalyzer() {
   const host = document.querySelector("[data-analyzer-editor]");
   const results = document.querySelector("[data-analysis-results]");
@@ -92,6 +86,7 @@ export function initAnalyzer() {
   let settings = loadSettings();
   let analysisController = null;
   let lastResult = null;
+  let lastView = null;
   let suppressFixAnalysis = false;
   let analysisRequest = 0;
 
@@ -165,7 +160,7 @@ export function initAnalyzer() {
     });
   }
 
-  function updateSummary(result, elapsed) {
+  function updateSummary(result, elapsed, view = null) {
     const summary = result.summary;
     const values = {
       lines: summary.lines,
@@ -173,7 +168,7 @@ export function initAnalyzer() {
       heavy: summary.heavyFunctions,
       instanceNew: summary.instanceNew,
       renderStepped: summary.renderStepped,
-      fixable: summary.autoFixable,
+      fixable: view ? view.groups.length : summary.autoFixable,
       errors: summary.errors,
       turbos: result.macros.turbos.length,
       maximums: result.macros.maximums.length,
@@ -379,11 +374,80 @@ export function initAnalyzer() {
     return row;
   }
 
-  function renderFindings(result) {
+  function createGroupFinding(group, index) {
+    const row = document.createElement("div");
+    row.className = "finding-row finding-group severity-warning";
+    row.tabIndex = 0;
+    row.dataset.index = String(index);
+    row.dataset.findingGroup = "true";
+    row.dataset.fixLine = String(group.fix.line);
+    row.dataset.fixCount = String(group.count);
+    row.setAttribute("role", "button");
+
+    const lineText = group.lines.map((line) => `L${line}`).join(", ");
+    const label = group.functionName
+      ? `Function: ${group.functionName}`
+      : `Fix target at line ${group.fix.line}`;
+    row.setAttribute("aria-label", `${label}, ${describeGroup(group)}. ${lineText}.`);
+
+    const line = document.createElement("span");
+    line.className = "finding-line";
+    line.textContent = `L${group.lines[0]}`;
+    line.title = lineText;
+
+    const body = document.createElement("div");
+    body.className = "finding-body";
+    const message = document.createElement("span");
+    message.className = "finding-message";
+    message.textContent = `${label} (${describeGroup(group)})`;
+    const meta = document.createElement("span");
+    meta.className = "finding-meta";
+    const lines = document.createElement("span");
+    lines.className = "finding-code";
+    const shown = group.lines.slice(0, 4).map((item) => `L${item}`).join(", ");
+    const remaining = group.lines.length - 4;
+    lines.textContent = remaining > 0 ? `${shown} +${remaining}` : shown;
+    lines.title = lineText;
+    const count = document.createElement("span");
+    count.className = "finding-count";
+    count.textContent = `${group.count} finding${group.count === 1 ? "" : "s"}`;
+    meta.append(lines, count);
+    body.append(message, meta);
+
+    const fix = document.createElement("button");
+    fix.type = "button";
+    fix.className = "btn btn-primary btn-xs finding-fix finding-action finding-action-fix";
+    fix.dataset.findingAction = "fix";
+    fix.textContent = "Apply fix";
+    fix.setAttribute(
+      "aria-label",
+      `Apply ${group.fix.tier} macro tag to ${group.functionName || `line ${group.fix.line}`} for ${group.count} finding${group.count === 1 ? "" : "s"}`,
+    );
+    fix.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (event.currentTarget?.dataset.findingAction !== "fix") return;
+      if (editor.applyFix(group.fix)) {
+        log(`Inserted ${group.fix.insertText.trim()} above line ${group.fix.line} for ${group.count} finding${group.count === 1 ? "" : "s"}.`, "success");
+      }
+    });
+
+    row.append(line, body, fix);
+    const reveal = () => editor.showDiagnostic(group.diagnostics[0]);
+    row.addEventListener("click", reveal);
+    row.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        reveal();
+      }
+    });
+    return row;
+  }
+
+  function renderFindings(view) {
     if (!results) return;
     results.replaceChildren();
-    const diagnostics = result.diagnostics;
-    if (!diagnostics.length) {
+    if (!view.rows.length) {
       const empty = document.createElement("div");
       empty.className = "findings-empty";
       empty.innerHTML = `<span class="empty-glyph">✓</span><strong>No hot paths detected</strong><p>The analyzer found no Instance.new or RenderStepped hot spots.</p>`;
@@ -391,20 +455,37 @@ export function initAnalyzer() {
       return;
     }
     const fragment = document.createDocumentFragment();
-    diagnostics.forEach((diagnostic, index) => fragment.appendChild(createFinding(diagnostic, index)));
+    view.rows.forEach((row, index) => {
+      fragment.appendChild(
+        row.kind === "group" ? createGroupFinding(row.group, index) : createFinding(row.diagnostic, index),
+      );
+    });
     results.appendChild(fragment);
   }
 
   function render(result, elapsed) {
+    const view = buildFindingView(result.diagnostics);
+    lastView = view;
     if (emptyState) emptyState.hidden = true;
-    document.querySelector("[data-results-count]").textContent = `${result.diagnostics.length} finding${result.diagnostics.length === 1 ? "" : "s"}`;
-    updateSummary(result, elapsed);
+    const findingCount = result.diagnostics.length;
+    const groupCount = view.groups.length;
+    document.querySelector("[data-results-count]").textContent =
+      `${findingCount} finding${findingCount === 1 ? "" : "s"}` +
+      (groupCount ? ` · ${groupCount} fix group${groupCount === 1 ? "" : "s"}` : "");
+    updateSummary(result, elapsed, view);
     updateIifeWarning(result.summary.iifeCount, result.summary.iifeRefactorable);
-    renderFindings(result);
-    const fixCount = result.summary.autoFixable;
+    renderFindings(view);
     if (applyAllButton) {
-      applyAllButton.disabled = fixCount === 0;
-      applyAllButton.textContent = fixCount ? `Apply all fixes (${fixCount})` : "Apply all fixes";
+      applyAllButton.disabled = view.applyAllCount === 0;
+      applyAllButton.textContent = formatApplyAllLabel(view.applyAllCount);
+      applyAllButton.dataset.fixCount = String(view.applyAllCount);
+      applyAllButton.dataset.findingCount = String(view.totalFixable);
+      applyAllButton.setAttribute(
+        "aria-label",
+        view.applyAllCount
+          ? `Apply ${view.applyAllCount} macro tag${view.applyAllCount === 1 ? "" : "s"} covering ${view.totalFixable} finding${view.totalFixable === 1 ? "" : "s"}`
+          : "Apply all fixes",
+      );
     }
     setAnalysisStatus(result.valid ? "Analysis complete" : "Fix syntax errors first", result.valid ? "success" : "error");
     if (result.valid) {
@@ -416,6 +497,7 @@ export function initAnalyzer() {
 
   function clearResults() {
     lastResult = null;
+    lastView = null;
     updateIifeWarning(0, 0);
     if (emptyState) emptyState.hidden = false;
     if (results) results.replaceChildren();
@@ -443,7 +525,10 @@ export function initAnalyzer() {
     });
     if (applyAllButton) {
       applyAllButton.disabled = true;
-      applyAllButton.textContent = "Apply all fixes";
+      applyAllButton.textContent = formatApplyAllLabel(0);
+      delete applyAllButton.dataset.fixCount;
+      delete applyAllButton.dataset.findingCount;
+      applyAllButton.setAttribute("aria-label", "Apply all fixes");
     }
   }
 
@@ -498,7 +583,8 @@ export function initAnalyzer() {
   analyzeButton?.addEventListener("click", () => runAnalysis({ source: "manual", button: analyzeButton }));
   refactorAllButton?.addEventListener("click", () => refactorAll(refactorAllButton));
   applyAllButton?.addEventListener("click", async () => {
-    const fixes = lastResult ? dedupeFixes(lastResult.diagnostics) : [];
+    const fixes = lastView ? fixesForView(lastView) : [];
+    const findingCount = lastView?.totalFixable ?? 0;
     if (!fixes.length) {
       toast("There are no safe auto-fixes to apply.", "info");
       return;
@@ -506,8 +592,14 @@ export function initAnalyzer() {
     suppressFixAnalysis = true;
     const applied = editor.applyFixes(fixes);
     suppressFixAnalysis = false;
-    toast(`Applied ${applied} macro tag${applied === 1 ? "" : "s"}.`, "success");
-    log(`Applied ${applied} macro tag${applied === 1 ? "" : "s"} from the findings panel.`, "success");
+    toast(
+      `Applied ${applied} macro tag${applied === 1 ? "" : "s"} covering ${findingCount} finding${findingCount === 1 ? "" : "s"}.`,
+      "success",
+    );
+    log(
+      `Applied ${applied} macro tag${applied === 1 ? "" : "s"} covering ${findingCount} finding${findingCount === 1 ? "" : "s"} from the findings panel.`,
+      "success",
+    );
     await runAnalysis({ source: "manual" });
   });
 

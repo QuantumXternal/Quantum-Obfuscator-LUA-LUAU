@@ -1591,6 +1591,18 @@ h4 {
   background: rgba(88, 215, 255, 0.035);
 }
 
+.finding-group {
+  background: linear-gradient(90deg, rgba(88, 215, 255, 0.06), transparent 58%);
+}
+
+.finding-group .finding-line {
+  color: var(--cyan);
+}
+
+.finding-group .finding-message {
+  color: #dbe9f8;
+}
+
 .finding-row.severity-error {
   box-shadow: inset 2px 0 0 rgba(255, 107, 138, 0.55);
 }
@@ -1641,6 +1653,16 @@ h4 {
   color: var(--cyan);
   font-family: var(--mono);
   font-size: 8.5px;
+}
+
+.finding-count {
+  padding: 1px 5px;
+  color: #b9e8ff;
+  font-family: var(--mono);
+  font-size: 8px;
+  background: rgba(88, 215, 255, 0.08);
+  border: 1px solid rgba(88, 215, 255, 0.16);
+  border-radius: 3px;
 }
 
 .finding-state {
