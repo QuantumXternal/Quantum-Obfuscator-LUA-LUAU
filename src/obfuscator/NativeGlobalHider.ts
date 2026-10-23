@@ -8,6 +8,7 @@ import type {
 } from "../ast/types.js";
 import { lex } from "../lexer/Lexer.js";
 import { parseWithErrors } from "../parser/Parser.js";
+import { buildCoreShimLua } from "../vm/coreShim.js";
 import { encodeStringExpression } from "./StringEncoder.js";
 
 const SAFE_GLOBALS = new Set([
@@ -44,6 +45,9 @@ function isBound(name: string, scopes: Scopes): boolean {
 }
 
 function parseAlias(aliasName: string): Statement[] {
+  const shim = buildCoreShimLua(
+    `function(_0k) local _0ok,_0v=pcall(function() return e[_0k] end);if _0ok and _0v~=nil then return _0v end;return nil end`,
+  );
   const src = [
     `local ${aliasName}=(function()`,
     `local e`,
@@ -59,7 +63,13 @@ function parseAlias(aliasName: string): Statement[] {
     `end`,
     `if e==nil and type(_G)=="table" then e=_G end`,
     `if e==nil then e={} end`,
-    `return e`,
+    `local _0s=${shim}`,
+    `local _0b={}`,
+    `rawset(_0b,"task",_0s["task"])`,
+    `rawset(_0b,"wait",_0s["wait"])`,
+    `rawset(_0b,"_safe_task",_0s["safe_task"])`,
+    `rawset(_0b,"_safe_wait",_0s["safe_wait"])`,
+    `return setmetatable(_0b,{__index=e,__newindex=function(_,_0k,_0v) e[_0k]=_0v end})`,
     `end)()`,
   ].join("\n");
   const lr = lex(src);

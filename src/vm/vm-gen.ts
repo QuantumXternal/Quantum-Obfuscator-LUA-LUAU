@@ -6,6 +6,7 @@ import { compile as compileAST } from "./Compiler.js";
 import { splitLongLiteral, joinBounded, luaQuotedFromBytes, boundCommaSeparatedLine, longStringLevel } from "./limits.js";
 import { bit32InstallerLua } from "./bit32-fallback.js";
 import { buildEnvRootExpr } from "./envRoot.js";
+import { buildCoreShimLua } from "./coreShim.js";
 import { prependOutputHeader } from "./watermark.js";
 
 // Emit a (possibly very long) encoded fragment as one or more bounded-width
@@ -2318,6 +2319,16 @@ function collatzEncodeString(s: string, seed: number): number[] {
   return Array.from(s).map((c, i) => c.charCodeAt(0) ^ keys[i]);
 }
 
+function buildTaskShimInstallLua(
+  envVar: string,
+  pcallVar: string,
+  rawsetVar: string,
+): string {
+  const getter = `function(_0k) local _0ok,_0v=${pcallVar}(function() return ${envVar}[_0k] end);if _0ok and _0v~=nil then return _0v end;return nil end`;
+  const shim = buildCoreShimLua(getter);
+  return `do local _0s=${shim};${rawsetVar}(${envVar},"task",_0s["task"]);${rawsetVar}(${envVar},"wait",_0s["wait"]);${rawsetVar}(${envVar},"_safe_task",_0s["safe_task"]);${rawsetVar}(${envVar},"_safe_wait",_0s["safe_wait"]);end`;
+}
+
 function buildEnvSetup(
   n: NameMap,
   level: VMGenLevel
@@ -2331,6 +2342,7 @@ function buildEnvSetup(
     // hard-crashing.
     let code = `local ${genv}=${buildEnvRootExpr()}\n`;
     code += `local ${env}\n${env}=setmetatable({},{__index=function(_,k) local ok,v=pcall(function() return ${genv}[k] end);if ok and v~=nil then rawset(${env},k,v);return v end;return nil end})\n`;
+    code += buildTaskShimInstallLua(env, "pcall", "rawset") + "\n";
     const lo = randomName(3), lty = randomName(3), lsf = randomName(3), lpc = randomName(3);
     const lw = randomName(4), lc = randomName(2), ln = randomName(2), lm = randomName(2);
     const lv = randomName(2), le = randomName(2), lgf = randomName(3), lge = randomName(2), lgok = randomName(2), lgr = randomName(2);
@@ -2432,6 +2444,8 @@ function buildEnvSetup(
   } else {
     lines.push(`${env}=${bSM}({},{[${idxEsc}]=function(${fbP},${fbK}) local ${okV},${valV}=${bPC}(function() return ${genv}[${fbK}] end);${cacheHit} end})`);
   }
+
+  lines.push(buildTaskShimInstallLua(env, bPC, bRS));
 
   const encLookup = (s: string) => `${collatzDec}({${collatzEncodeString(s, collatzSeed).join(",")}})`;
   lines.push(`if not ${env}[${encLookup("unpack")}] then local _t=${env}[${encLookup("table")}];if _t then ${bRS}(${env},${encLookup("unpack")},_t[${encLookup("unpack")}]) end end`);

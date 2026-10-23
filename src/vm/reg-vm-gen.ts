@@ -7,6 +7,7 @@ import { join as _dumpJoin } from "path";
 import { encryptAndEncode, compressToBase85, compressBytesToBase85 } from "./lzma.js";
 import { generateBootstrap } from "./bootstrap-template.js";
 import { buildEnvRootExpr } from "./envRoot.js";
+import { buildCoreShimLua } from "./coreShim.js";
 import { bit32InstallerLua } from "./bit32-fallback.js";
 import { joinBounded, luaQuotedFromBytes, boundCommaSeparatedLine } from "./limits.js";
 import { prependOutputHeader } from "./watermark.js";
@@ -2259,25 +2260,16 @@ function loadWrapperNames(): LoadWrapperNames {
 
 function buildTaskShimInstall(ctx: BuildCtx): string {
   const n = ctx.names;
-  const L: string[] = [];
-  L.push(`do`);
-  L.push(`local _ts=${n.env}["task"]`);
-  L.push(`local _t={}`);
-  L.push(`if ${n.bType}(_ts)=="table" then _t["delay"]=_ts["delay"];_t["spawn"]=_ts["spawn"];_t["wait"]=_ts["wait"] end`);
-  L.push(`local _w=${n.env}["wait"]`);
-  L.push(`if ${n.bType}(_w)~="function" then _w=_t["wait"] end`);
-  L.push(`local _c=${n.env}["coroutine"]`);
-  L.push(`if ${n.bType}(_w)~="function" then local _rs=${n.env}["RunService"];local _hb=${n.bType}(_rs)=="table" and _rs["Heartbeat"] or nil;local _hw=${n.bType}(_hb)=="table" and _hb["Wait"] or nil;if ${n.bType}(_hw)=="function" then _w=function(_d) local _ok,_dt=${n.bPcall}(_hw,_hb);if _ok and ${n.bType}(_dt)=="number" and _dt>0 then return _dt end;return 0 end end end`);
-  L.push(`if ${n.bType}(_w)~="function" then _w=function(_d) local _iy,_y;if ${n.bType}(_c)=="table" then _iy=_c["isyieldable"];_y=_c["yield"] end;if ${n.bType}(_iy)=="function" and ${n.bType}(_y)=="function" then local _ok,_cy=${n.bPcall}(_iy);if _ok and _cy==true then _y() return 0 end end;return 0 end end`);
-  L.push(`if ${n.bType}(_t["spawn"])~="function" then _t["spawn"]=function(_f,...) if ${n.bType}(_f)~="function" or ${n.bType}(_c)~="table" then return nil end;local _cr,_re=_c["create"],_c["resume"];if ${n.bType}(_cr)~="function" or ${n.bType}(_re)~="function" then return nil end;local _th=_cr(_f);_re(_th,...);return _th end end`);
-  L.push(`if ${n.bType}(_t["delay"])~="function" then _t["delay"]=function(_d,_f,...) if ${n.bType}(_f)~="function" or ${n.bType}(_c)~="table" then return nil end;local _cr,_re=_c["create"],_c["resume"];if ${n.bType}(_cr)~="function" or ${n.bType}(_re)~="function" then return nil end;local _a={...};local _th=_cr(function() if ${n.bType}(_d)=="number" and _d>0 then _w(_d) end;if ${n.bType}(${n.tUnpack})=="function" then _f(${n.tUnpack}(_a)) else _f() end end);_re(_th);return _th end end`);
-  L.push(`if ${n.bType}(_t["wait"])~="function" then _t["wait"]=_w end`);
-  L.push(`${n.env}["task"]=_t`);
-  L.push(`${n.env}["wait"]=_w`);
-  L.push(`${n.env}["_safe_task"]=_t`);
-  L.push(`${n.env}["_safe_wait"]=_w`);
-  L.push(`end`);
-  return L.join("\n");
+  const getter = `function(_0k) local _0ok,_0v=${n.bPcall}(function() return ${n.env}[_0k] end);if _0ok and _0v~=nil then return _0v end;return nil end`;
+  return [
+    `do`,
+    `local _0s=${buildCoreShimLua(getter)}`,
+    `${n.env}["task"]=_0s["task"]`,
+    `${n.env}["wait"]=_0s["wait"]`,
+    `${n.env}["_safe_task"]=_0s["safe_task"]`,
+    `${n.env}["_safe_wait"]=_0s["safe_wait"]`,
+    `end`,
+  ].join("\n");
 }
 
 function buildEnvSetup(ctx: BuildCtx): string {
