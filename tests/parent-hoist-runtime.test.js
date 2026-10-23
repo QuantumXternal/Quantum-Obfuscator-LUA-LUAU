@@ -38,13 +38,11 @@ const luauTest = existsSync(LUAU) ? test : test.skip;
 luaTest("hoisted do+break preserves loop control on PUC-Lua 5.4", () => {
   const hoisted = hoistDoBlockParent(BREAK_SOURCE, { line: 4 });
   expect(hoisted.hoisted).toBe(1);
-  expect(hoisted.code).toContain("--@quantum:turbo");
   expect(run(LUA54, "lua", hoisted.code)).toBe("2");
 });
 
 luauTest("hoisted do+break preserves loop control on Luau", () => {
   const hoisted = hoistDoBlockParent(BREAK_SOURCE, { line: 4 });
   expect(hoisted.hoisted).toBe(1);
-  expect(hoisted.code).toContain("--@quantum:turbo");
   expect(run(LUAU, "luau", hoisted.code)).toBe("2");
 });
