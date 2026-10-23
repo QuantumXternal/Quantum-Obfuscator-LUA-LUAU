@@ -56,12 +56,45 @@ test("scanner supports direct function assignments", () => {
   expect(result.warnings).toEqual([]);
 });
 
-test("scanner warns and skips nested functions", () => {
+test("scanner tags nested Turbo functions for the native bridge", () => {
   const result = scanFunctionMacros(
     "local function outer()\n  --@quantum:turbo\n  local function inner() return 1 end\n  return inner()\nend\nprint(outer())\n",
   );
   expect(result.turbos).toEqual([]);
-  expect(result.warnings.some((w) => /nested 'inner' is not supported/.test(w))).toBe(true);
+  expect(result.nestedTurbos).toBe(1);
+  expect(result.warnings).toEqual([]);
+});
+
+test("scanner tags colon and dotted Turbo methods at any depth", () => {
+  const result = scanFunctionMacros(
+    `local ui = {}
+--@quantum:turbo
+function ui:Add(x) return self, x end
+--@quantum:turbo
+function ui.Remove(x) return x end
+local function outer()
+  local nested = {}
+  --@quantum:turbo
+  function nested:Render() return self end
+end
+print(ui:Add(1), outer())
+`,
+  );
+  expect(result.turbos).toEqual([]);
+  expect(result.nestedTurbos).toBe(3);
+  expect(result.warnings).toEqual([]);
+});
+
+test("scanner still warns for nested and table Maximum functions", () => {
+  const nested = scanFunctionMacros(
+    "local function outer()\n  --@quantum:maximum\n  local function inner() return 1 end\n  return inner()\nend\n",
+  );
+  expect(nested.maximums).toEqual([]);
+  expect(nested.warnings.some((w) => /nested 'inner' is not supported/.test(w))).toBe(true);
+
+  const method = scanFunctionMacros("local t = {}\n--@quantum:maximum\nfunction t:m() return self end\n");
+  expect(method.maximums).toEqual([]);
+  expect(method.warnings.some((w) => /table\/method functions are not supported/.test(w))).toBe(true);
 });
 
 test("scanner warns and skips ambiguous and conflicting placements", () => {

@@ -34,6 +34,48 @@ test("already tagged functions are reported without a replacement fix", () => {
   expect(result.diagnostics[0].message).toMatch(/already tagged for TURBO/);
 });
 
+test("tagged nested functions use the nearest tag and suppress duplicate fixes", () => {
+  const result = analyzeScript(`local function outer()
+  --@quantum:turbo
+  local function inner()
+    return Instance.new("Frame")
+  end
+  return inner()
+end
+print(outer())
+`);
+  expect(result.macros.nestedTurbos).toBe(1);
+  expect(result.macros.warnings).toEqual([]);
+  expect(result.summary.autoFixable).toBe(0);
+  expect(result.diagnostics).toHaveLength(1);
+  expect(result.diagnostics[0]).toMatchObject({
+    functionName: "inner",
+    fix: null,
+    code: "instance-new",
+  });
+  expect(result.diagnostics[0].message).toMatch(/already tagged for TURBO/);
+  expect(result.diagnostics.some((d) => d.code === "macro-warning")).toBe(false);
+});
+
+test("tagged nested methods use the nearest tag and suppress duplicate fixes", () => {
+  const result = analyzeScript(`local ui = {}
+local function make()
+  --@quantum:turbo
+  function ui:Render()
+    return Instance.new("Frame")
+  end
+end
+print(make())
+`);
+  expect(result.macros.nestedTurbos).toBe(1);
+  expect(result.summary.autoFixable).toBe(0);
+  expect(result.diagnostics[0]).toMatchObject({
+    functionName: "Render",
+    fix: null,
+  });
+  expect(result.diagnostics[0].message).toMatch(/already tagged for TURBO/);
+});
+
 test("nested functions are attributed to the enclosing top-level function", () => {
   const nested = analyzeScript(`local function outer()\n  local function inner()\n    return Instance.new("Frame")\n  end\n  return inner()\nend\nprint(outer())\n`);
   expect(nested.summary.autoFixable).toBe(1);

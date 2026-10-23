@@ -18,7 +18,13 @@ import { generateRegVM } from "../vm/reg-vm-gen.js";
 import type { RegVMLevel } from "../vm/reg-vm-gen.js";
 import { bit32InstallerLua } from "../vm/bit32-fallback.js";
 import { prependOutputHeader } from "../vm/watermark.js";
-import { applyFunctionMacroTiers, extractNativeFunctions, makeSeedMangler, rootCopyLua } from "./macros.js";
+import {
+  applyFunctionMacroTiers,
+  extractNativeFunctions,
+  extractNestedTurboFunctions,
+  makeSeedMangler,
+  rootCopyLua,
+} from "./macros.js";
 import type { Chunk, Statement } from "../ast/types.js";
 
 export type PipelineVmType = "none" | "stack" | "register";
@@ -228,6 +234,16 @@ export function runObfuscatePipeline(code: string, opts: PipelineOptions): strin
     );
     workingAst = extraction.ast;
     nativeStatements = extraction.prefixStatements;
+    for (const fn of extraction.extracted) nativeMangled.push(fn.mangled);
+  }
+
+  if (macroTiers.nestedTurbos > 0) {
+    const extraction = extractNestedTurboFunctions(
+      workingAst,
+      makeSeedMangler(polySeed, "qmn"),
+    );
+    workingAst = extraction.ast;
+    nativeStatements = [...nativeStatements, ...extraction.prefixStatements];
     for (const fn of extraction.extracted) nativeMangled.push(fn.mangled);
   }
 

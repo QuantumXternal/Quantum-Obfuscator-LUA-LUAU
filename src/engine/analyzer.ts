@@ -166,6 +166,37 @@ function siteFromStatement(stmt: AnyNode): { node: AnyNode; name: string | null 
   return null;
 }
 
+function siteFromFunctionNode(node: AnyNode): FunctionSite {
+  const loc = nodeLoc(node);
+  let name: string | null = null;
+  if (node.type === "LocalFunctionStatement" && typeof node.name === "string") {
+    name = node.name;
+  } else if (node.type === "FunctionStatement") {
+    const funcName = node.name;
+    if (isNode(funcName)) {
+      if (typeof funcName.method === "string") {
+        name = funcName.method;
+      } else if (isNode(funcName.base) && funcName.base.type === "Identifier") {
+        name = typeof funcName.base.name === "string" ? funcName.base.name : null;
+      }
+    }
+  }
+  return {
+    node,
+    name,
+    topLevel: false,
+    startLine: loc.start.line,
+    endLine: loc.end.line,
+  };
+}
+
+function taggedSiteFor(node: AnyNode, current: FunctionSite | null): FunctionSite | null {
+  if (!isFunctionNode(node)) return null;
+  if (current && current.node === node) return current;
+  if (node.tier !== "turbo") return null;
+  return siteFromFunctionNode(node);
+}
+
 function functionCount(ast: Chunk): number {
   let count = 0;
   const visit = (node: AnyNode) => {
@@ -320,7 +351,7 @@ export function analyzeScript(code: string, options: AnalyzerOptions = {}): Anal
     });
   }
 
-  let macros: MacroScanResult = { turbos: [], maximums: [], warnings: [] };
+  let macros: MacroScanResult = { turbos: [], maximums: [], nestedTurbos: 0, warnings: [] };
   try {
     macros = applyFunctionMacroTiers(code, ast, lexed.comments as SourceComment[], lexed.tokens as Token[]);
   } catch {
@@ -365,6 +396,8 @@ export function analyzeScript(code: string, options: AnalyzerOptions = {}): Anal
 
   const scanNode = (node: AnyNode, context: ScanContext) => {
     const doBlock = node.type === "DoStatement" ? node : context.doBlock;
+    const tagged = taggedSiteFor(node, context.site);
+    const activeContext = tagged ? { ...context, site: tagged } : context;
     if (node.type === "CallExpression") {
       const callee = node.callee;
       if (
@@ -375,26 +408,26 @@ export function analyzeScript(code: string, options: AnalyzerOptions = {}): Anal
       ) {
         const className = Array.isArray(node.args) ? stringValue(node.args[0]) : null;
         heavyHits.push({
-          site: context.site,
+          site: activeContext.site,
           hit: {
             code: "instance-new",
             node,
             detail: className ? `Instance.new("${className}")` : "Instance.new(...)",
           },
-          topStatement: context.topStatement,
+          topStatement: activeContext.topStatement,
           doBlock,
         });
       }
     }
     if (likelyRenderStepped(node)) {
       heavyHits.push({
-        site: context.site,
+        site: activeContext.site,
         hit: { code: "render-stepped", node, detail: "RenderStepped per-frame event" },
-        topStatement: context.topStatement,
+        topStatement: activeContext.topStatement,
         doBlock,
       });
     }
-    forEachChild(node, (child) => scanNode(child, { ...context, doBlock }));
+    forEachChild(node, (child) => scanNode(child, { ...activeContext, doBlock }));
   };
 
   for (const stmt of ast.body as unknown as AnyNode[]) {
