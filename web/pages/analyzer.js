@@ -1,4 +1,4 @@
-import { analyzeCode, hoistDoParent, refactorIifes } from "../api.js";
+import { analyzeCode, extractCallback, hoistDoParent, refactorIifes } from "../api.js";
 import {
   buildFindingView,
   dedupeFixes,
@@ -167,7 +167,7 @@ export function initAnalyzer() {
       functions: summary.functions,
       heavy: summary.heavyFunctions,
       instanceNew: summary.instanceNew,
-      renderStepped: summary.renderStepped,
+      renderStepped: summary.renderStepped + (summary.heartbeat ?? 0),
       fixable: view ? view.groups.length : summary.autoFixable,
       errors: summary.errors,
       turbos: result.macros.turbos.length,
@@ -271,6 +271,40 @@ export function initAnalyzer() {
     }
   }
 
+  async function applyCallback(code, line, button) {
+    if (!code.trim()) {
+      toast("Add some Luau before extracting a callback.", "error");
+      return;
+    }
+    if (button) setButtonBusy(button, true);
+    try {
+      const tier = settings.turboLevel === "heavy" ? "maximum" : "turbo";
+      const result = await extractCallback(code, tier, line);
+      if (!result.extracted) {
+        const warning = result.warnings?.[0] || `No extractable per-frame callback found at line ${line}.`;
+        toast(warning, "info", 5200);
+        log(warning, "info");
+        return;
+      }
+      cancelScheduledAnalysis();
+      suppressFixAnalysis = true;
+      editor.setValue(result.code);
+      suppressFixAnalysis = false;
+      saveDraft("analyzer", result.code);
+      updateSourceMeta(result.code);
+      const message = `Extracted ${result.extracted} per-frame callback${result.extracted === 1 ? "" : "s"} into tagged local functions.`;
+      toast(message, "success");
+      log(message, "success");
+      await runAnalysis({ source: "callback" });
+    } catch (err) {
+      if (err?.name === "AbortError") return;
+      toast(err.message || "Callback extraction failed.", "error", 5200);
+      log(err.message || "Callback extraction failed.", "error");
+    } finally {
+      if (button) setButtonBusy(button, false);
+    }
+  }
+
   async function refactorAtLine(line, button) {
     await applyRefactor(editor.getValue(), line, button);
   }
@@ -356,6 +390,23 @@ export function initAnalyzer() {
         applyHoist(editor.getValue(), diagnostic.hoist.line, hoist);
       });
       row.appendChild(hoist);
+    } else if (diagnostic.callback) {
+      const callback = document.createElement("button");
+      callback.type = "button";
+      callback.className = "btn btn-secondary btn-xs finding-fix finding-action finding-action-callback";
+      callback.dataset.findingAction = "callback";
+      callback.textContent = "Extract callback";
+      callback.setAttribute(
+        "aria-label",
+        `Extract the per-frame callback at line ${diagnostic.callback.line} into a tagged local function`,
+      );
+      callback.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        if (event.currentTarget?.dataset.findingAction !== "callback") return;
+        applyCallback(editor.getValue(), diagnostic.callback.line, callback);
+      });
+      row.appendChild(callback);
     } else {
       const tag = document.createElement("span");
       tag.className = `finding-state ${diagnostic.severity}`;
@@ -450,7 +501,7 @@ export function initAnalyzer() {
     if (!view.rows.length) {
       const empty = document.createElement("div");
       empty.className = "findings-empty";
-      empty.innerHTML = `<span class="empty-glyph">✓</span><strong>No hot paths detected</strong><p>The analyzer found no Instance.new or RenderStepped hot spots.</p>`;
+      empty.innerHTML = `<span class="empty-glyph">✓</span><strong>No hot paths detected</strong><p>The analyzer found no Instance.new, RenderStepped, or Heartbeat hot spots.</p>`;
       results.appendChild(empty);
       return;
     }
@@ -513,6 +564,7 @@ export function initAnalyzer() {
           iifeRefactorable: 0,
           instanceNew: 0,
           renderStepped: 0,
+          heartbeat: 0,
           autoFixable: 0,
           errors: 0,
         },

@@ -654,6 +654,10 @@ interface NestedCandidate {
   name: string | null;
   isMethod: boolean;
   outerLocals: Set<string>;
+  hostBlock: (Statement | LastStatement)[] | null;
+  hostIndex: number;
+  hostScope: Set<string>;
+  ownName: string | null;
 }
 
 interface CaptureBridge {
@@ -712,17 +716,26 @@ function collectNestedCandidates(ast: Chunk): NestedCandidate[] {
     scope: Set<string>,
     topLevel: boolean,
     insideTagged: boolean,
+    hostBlock: (Statement | LastStatement)[] | null,
+    hostIndex: number,
+    ownName: string | null = null,
   ): void => {
     if (node.type === "FunctionExpression") {
       const fn = node as unknown as FunctionExpression;
       if (!insideTagged && fn.tier === "turbo") {
         if (!topLevel) {
+          const outerLocals = new Set(scope);
+          if (ownName) outerLocals.add(ownName);
           candidates.push({
             node: fn,
             fn,
             name: null,
             isMethod: false,
-            outerLocals: new Set(scope),
+            outerLocals,
+            hostBlock,
+            hostIndex,
+            hostScope: new Set(scope),
+            ownName,
           });
           return;
         }
@@ -732,7 +745,9 @@ function collectNestedCandidates(ast: Chunk): NestedCandidate[] {
       scanBlock(fn.body, names, false, insideTagged || (fn.tier === "turbo" && !topLevel));
       return;
     }
-    forEachChild(node, (child) => visitExpression(child, scope, false, insideTagged));
+    forEachChild(node, (child) =>
+      visitExpression(child, scope, false, insideTagged, hostBlock, hostIndex),
+    );
   };
 
   const scanBlock = (
@@ -742,7 +757,9 @@ function collectNestedCandidates(ast: Chunk): NestedCandidate[] {
     insideTagged: boolean,
   ): Set<string> => {
     const scope = new Set(inherited);
-    for (const stmt of body) visitStatement(stmt as unknown as AnyNode, scope, topLevel, insideTagged);
+    for (let index = 0; index < body.length; index++) {
+      visitStatement(body[index] as unknown as AnyNode, scope, topLevel, insideTagged, body, index);
+    }
     return scope;
   };
 
@@ -751,6 +768,8 @@ function collectNestedCandidates(ast: Chunk): NestedCandidate[] {
     scope: Set<string>,
     topLevel: boolean,
     insideTagged: boolean,
+    hostBlock: (Statement | LastStatement)[] | null,
+    hostIndex: number,
   ): boolean => {
     const isMethod = node.type === "FunctionStatement" && methodFunction(node);
     const topLevelDeclaration = topLevel && !(node.type === "FunctionStatement" && isMethod);
@@ -768,6 +787,10 @@ function collectNestedCandidates(ast: Chunk): NestedCandidate[] {
         name,
         isMethod,
         outerLocals,
+        hostBlock,
+        hostIndex,
+        hostScope: new Set(scope),
+        ownName,
       });
       return true;
     }
@@ -779,6 +802,8 @@ function collectNestedCandidates(ast: Chunk): NestedCandidate[] {
     scope: Set<string>,
     topLevel: boolean,
     insideTagged: boolean,
+    hostBlock: (Statement | LastStatement)[] | null,
+    hostIndex: number,
   ): void => {
     switch (stmt.type) {
       case "LocalStatement": {
@@ -789,7 +814,14 @@ function collectNestedCandidates(ast: Chunk): NestedCandidate[] {
           local.values?.length === 1 &&
           local.values[0]!.type === "FunctionExpression";
         for (const value of local.values ?? []) {
-          visitExpression(value as unknown as AnyNode, scope, onlyNamedDeclaration, insideTagged);
+          visitExpression(
+            value as unknown as AnyNode,
+            scope,
+            onlyNamedDeclaration,
+            insideTagged,
+            hostBlock,
+            hostIndex,
+          );
         }
         for (const v of local.vars) scope.add(v.name);
         return;
@@ -802,32 +834,45 @@ function collectNestedCandidates(ast: Chunk): NestedCandidate[] {
           assignment.values.length === 1 &&
           assignment.vars[0]!.type === "Identifier" &&
           assignment.values[0]!.type === "FunctionExpression";
-        for (const value of assignment.values) {
-          visitExpression(value as unknown as AnyNode, scope, onlyNamedDeclaration, insideTagged);
+        const assigned = assignment.vars.length === 1 ? assignment.vars[0]! : null;
+        const ownName =
+          assigned?.type === "Identifier" && scope.has(assigned.name) ? assigned.name : null;
+        for (let valueIndex = 0; valueIndex < assignment.values.length; valueIndex++) {
+          visitExpression(
+            assignment.values[valueIndex] as unknown as AnyNode,
+            scope,
+            onlyNamedDeclaration,
+            insideTagged,
+            hostBlock,
+            hostIndex,
+            assignment.values.length === 1 ? ownName : null,
+          );
         }
         for (const v of assignment.vars) {
-          if (!(v.type === "Identifier")) visitExpression(v as unknown as AnyNode, scope, false, insideTagged);
+          if (!(v.type === "Identifier")) {
+            visitExpression(v as unknown as AnyNode, scope, false, insideTagged, hostBlock, hostIndex);
+          }
         }
         return;
       }
       case "CompoundAssignmentStatement": {
         const compound = stmt as AnyNode;
-        visitExpression(compound.var as AnyNode, scope, false, insideTagged);
-        visitExpression(compound.value as AnyNode, scope, false, insideTagged);
+        visitExpression(compound.var as AnyNode, scope, false, insideTagged, hostBlock, hostIndex);
+        visitExpression(compound.value as AnyNode, scope, false, insideTagged, hostBlock, hostIndex);
         return;
       }
       case "FunctionCallStatement":
-        visitExpression((stmt as AnyNode).call as AnyNode, scope, false, insideTagged);
+        visitExpression((stmt as AnyNode).call as AnyNode, scope, false, insideTagged, hostBlock, hostIndex);
         return;
       case "ReturnStatement": {
         for (const value of ((stmt as AnyNode).values ?? []) as AnyNode[]) {
-          visitExpression(value, scope, false, insideTagged);
+          visitExpression(value, scope, false, insideTagged, hostBlock, hostIndex);
         }
         return;
       }
       case "LocalFunctionStatement": {
         const fn = stmt as unknown as LocalFunctionStatement;
-        const added = visitFunctionCandidate(fn, scope, topLevel, insideTagged);
+        const added = visitFunctionCandidate(fn, scope, topLevel, insideTagged, hostBlock, hostIndex);
         scope.add(fn.name);
         if (added) return;
         const names = new Set(scope);
@@ -838,10 +883,17 @@ function collectNestedCandidates(ast: Chunk): NestedCandidate[] {
       }
       case "FunctionStatement": {
         const fn = stmt as unknown as FunctionStatement;
-        const added = visitFunctionCandidate(fn, scope, topLevel, insideTagged);
+        const added = visitFunctionCandidate(fn, scope, topLevel, insideTagged, hostBlock, hostIndex);
         if (added) return;
         if (fn.name.base.type === "MemberExpression") {
-          visitExpression(fn.name.base.object as unknown as AnyNode, scope, false, insideTagged);
+          visitExpression(
+            fn.name.base.object as unknown as AnyNode,
+            scope,
+            false,
+            insideTagged,
+            hostBlock,
+            hostIndex,
+          );
         }
         const names = new Set(scope);
         for (const name of paramNames(fn.params)) names.add(name);
@@ -850,13 +902,13 @@ function collectNestedCandidates(ast: Chunk): NestedCandidate[] {
         return;
       }
       case "FunctionExpression":
-        visitExpression(stmt, scope, false, insideTagged);
+        visitExpression(stmt, scope, false, insideTagged, hostBlock, hostIndex);
         return;
       case "DoStatement":
         scanBlock((stmt as AnyNode).body as (Statement | LastStatement)[], scope, false, insideTagged);
         return;
       case "WhileStatement":
-        visitExpression((stmt as AnyNode).condition as AnyNode, scope, false, insideTagged);
+        visitExpression((stmt as AnyNode).condition as AnyNode, scope, false, insideTagged, null, -1);
         scanBlock((stmt as AnyNode).body as (Statement | LastStatement)[], scope, false, insideTagged);
         return;
       case "RepeatStatement": {
@@ -866,15 +918,15 @@ function collectNestedCandidates(ast: Chunk): NestedCandidate[] {
           false,
           insideTagged,
         );
-        visitExpression((stmt as AnyNode).condition as AnyNode, inner, false, insideTagged);
+        visitExpression((stmt as AnyNode).condition as AnyNode, inner, false, insideTagged, null, -1);
         return;
       }
       case "IfStatement": {
         const conditional = stmt as AnyNode;
-        visitExpression(conditional.condition as AnyNode, scope, false, insideTagged);
+        visitExpression(conditional.condition as AnyNode, scope, false, insideTagged, null, -1);
         scanBlock(conditional.thenBody as (Statement | LastStatement)[], scope, false, insideTagged);
         for (const clause of (conditional.elseifClauses ?? []) as AnyNode[]) {
-          visitExpression(clause.condition as AnyNode, scope, false, insideTagged);
+          visitExpression(clause.condition as AnyNode, scope, false, insideTagged, null, -1);
           scanBlock(clause.body as (Statement | LastStatement)[], scope, false, insideTagged);
         }
         if (Array.isArray(conditional.elseBody)) {
@@ -884,9 +936,9 @@ function collectNestedCandidates(ast: Chunk): NestedCandidate[] {
       }
       case "ForNumericStatement": {
         const loop = stmt as AnyNode;
-        visitExpression(loop.start as AnyNode, scope, false, insideTagged);
-        visitExpression(loop.end as AnyNode, scope, false, insideTagged);
-        if (loop.step) visitExpression(loop.step as AnyNode, scope, false, insideTagged);
+        visitExpression(loop.start as AnyNode, scope, false, insideTagged, null, -1);
+        visitExpression(loop.end as AnyNode, scope, false, insideTagged, null, -1);
+        if (loop.step) visitExpression(loop.step as AnyNode, scope, false, insideTagged, null, -1);
         const inner = new Set(scope);
         inner.add((loop["var"] as Identifier).name);
         scanBlock(loop.body as (Statement | LastStatement)[], inner, false, insideTagged);
@@ -895,7 +947,7 @@ function collectNestedCandidates(ast: Chunk): NestedCandidate[] {
       case "ForInStatement": {
         const loop = stmt as AnyNode;
         for (const value of (loop.iter ?? []) as AnyNode[]) {
-          visitExpression(value, scope, false, insideTagged);
+          visitExpression(value, scope, false, insideTagged, null, -1);
         }
         const inner = new Set(scope);
         for (const v of (loop.vars ?? []) as Identifier[]) inner.add(v.name);
@@ -909,10 +961,13 @@ function collectNestedCandidates(ast: Chunk): NestedCandidate[] {
             child.type === "LocalFunctionStatement" ||
             child.type === "FunctionExpression"
           ) {
-            if (child.type === "FunctionExpression") visitExpression(child, scope, false, insideTagged);
-            else visitStatement(child, scope, false, insideTagged);
+            if (child.type === "FunctionExpression") {
+              visitExpression(child, scope, false, insideTagged, hostBlock, hostIndex);
+            } else {
+              visitStatement(child, scope, false, insideTagged, hostBlock, hostIndex);
+            }
           } else {
-            visitExpression(child, scope, false, insideTagged);
+            visitExpression(child, scope, false, insideTagged, hostBlock, hostIndex);
           }
         });
         return;
@@ -925,6 +980,33 @@ function collectNestedCandidates(ast: Chunk): NestedCandidate[] {
 
 function cloneParam(name: string, loc: Chunk["loc"]): Param {
   return { type: "Param", name, loc };
+}
+
+function collectIdentifierNames(ast: Chunk): Set<string> {
+  const names = new Set<string>();
+  const visit = (node: AnyNode): void => {
+    if (node.type === "Identifier" && typeof node.name === "string") names.add(node.name);
+    if (node.type === "Param" && typeof node.name === "string") names.add(node.name);
+    if (node.type === "LocalStatement" && Array.isArray(node.vars)) {
+      for (const v of node.vars as Identifier[]) {
+        if (v && typeof v.name === "string") names.add(v.name);
+      }
+    }
+    if (node.type === "LocalFunctionStatement" && typeof node.name === "string") {
+      names.add(node.name);
+    }
+    forEachChild(node, visit);
+  };
+  for (const stmt of ast.body) visit(stmt as unknown as AnyNode);
+  return names;
+}
+
+function uniqueName(base: string, used: Set<string>): string {
+  let name = base;
+  let suffix = 1;
+  while (used.has(name)) name = `${base}_${suffix++}`;
+  used.add(name);
+  return name;
 }
 
 function bridgeFunction(name: string, loc: Chunk["loc"]): FunctionExpression {
@@ -973,6 +1055,11 @@ export function extractNestedTurboFunctions(
 
   const prefixStatements: Statement[] = [];
   const extracted: ExtractedFunction[] = [];
+  const usedNames = collectIdentifierNames(ast);
+  const cacheInsertions = new Map<
+    (Statement | LastStatement)[],
+    Map<number, Statement[]>
+  >();
 
   for (let index = 0; index < candidates.length; index++) {
     const candidate = candidates[index]!;
@@ -992,10 +1079,45 @@ export function extractNestedTurboFunctions(
     const bridgeParams: Param[] = [];
     for (let captureIndex = 0; captureIndex < captured.length; captureIndex++) {
       const name = captured[captureIndex]!;
-      const getter = `${mangled}_g${captureIndex.toString(36)}`;
-      const setter = `${mangled}_s${captureIndex.toString(36)}`;
+      const getter = uniqueName(`${mangled}_g${captureIndex.toString(36)}`, usedNames);
+      const setter = uniqueName(`${mangled}_s${captureIndex.toString(36)}`, usedNames);
       bridges.set(name, { getter, setter });
       bridgeParams.push(cloneParam(getter, loc), cloneParam(setter, loc));
+    }
+
+    const recursive = candidate.ownName !== null && free.has(candidate.ownName);
+    const canCache =
+      captured.length > 0 &&
+      !recursive &&
+      candidate.hostBlock !== null &&
+      candidate.hostIndex >= 0 &&
+      captured.every((name) => candidate.hostScope.has(name));
+
+    if (canCache && candidate.hostBlock) {
+      const cacheStatements: Statement[] = [];
+      for (const name of captured) {
+        const bridge = bridges.get(name)!;
+        cacheStatements.push({
+          type: "LocalStatement",
+          loc,
+          vars: [{ name: bridge.getter }],
+          values: [bridgeFunction(name, loc)],
+        } as LocalStatement);
+        cacheStatements.push({
+          type: "LocalStatement",
+          loc,
+          vars: [{ name: bridge.setter }],
+          values: [setterFunction(bridge.setter, name, loc)],
+        } as LocalStatement);
+      }
+      let byIndex = cacheInsertions.get(candidate.hostBlock);
+      if (!byIndex) {
+        byIndex = new Map<number, Statement[]>();
+        cacheInsertions.set(candidate.hostBlock, byIndex);
+      }
+      const existing = byIndex.get(candidate.hostIndex);
+      if (existing) existing.push(...cacheStatements);
+      else byIndex.set(candidate.hostIndex, cacheStatements);
     }
 
     const bodyScope = localFrameNames(candidate.fn.params, candidate.isMethod);
@@ -1024,8 +1146,13 @@ export function extractNestedTurboFunctions(
     const callArgs: Expression[] = [];
     for (const name of captured) {
       const bridge = bridges.get(name)!;
-      callArgs.push(bridgeFunction(name, loc));
-      callArgs.push(setterFunction(bridge.setter, name, loc));
+      if (canCache) {
+        callArgs.push({ type: "Identifier", name: bridge.getter, loc });
+        callArgs.push({ type: "Identifier", name: bridge.setter, loc });
+      } else {
+        callArgs.push(bridgeFunction(name, loc));
+        callArgs.push(setterFunction(bridge.setter, name, loc));
+      }
     }
     if (selfName) {
       callArgs.push({ type: "Identifier", name: selfName, loc });
@@ -1053,6 +1180,14 @@ export function extractNestedTurboFunctions(
       },
     ];
     extracted.push({ source: fnName, mangled });
+  }
+
+  for (const [block, byIndex] of cacheInsertions) {
+    const indexes = [...byIndex.keys()].sort((a, b) => b - a);
+    for (const index of indexes) {
+      const statements = byIndex.get(index)!;
+      block.splice(Math.min(index, block.length), 0, ...statements);
+    }
   }
 
   return { ast, prefixStatements, extracted, warnings: [] };

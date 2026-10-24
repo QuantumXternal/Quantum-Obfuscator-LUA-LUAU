@@ -7,7 +7,7 @@ import { validate } from "./compiler/LuauCompiler.js";
 import type { PipelineVmType, PipelineVmLevel } from "./engine/obfuscatePipeline.js";
 import type { ObfuscationTarget } from "./engine/profiles.js";
 import { analyzeScript } from "./engine/analyzer.js";
-import { hoistDoBlockParent, refactorIifes } from "./engine/iifeRefactor.js";
+import { extractCallbacks, hoistDoBlockParent, refactorIifes } from "./engine/iifeRefactor.js";
 import { injectHeavyMacros } from "./engine/macroAuto.js";
 import { buildStudioPlan, StudioOptionsError } from "./studioOptions.js";
 import { cacheKey } from "./cacheKey.js";
@@ -147,6 +147,39 @@ app.post("/api/hoist-do-parent", (req: express.Request, res: express.Response) =
     });
   } catch (err: any) {
     console.error("[API-ERROR] /api/hoist-do-parent failed:", err);
+    res.status(500).json({ error: `Server error: ${err.message}` });
+  }
+});
+
+app.post("/api/extract-callback", (req: express.Request, res: express.Response) => {
+  try {
+    const { code, line, options } = req.body ?? {};
+    if (typeof code !== "string") {
+      return res.status(400).json({ error: "Invalid 'code' parameter" }) as any;
+    }
+    if (line !== undefined && (!Number.isInteger(line) || line < 1)) {
+      return res.status(400).json({ error: "Invalid 'line' parameter" }) as any;
+    }
+    const bytes = Buffer.byteLength(code, "utf8");
+    if (bytes > MAX_INPUT_BYTES) {
+      return res.status(413).json({ error: inputTooLargeMessage(MAX_INPUT_BYTES), bytes, maxBytes: MAX_INPUT_BYTES }) as any;
+    }
+    const tier = options?.tier === "maximum" ? "maximum" : "turbo";
+    const result = extractCallbacks(code, { tier, line });
+    console.log(
+      `[API] /api/extract-callback - line: ${line ?? "all"}, extracted: ${result.extracted}, remaining: ${result.remaining}`,
+    );
+    res.json({
+      success: true,
+      code: result.code,
+      extracted: result.extracted,
+      remaining: result.remaining,
+      warnings: result.warnings,
+      tier: result.tier,
+      line: result.line,
+    });
+  } catch (err: any) {
+    console.error("[API-ERROR] /api/extract-callback failed:", err);
     res.status(500).json({ error: `Server error: ${err.message}` });
   }
 });

@@ -5,7 +5,7 @@ import type { SourceComment } from "../lexer/Lexer.js";
 import type { Token } from "../tokens.js";
 import { applyFunctionMacroTiers } from "./macros.js";
 import type { MacroScanResult } from "./macros.js";
-import { collectIifeSites, type IifeSite } from "./iifeRefactor.js";
+import { collectIifeSites, frameEventCallback, type IifeSite } from "./iifeRefactor.js";
 
 export type AnalyzerTier = "turbo" | "maximum";
 
@@ -15,6 +15,11 @@ export interface AnalyzerIifeRefactor {
 
 export interface AnalyzerHoistRefactor {
   /** 1-based line where the enclosing do block starts. */
+  line: number;
+}
+
+export interface AnalyzerCallbackRefactor {
+  /** 1-based line where the direct per-frame Connect call starts. */
   line: number;
 }
 
@@ -39,6 +44,7 @@ export interface AnalyzerDiagnostic {
   fixable: boolean;
   refactor?: AnalyzerIifeRefactor | null;
   hoist?: AnalyzerHoistRefactor | null;
+  callback?: AnalyzerCallbackRefactor | null;
 }
 
 export interface AnalyzerSummary {
@@ -49,6 +55,7 @@ export interface AnalyzerSummary {
   iifeRefactorable: number;
   instanceNew: number;
   renderStepped: number;
+  heartbeat: number;
   heavyFunctions: number;
   autoFixable: number;
   errors: number;
@@ -81,7 +88,7 @@ interface FunctionSite {
 }
 
 interface HeavyHit {
-  code: "instance-new" | "render-stepped";
+  code: "instance-new" | "render-stepped" | "heartbeat";
   node: AnyNode;
   detail: string;
 }
@@ -230,45 +237,6 @@ function countIifes(ast: Chunk): number {
   return count;
 }
 
-function unwrapParens(node: AnyNode): AnyNode {
-  let current = node;
-  while (current.type === "ParenExpression" || current.type === "TypeAssertion") {
-    if (!isNode(current.expression)) break;
-    current = current.expression;
-  }
-  return current;
-}
-
-function isRenderSteppedReference(node: unknown): boolean {
-  if (!isNode(node)) return false;
-  const value = unwrapParens(node);
-  if (value.type === "MemberExpression" && value.property === "RenderStepped") return true;
-  if (value.type === "IndexExpression" && stringValue(value.index) === "RenderStepped") return true;
-  return value.type === "Identifier" && value.name === "RenderStepped";
-}
-
-function hasInlineCallback(args: unknown): boolean {
-  if (!Array.isArray(args)) return false;
-  return args.some((arg) => isNode(arg) && unwrapParens(arg).type === "FunctionExpression");
-}
-
-function likelyRenderStepped(node: AnyNode): boolean {
-  if (node.type === "MethodCallExpression" && node.method === "Connect") {
-    return isRenderSteppedReference(node.object) && hasInlineCallback(node.args);
-  }
-  if (node.type === "CallExpression") {
-    const callee = isNode(node.callee) ? unwrapParens(node.callee) : null;
-    if (
-      callee?.type === "MemberExpression" &&
-      callee.property === "Connect" &&
-      isRenderSteppedReference(callee.object)
-    ) {
-      return hasInlineCallback(node.args);
-    }
-  }
-  return false;
-}
-
 function lineInsideIife(line: number, sites: IifeSite[]): boolean {
   return sites.some((site) => line >= site.line && line <= site.endLine);
 }
@@ -281,7 +249,7 @@ export function analyzeScript(code: string, options: AnalyzerOptions = {}): Anal
   const pushDiagnostic = (diag: Omit<AnalyzerDiagnostic, "fixable">) => {
     diagnostics.push({
       ...diag,
-      fixable: Boolean(diag.fix || diag.refactor || diag.hoist),
+      fixable: Boolean(diag.fix || diag.refactor || diag.hoist || diag.callback),
     });
   };
 
@@ -419,10 +387,15 @@ export function analyzeScript(code: string, options: AnalyzerOptions = {}): Anal
         });
       }
     }
-    if (likelyRenderStepped(node)) {
+    const frameCallback = frameEventCallback(node);
+    if (frameCallback) {
       heavyHits.push({
         site: activeContext.site,
-        hit: { code: "render-stepped", node, detail: "RenderStepped per-frame event" },
+        hit: {
+          code: frameCallback.event,
+          node,
+          detail: frameCallback.event === "heartbeat" ? "Heartbeat per-frame event" : "RenderStepped per-frame event",
+        },
         topStatement: activeContext.topStatement,
         doBlock,
       });
@@ -446,6 +419,7 @@ export function analyzeScript(code: string, options: AnalyzerOptions = {}): Anal
     const insideIife = lineInsideIife(loc.start.line, iifeSites);
     let fix: AnalyzerFix | null = null;
     let hoist: AnalyzerHoistRefactor | null = null;
+    let callback: AnalyzerCallbackRefactor | null = null;
     let message: string;
 
     if (hit.code === "instance-new") {
@@ -454,8 +428,23 @@ export function analyzeScript(code: string, options: AnalyzerOptions = {}): Anal
       message = `${hit.detail} inside ${label} runs every frame and belongs in native Turbo code.`;
     }
 
+    const topLevelStatement = ast.body.some((statement) => statement === topStatement);
+    if (
+      !already &&
+      !site &&
+      !insideIife &&
+      topLevelStatement &&
+      topStatement.type === "FunctionCallStatement" &&
+      topStatement.call === hit.node
+    ) {
+      const frameCallback = frameEventCallback(hit.node);
+      if (frameCallback?.single) callback = { line: loc.start.line };
+    }
+
     if (already) {
       message += ` This function is already tagged for ${String(already).toUpperCase()}.`;
+    } else if (callback) {
+      message += " Apply Fix can extract this callback into a tagged top-level local function.";
     } else if (!site) {
       if (doBlock && !insideIife && HOISTABLE_TOP_LEVEL_STATEMENTS.has(topStatement.type)) {
         hoist = { line: nodeLoc(doBlock).start.line };
@@ -492,6 +481,7 @@ export function analyzeScript(code: string, options: AnalyzerOptions = {}): Anal
       functionName: name,
       fix,
       hoist,
+      callback,
     });
   }
 
@@ -514,6 +504,7 @@ export function analyzeScript(code: string, options: AnalyzerOptions = {}): Anal
   const errors = diagnostics.filter((d) => d.severity === "error").length;
   const instanceNew = heavyHits.filter((h) => h.hit.code === "instance-new").length;
   const renderStepped = heavyHits.filter((h) => h.hit.code === "render-stepped").length;
+  const heartbeat = heavyHits.filter((h) => h.hit.code === "heartbeat").length;
 
   return {
     valid: errors === 0,
@@ -527,6 +518,7 @@ export function analyzeScript(code: string, options: AnalyzerOptions = {}): Anal
       iifeRefactorable: iifeSites.filter((site) => site.safe).length,
       instanceNew,
       renderStepped,
+      heartbeat,
       heavyFunctions: heavyFunctionKeys.size,
       autoFixable: fixableLines.size,
       errors,

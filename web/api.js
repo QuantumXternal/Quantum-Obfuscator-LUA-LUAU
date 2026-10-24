@@ -58,6 +58,10 @@ export function hoistDoParent(code, tier, line, signal) {
   return request("/api/hoist-do-parent", { code, line, options: { tier } }, signal);
 }
 
+export function extractCallback(code, tier, line, signal) {
+  return request("/api/extract-callback", { code, line, options: { tier } }, signal);
+}
+
 export function obfuscateCode(code, options, signal) {
   return request("/api/obfuscate", { code, options }, signal);
 }

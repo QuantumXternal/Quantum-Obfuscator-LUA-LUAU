@@ -2631,9 +2631,9 @@ function buildHandlerTemplates(n: NameMap, doNonLinearJumps: boolean = false, pr
 
   h[24] = `function() ${push}(not ${pop}()) end`;
 
-  h[25] = `function() ${push}(-${pop}()) end`;
+  h[25] = `function() local v=${pop}();local mm=${getMM}(v,"__unm");if mm then ${push}(mm(v)) else ${push}(-v) end end`;
 
-  h[26] = `function() ${push}(#${pop}()) end`;
+  h[26] = `function() local v=${pop}();local mm=${getMM}(v,"__len");if mm then ${push}(mm(v)) else ${push}(#v) end end`;
 
   h[27] = `function() ${push}({}) end`;
 
@@ -2734,7 +2734,7 @@ function buildHandlerTemplates(n: NameMap, doNonLinearJumps: boolean = false, pr
   // integer/float subtype, division-by-zero errors, and __idiv dispatch.
   h[70] = `function() local a=${code}[${ip}];${ip}=${ip}+1;local b=${code}[${ip}];${ip}=${ip}+1;local c=${code}[${ip}];${ip}=${ip}+1;${setLocal}(c,${arithMM}(${getLocal}(a),${getLocal}(b),function(x,y) return x//y end,"__idiv")) end`;
   h[71] = `function() local a=${code}[${ip}];${ip}=${ip}+1;local b=${code}[${ip}];${ip}=${ip}+1;local c=${code}[${ip}];${ip}=${ip}+1;${setLocal}(c,${getLocal}(a)^${getLocal}(b)) end`;
-  h[72] = `function() local a=${code}[${ip}];${ip}=${ip}+1;local c=${code}[${ip}];${ip}=${ip}+1;${setLocal}(c,-${getLocal}(a)) end`;
+  h[72] = `function() local a=${code}[${ip}];${ip}=${ip}+1;local c=${code}[${ip}];${ip}=${ip}+1;local v=${getLocal}(a);local mm=${getMM}(v,"__unm");if mm then ${setLocal}(c,mm(v)) else ${setLocal}(c,-v) end end`;
   // Phase 1.2(f): decoy opcodes - plausible arity, no-op bodies.
   h[73] = `function() end`;
   h[74] = `function() local _a=${code}[${ip}];${ip}=${ip}+1 end`;

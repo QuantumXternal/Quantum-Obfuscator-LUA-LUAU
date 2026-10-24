@@ -29,6 +29,7 @@ export function groupFixableFindings(diagnostics) {
         count: 0,
         instanceNew: 0,
         renderStepped: 0,
+        heartbeat: 0,
         lines: [],
         diagnostics: [],
       };
@@ -37,6 +38,7 @@ export function groupFixableFindings(diagnostics) {
     group.count += 1;
     if (diagnostic.code === "instance-new") group.instanceNew += 1;
     if (diagnostic.code === "render-stepped") group.renderStepped += 1;
+    if (diagnostic.code === "heartbeat") group.heartbeat += 1;
     group.lines.push(diagnostic.line);
     group.diagnostics.push(diagnostic);
   }
@@ -93,6 +95,9 @@ export function describeGroup(group) {
   }
   if (group.renderStepped) {
     parts.push(`${group.renderStepped} RenderStepped loop${group.renderStepped === 1 ? "" : "s"}`);
+  }
+  if (group.heartbeat) {
+    parts.push(`${group.heartbeat} Heartbeat loop${group.heartbeat === 1 ? "" : "s"}`);
   }
   if (!parts.length) {
     parts.push(`${group.count} fixable finding${group.count === 1 ? "" : "s"}`);

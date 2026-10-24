@@ -116,6 +116,24 @@ export function runVM(
     return undefined;
   }
 
+  function unaryMinus(v: unknown): unknown {
+    const mm = getMM(v, "__unm");
+    if (typeof mm === "function") return mm(v);
+    if (v === null || v === undefined) {
+      throw new Error("attempt to perform arithmetic (unm) on a nil value");
+    }
+    return -(v as number);
+  }
+
+  function lengthOf(v: unknown): unknown {
+    const mm = getMM(v, "__len");
+    if (typeof mm === "function") return mm(v);
+    if (v === null || v === undefined) {
+      throw new Error("attempt to get length of a nil value");
+    }
+    return luaLen(v);
+  }
+
   // Phase 1.2(a) comparison-semantics mode. "puc" = PUC-Lua 5.4.8 rules,
   // "luau" = Luau 0.742 rules; every branch below is a measured probe cell
   // (see tests/comparison-modes.test.js for the full table).
@@ -327,16 +345,10 @@ export function runVM(
         push(!isTruthy(pop()));
       }
       else if (op === Op.UNM) {
-        const v = pop();
-        const mm = getMM(v, "__unm");
-        if (typeof mm === "function") push(mm(v));
-        else push(-(v as number));
+        push(unaryMinus(pop()));
       }
       else if (op === Op.LEN) {
-        const v = pop();
-        const mm = getMM(v, "__len");
-        if (typeof mm === "function") { push(mm(v)); }
-        else push(luaLen(v));
+        push(lengthOf(pop()));
       }
       else if (op === Op.NEW_TABLE) push({});
       else if (op === Op.GET_TABLE) {
@@ -729,9 +741,7 @@ export function runVM(
       }
       else if (op === 72) {
         const a = code[ip++]; const c = code[ip++];
-        const v = getLocal(a);
-        const mm = getMM(v, "__unm");
-        setLocal(c, typeof mm === "function" ? mm(v) : -(v as number));
+        setLocal(c, unaryMinus(getLocal(a)));
       }
       else if (op === 73) { /* decoy: no-op */ }
       else if (op === 74) { ip++; /* decoy: consume 1 */ }

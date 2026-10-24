@@ -36,7 +36,11 @@ export function injectHeavyMacros(code: string, tier: AnalyzerTier = "turbo"): A
   }
 
   if (fixes.size === 0) {
-    if (analysis.summary.instanceNew > 0 || analysis.summary.renderStepped > 0) {
+    if (
+      analysis.summary.instanceNew > 0 ||
+      analysis.summary.renderStepped > 0 ||
+      analysis.summary.heartbeat > 0
+    ) {
       warnings.push("Heavy code was detected, but no safe top-level function was available for automatic tagging.");
     }
     return { code, injected: 0, warnings, tier };

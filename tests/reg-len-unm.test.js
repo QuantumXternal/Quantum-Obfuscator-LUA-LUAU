@@ -73,6 +73,10 @@ describe("reg __unm dispatch matches stack", () => {
   test("numeric-string coercion", () => {
     expectBoth('return -S', mkEnv({ S: "5" }), -5);
   });
+  test("nil operand raises on both runners", () => {
+    expect(() => stackRun("return -N", mkEnv({ N: null }))).toThrow(/nil/);
+    expect(() => regVal("return -N", mkEnv({ N: null }))).toThrow(/nil/);
+  });
 });
 
 describe("reg __len dispatch matches stack", () => {
@@ -98,5 +102,9 @@ describe("reg __len dispatch matches stack", () => {
   });
   test("number length is 0 on both (parity-only: Lua errors)", () => {
     expectBoth("return #N", mkEnv({ N: 5 }), 0);
+  });
+  test("nil operand raises on both runners", () => {
+    expect(() => stackRun("return #N", mkEnv({ N: null }))).toThrow(/nil/);
+    expect(() => regVal("return #N", mkEnv({ N: null }))).toThrow(/nil/);
   });
 });

@@ -206,6 +206,53 @@ print(f(1), f(2))
   }
 });
 
+t("memoized bridges stay bounded across 10k calls", () => {
+  const code = `local function build()
+  local total = 0
+  --@quantum:turbo
+  local function step(value)
+    total = total + value
+    return total
+  end
+  return step
+end
+local step = build()
+local before = collectgarbage("count")
+for i = 1, 10000 do
+  step(1)
+end
+local after = collectgarbage("count")
+print(string.format("%.2f", after - before))
+`;
+  const { out, warnings } = compile(code, { renameLocals: false });
+  expect(warnings).toEqual([]);
+  expect(out).toMatch(/_g0/);
+  expect(out).toMatch(/_s0/);
+  const result = runLuau(out);
+  expect(result.stderr).toBe("");
+  const delta = Number.parseFloat(result.stdout.trim());
+  expect(Number.isFinite(delta)).toBe(true);
+  expect(delta).toBeLessThan(64);
+});
+
+t("memoized bridges are recreated per loop iteration", () => {
+  const code = `local callbacks = {}
+for i = 1, 3 do
+  --@quantum:turbo
+  local function capture()
+    return i
+  end
+  callbacks[i] = capture
+end
+print(callbacks[1](), callbacks[2](), callbacks[3]())
+`;
+  const { out, warnings } = compile(code);
+  expect(warnings).toEqual([]);
+  const result = runLuau(out);
+  expect(result.stdout).toBe("1\t2\t3\n");
+  expect(result.stderr).toBe("");
+});
+
 test("scanner reports bridge sites without claiming top-level Turbo names", () => {
   const result = scanFunctionMacros(
     `local ui = {}

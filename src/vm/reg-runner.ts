@@ -192,6 +192,24 @@ export function runReg(
     return undefined;
   }
 
+  function unaryMinus(v: unknown): unknown {
+    const mm = getMM(v, "__unm");
+    if (typeof mm === "function") return (mm as Function)(v);
+    if (v === null || v === undefined) {
+      throw new Error("attempt to perform arithmetic (unm) on a nil value");
+    }
+    return -(v as number);
+  }
+
+  function lengthOf(v: unknown): unknown {
+    const mm = getMM(v, "__len");
+    if (typeof mm === "function") return (mm as Function)(v);
+    if (v === null || v === undefined) {
+      throw new Error("attempt to get length of a nil value");
+    }
+    return luaLen(v);
+  }
+
   function arithMM(a: unknown, b: unknown, op: (x: number, y: number) => number, name: string): unknown {
     if (typeof a === "number" && typeof b === "number") return op(a, b);
     const mm = getMM(a, name) ?? getMM(b, name);
@@ -322,10 +340,7 @@ export function runReg(
         pc++;
         break;
       case RegOp.UNM: {
-        // Mirror of stack Op.UNM: __unm with passthrough result, else unary minus.
-        const v = getReg(B);
-        const mm = getMM(v, "__unm");
-        setReg(A, typeof mm === "function" ? (mm as Function)(v) : -(v as number));
+        setReg(A, unaryMinus(getReg(B)));
         pc++;
         break;
       }
@@ -334,10 +349,7 @@ export function runReg(
         pc++;
         break;
       case RegOp.LEN: {
-        // Mirror of stack Op.LEN: __len with passthrough result, else luaLen.
-        const v = getReg(B);
-        const mm = getMM(v, "__len");
-        setReg(A, typeof mm === "function" ? (mm as Function)(v) : luaLen(v));
+        setReg(A, lengthOf(getReg(B)));
         pc++;
         break;
       }
