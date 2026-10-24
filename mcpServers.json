@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "real": {
+      "command": "<install a Real update to get the relay>",
+      "args": []
+    }
+  }
+}
