@@ -174,7 +174,7 @@ test("the analyzer sees generated functions without macro tags", () => {
   expect(analysis.macros.turbos).toHaveLength(0);
 });
 
-test("hoists a do block's top-level loop into a tagged wrapper", () => {
+test("hoists a do block's top-level loop into a wrapper", () => {
   const code = `local count = 0\nfor i = 1, 5 do\n  do\n    local f = Instance.new("Frame")\n    count = count + 1\n    if count == 2 then break end\n  end\nend\nprint(count)\n`;
   const result = hoistDoBlockParent(code, { line: 3 });
   expect(result.hoisted).toBe(1);
@@ -183,6 +183,16 @@ test("hoists a do block's top-level loop into a tagged wrapper", () => {
   expect(result.code).toContain("local function __q_do_wrap_1()");
   expect(result.code).toContain("__q_do_wrap_1()");
   expect(result.code).toContain("if count == 2 then break end");
+  expectValid(result.code);
+});
+
+test("parent hoisting preserves an existing directive and reports its tier", () => {
+  const code = `--@quantum:maximum\nfor i = 1, 2 do\n  do\n    local f = Instance.new("Frame")\n  end\nend\nprint(i)\n`;
+  const result = hoistDoBlockParent(code, { line: 3, tier: "turbo" });
+  expect(result.hoisted).toBe(1);
+  expect(result.tier).toBe("maximum");
+  expect(result.code.match(/--@quantum:maximum/g)).toHaveLength(1);
+  expect(result.code).toContain("--@quantum:maximum\nlocal function __q_do_wrap_1()");
   expectValid(result.code);
 });
 

@@ -5,7 +5,7 @@ import type { SourceComment } from "../lexer/Lexer.js";
 import type { Token } from "../tokens.js";
 import { applyFunctionMacroTiers } from "./macros.js";
 import type { MacroScanResult } from "./macros.js";
-import { collectIifeSites, frameEventCallback, type IifeSite } from "./iifeRefactor.js";
+import { collectIifeSites, type IifeSite } from "./iifeRefactor.js";
 
 export type AnalyzerTier = "turbo" | "maximum";
 
@@ -15,11 +15,6 @@ export interface AnalyzerIifeRefactor {
 
 export interface AnalyzerHoistRefactor {
   /** 1-based line where the enclosing do block starts. */
-  line: number;
-}
-
-export interface AnalyzerCallbackRefactor {
-  /** 1-based line where the direct per-frame Connect call starts. */
   line: number;
 }
 
@@ -44,7 +39,6 @@ export interface AnalyzerDiagnostic {
   fixable: boolean;
   refactor?: AnalyzerIifeRefactor | null;
   hoist?: AnalyzerHoistRefactor | null;
-  callback?: AnalyzerCallbackRefactor | null;
 }
 
 export interface AnalyzerSummary {
@@ -173,37 +167,6 @@ function siteFromStatement(stmt: AnyNode): { node: AnyNode; name: string | null 
   return null;
 }
 
-function siteFromFunctionNode(node: AnyNode): FunctionSite {
-  const loc = nodeLoc(node);
-  let name: string | null = null;
-  if (node.type === "LocalFunctionStatement" && typeof node.name === "string") {
-    name = node.name;
-  } else if (node.type === "FunctionStatement") {
-    const funcName = node.name;
-    if (isNode(funcName)) {
-      if (typeof funcName.method === "string") {
-        name = funcName.method;
-      } else if (isNode(funcName.base) && funcName.base.type === "Identifier") {
-        name = typeof funcName.base.name === "string" ? funcName.base.name : null;
-      }
-    }
-  }
-  return {
-    node,
-    name,
-    topLevel: false,
-    startLine: loc.start.line,
-    endLine: loc.end.line,
-  };
-}
-
-function taggedSiteFor(node: AnyNode, current: FunctionSite | null): FunctionSite | null {
-  if (!isFunctionNode(node)) return null;
-  if (current && current.node === node) return current;
-  if (node.tier !== "turbo") return null;
-  return siteFromFunctionNode(node);
-}
-
 function functionCount(ast: Chunk): number {
   let count = 0;
   const visit = (node: AnyNode) => {
@@ -214,10 +177,6 @@ function functionCount(ast: Chunk): number {
   };
   for (const stmt of ast.body as unknown as AnyNode[]) visit(stmt);
   return count;
-}
-
-function isFunctionNode(node: AnyNode): boolean {
-  return node.type === "FunctionStatement" || node.type === "LocalFunctionStatement" || node.type === "FunctionExpression";
 }
 
 function unwrapIifeCallee(node: AnyNode): AnyNode | null {
@@ -241,6 +200,49 @@ function lineInsideIife(line: number, sites: IifeSite[]): boolean {
   return sites.some((site) => line >= site.line && line <= site.endLine);
 }
 
+function unwrapParens(node: AnyNode): AnyNode {
+  let current = node;
+  while (current.type === "ParenExpression" || current.type === "TypeAssertion") {
+    if (!isNode(current.expression)) break;
+    current = current.expression;
+  }
+  return current;
+}
+
+function frameEventReference(node: unknown): "render-stepped" | "heartbeat" | null {
+  if (!isNode(node)) return null;
+  const value = unwrapParens(node);
+  let name: string | null = null;
+  if (value.type === "MemberExpression" && typeof value.property === "string") {
+    name = value.property;
+  } else if (value.type === "IndexExpression") {
+    name = stringValue(value.index);
+  } else if (value.type === "Identifier" && typeof value.name === "string") {
+    name = value.name;
+  }
+  if (name === "RenderStepped") return "render-stepped";
+  if (name === "Heartbeat") return "heartbeat";
+  return null;
+}
+
+function hasInlineCallback(args: unknown): boolean {
+  if (!Array.isArray(args)) return false;
+  return args.some((arg) => isNode(arg) && unwrapParens(arg).type === "FunctionExpression");
+}
+
+function likelyFrameEvent(node: AnyNode): "render-stepped" | "heartbeat" | null {
+  if (node.type === "MethodCallExpression" && node.method === "Connect") {
+    return hasInlineCallback(node.args) ? frameEventReference(node.object) : null;
+  }
+  if (node.type === "CallExpression") {
+    const callee = isNode(node.callee) ? unwrapParens(node.callee) : null;
+    if (callee?.type === "MemberExpression" && callee.property === "Connect") {
+      return hasInlineCallback(node.args) ? frameEventReference(callee.object) : null;
+    }
+  }
+  return null;
+}
+
 export function analyzeScript(code: string, options: AnalyzerOptions = {}): AnalyzerResult {
   const tier: AnalyzerTier = options.tier === "maximum" ? "maximum" : "turbo";
   const sourceLines = code.split(/\r?\n/);
@@ -249,7 +251,7 @@ export function analyzeScript(code: string, options: AnalyzerOptions = {}): Anal
   const pushDiagnostic = (diag: Omit<AnalyzerDiagnostic, "fixable">) => {
     diagnostics.push({
       ...diag,
-      fixable: Boolean(diag.fix || diag.refactor || diag.hoist || diag.callback),
+      fixable: Boolean(diag.fix || diag.refactor || diag.hoist),
     });
   };
 
@@ -319,7 +321,7 @@ export function analyzeScript(code: string, options: AnalyzerOptions = {}): Anal
     });
   }
 
-  let macros: MacroScanResult = { turbos: [], maximums: [], nestedTurbos: 0, warnings: [] };
+  let macros: MacroScanResult = { turbos: [], maximums: [], warnings: [] };
   try {
     macros = applyFunctionMacroTiers(code, ast, lexed.comments as SourceComment[], lexed.tokens as Token[]);
   } catch {
@@ -364,8 +366,6 @@ export function analyzeScript(code: string, options: AnalyzerOptions = {}): Anal
 
   const scanNode = (node: AnyNode, context: ScanContext) => {
     const doBlock = node.type === "DoStatement" ? node : context.doBlock;
-    const tagged = taggedSiteFor(node, context.site);
-    const activeContext = tagged ? { ...context, site: tagged } : context;
     if (node.type === "CallExpression") {
       const callee = node.callee;
       if (
@@ -376,31 +376,31 @@ export function analyzeScript(code: string, options: AnalyzerOptions = {}): Anal
       ) {
         const className = Array.isArray(node.args) ? stringValue(node.args[0]) : null;
         heavyHits.push({
-          site: activeContext.site,
+          site: context.site,
           hit: {
             code: "instance-new",
             node,
             detail: className ? `Instance.new("${className}")` : "Instance.new(...)",
           },
-          topStatement: activeContext.topStatement,
+          topStatement: context.topStatement,
           doBlock,
         });
       }
     }
-    const frameCallback = frameEventCallback(node);
-    if (frameCallback) {
+    const event = likelyFrameEvent(node);
+    if (event) {
       heavyHits.push({
-        site: activeContext.site,
+        site: context.site,
         hit: {
-          code: frameCallback.event,
+          code: event,
           node,
-          detail: frameCallback.event === "heartbeat" ? "Heartbeat per-frame event" : "RenderStepped per-frame event",
+          detail: event === "heartbeat" ? "Heartbeat per-frame event" : "RenderStepped per-frame event",
         },
-        topStatement: activeContext.topStatement,
+        topStatement: context.topStatement,
         doBlock,
       });
     }
-    forEachChild(node, (child) => scanNode(child, { ...activeContext, doBlock }));
+    forEachChild(node, (child) => scanNode(child, { ...context, doBlock }));
   };
 
   for (const stmt of ast.body as unknown as AnyNode[]) {
@@ -419,7 +419,6 @@ export function analyzeScript(code: string, options: AnalyzerOptions = {}): Anal
     const insideIife = lineInsideIife(loc.start.line, iifeSites);
     let fix: AnalyzerFix | null = null;
     let hoist: AnalyzerHoistRefactor | null = null;
-    let callback: AnalyzerCallbackRefactor | null = null;
     let message: string;
 
     if (hit.code === "instance-new") {
@@ -428,32 +427,18 @@ export function analyzeScript(code: string, options: AnalyzerOptions = {}): Anal
       message = `${hit.detail} inside ${label} runs every frame and belongs in native Turbo code.`;
     }
 
-    const topLevelStatement = ast.body.some((statement) => statement === topStatement);
-    if (
-      !already &&
-      !site &&
-      !insideIife &&
-      topLevelStatement &&
-      topStatement.type === "FunctionCallStatement" &&
-      topStatement.call === hit.node
-    ) {
-      const frameCallback = frameEventCallback(hit.node);
-      if (frameCallback?.single) callback = { line: loc.start.line };
-    }
-
     if (already) {
       message += ` This function is already tagged for ${String(already).toUpperCase()}.`;
-    } else if (callback) {
-      message += " Apply Fix can extract this callback into a tagged top-level local function.";
     } else if (!site) {
       if (doBlock && !insideIife && HOISTABLE_TOP_LEVEL_STATEMENTS.has(topStatement.type)) {
         hoist = { line: nodeLoc(doBlock).start.line };
         message +=
-          " Apply Fix can hoist the enclosing top-level block into a tagged wrapper without breaking break, continue, or return.";
+          " Apply Fix can hoist the enclosing top-level block into a wrapper; add --@quantum:turbo manually.";
       } else if (insideIife) {
         message += " Refactor the enclosing IIFE first; nested IIFEs cannot be hoisted safely.";
       } else {
-        message += " Move it into a top-level named function or tag the enclosing top-level function manually.";
+        message +=
+          " Move it into a top-level named function and add --@quantum:turbo above it manually.";
       }
     } else if (!name) {
       message += " This function has no taggable top-level name; extract it to a named function first.";
@@ -481,7 +466,6 @@ export function analyzeScript(code: string, options: AnalyzerOptions = {}): Anal
       functionName: name,
       fix,
       hoist,
-      callback,
     });
   }
 

@@ -56,16 +56,16 @@ test("scanner supports direct function assignments", () => {
   expect(result.warnings).toEqual([]);
 });
 
-test("scanner tags nested Turbo functions for the native bridge", () => {
+test("scanner warns for nested Turbo functions instead of extracting them", () => {
   const result = scanFunctionMacros(
     "local function outer()\n  --@quantum:turbo\n  local function inner() return 1 end\n  return inner()\nend\nprint(outer())\n",
   );
   expect(result.turbos).toEqual([]);
-  expect(result.nestedTurbos).toBe(1);
-  expect(result.warnings).toEqual([]);
+  expect(result).not.toHaveProperty("nestedTurbos");
+  expect(result.warnings.some((w) => /nested 'inner' is not supported/.test(w))).toBe(true);
 });
 
-test("scanner tags colon and dotted Turbo methods at any depth", () => {
+test("scanner warns for colon and dotted Turbo methods", () => {
   const result = scanFunctionMacros(
     `local ui = {}
 --@quantum:turbo
@@ -81,8 +81,8 @@ print(ui:Add(1), outer())
 `,
   );
   expect(result.turbos).toEqual([]);
-  expect(result.nestedTurbos).toBe(3);
-  expect(result.warnings).toEqual([]);
+  expect(result.warnings.filter((w) => /table\/method functions are not supported/.test(w))).toHaveLength(2);
+  expect(result.warnings.filter((w) => /nested this function is not supported/.test(w))).toHaveLength(1);
 });
 
 test("scanner still warns for nested and table Maximum functions", () => {

@@ -38,6 +38,7 @@ function runLuau(code) {
   return result;
 }
 
+// false = pcall rejected the operation; true = the error text names nil.
 const SRC = `local value
 local ok1, err1 = pcall(function() return -value end)
 local ok2, err2 = pcall(function() return #value end)

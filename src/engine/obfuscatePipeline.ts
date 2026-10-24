@@ -21,7 +21,6 @@ import { prependOutputHeader } from "../vm/watermark.js";
 import {
   applyFunctionMacroTiers,
   extractNativeFunctions,
-  extractNestedTurboFunctions,
   makeSeedMangler,
   rootCopyLua,
 } from "./macros.js";
@@ -234,16 +233,6 @@ export function runObfuscatePipeline(code: string, opts: PipelineOptions): strin
     );
     workingAst = extraction.ast;
     nativeStatements = extraction.prefixStatements;
-    for (const fn of extraction.extracted) nativeMangled.push(fn.mangled);
-  }
-
-  if (macroTiers.nestedTurbos > 0) {
-    const extraction = extractNestedTurboFunctions(
-      workingAst,
-      makeSeedMangler(polySeed, "qmn"),
-    );
-    workingAst = extraction.ast;
-    nativeStatements = [...nativeStatements, ...extraction.prefixStatements];
     for (const fn of extraction.extracted) nativeMangled.push(fn.mangled);
   }
 

@@ -34,7 +34,7 @@ test("already tagged functions are reported without a replacement fix", () => {
   expect(result.diagnostics[0].message).toMatch(/already tagged for TURBO/);
 });
 
-test("tagged nested functions use the nearest tag and suppress duplicate fixes", () => {
+test("nested Turbo tags warn and keep the hot call attributed to the top-level parent", () => {
   const result = analyzeScript(`local function outer()
   --@quantum:turbo
   local function inner()
@@ -44,20 +44,19 @@ test("tagged nested functions use the nearest tag and suppress duplicate fixes",
 end
 print(outer())
 `);
-  expect(result.macros.nestedTurbos).toBe(1);
-  expect(result.macros.warnings).toEqual([]);
-  expect(result.summary.autoFixable).toBe(0);
-  expect(result.diagnostics).toHaveLength(1);
-  expect(result.diagnostics[0]).toMatchObject({
-    functionName: "inner",
-    fix: null,
-    code: "instance-new",
+  expect(result.macros).not.toHaveProperty("nestedTurbos");
+  expect(result.macros.warnings.some((w) => /nested 'inner' is not supported/.test(w))).toBe(true);
+  expect(result.summary.autoFixable).toBe(1);
+  expect(result.diagnostics.some((d) => d.code === "macro-warning")).toBe(true);
+  const diagnostic = result.diagnostics.find((d) => d.code === "instance-new");
+  expect(diagnostic).toMatchObject({
+    functionName: "outer",
+    fix: { line: 1, insertText: "--@quantum:turbo\n", tier: "turbo" },
   });
-  expect(result.diagnostics[0].message).toMatch(/already tagged for TURBO/);
-  expect(result.diagnostics.some((d) => d.code === "macro-warning")).toBe(false);
+  expect(diagnostic.message).toMatch(/inside 'outer'/);
 });
 
-test("tagged nested methods use the nearest tag and suppress duplicate fixes", () => {
+test("nested method Turbo tags warn and keep the hot call attributed to the top-level parent", () => {
   const result = analyzeScript(`local ui = {}
 local function make()
   --@quantum:turbo
@@ -67,13 +66,14 @@ local function make()
 end
 print(make())
 `);
-  expect(result.macros.nestedTurbos).toBe(1);
-  expect(result.summary.autoFixable).toBe(0);
-  expect(result.diagnostics[0]).toMatchObject({
-    functionName: "Render",
-    fix: null,
+  expect(result.macros.warnings.some((w) => /nested this function is not supported/.test(w))).toBe(true);
+  expect(result.summary.autoFixable).toBe(1);
+  const diagnostic = result.diagnostics.find((d) => d.code === "instance-new");
+  expect(diagnostic).toMatchObject({
+    functionName: "make",
+    fix: { line: 2, insertText: "--@quantum:turbo\n", tier: "turbo" },
   });
-  expect(result.diagnostics[0].message).toMatch(/already tagged for TURBO/);
+  expect(diagnostic.message).toMatch(/inside 'make'/);
 });
 
 test("nested functions are attributed to the enclosing top-level function", () => {

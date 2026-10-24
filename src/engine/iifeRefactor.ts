@@ -29,23 +29,6 @@ export interface IifeRefactorResult {
   line: number | null;
 }
 
-export interface CallbackRefactorResult {
-  code: string;
-  extracted: number;
-  remaining: number;
-  warnings: string[];
-  tier: IifeRefactorTier;
-  line: number | null;
-}
-
-export interface FrameEventCallback {
-  event: "render-stepped" | "heartbeat";
-  fn: FunctionExpression;
-  arg: unknown;
-  call: unknown;
-  single: boolean;
-}
-
 export interface IifeLexedSource {
   tokens: Token[];
   comments: SourceComment[];
@@ -254,69 +237,6 @@ function parseSource(code: string): ParseOutcome {
   } catch (err: any) {
     return { valid: false, ast: null, lexed: null, error: String(err?.message ?? err) };
   }
-}
-
-function unwrapParens(node: unknown): AnyNode | null {
-  let current = node;
-  while (
-    isNode(current) &&
-    (current.type === "ParenExpression" || current.type === "TypeAssertion")
-  ) {
-    current = current.expression;
-  }
-  return isNode(current) ? current : null;
-}
-
-function stringValue(node: unknown): string | null {
-  if (!isNode(node) || node.type !== "StringLiteral") return null;
-  return typeof node.value === "string" ? node.value : null;
-}
-
-function frameEventName(node: unknown): "render-stepped" | "heartbeat" | null {
-  if (!isNode(node)) return null;
-  const value = unwrapParens(node);
-  if (!value) return null;
-  let name: string | null = null;
-  if (value.type === "MemberExpression" && typeof value.property === "string") {
-    name = value.property;
-  } else if (value.type === "IndexExpression") {
-    name = stringValue(value.index);
-  } else if (value.type === "Identifier" && typeof value.name === "string") {
-    name = value.name;
-  }
-  if (name === "RenderStepped") return "render-stepped";
-  if (name === "Heartbeat") return "heartbeat";
-  return null;
-}
-
-export function frameEventCallback(call: unknown): FrameEventCallback | null {
-  if (!isNode(call)) return null;
-  let event: "render-stepped" | "heartbeat" | null = null;
-  let args: AnyNode[] = [];
-  if (call.type === "MethodCallExpression" && call.method === "Connect") {
-    event = frameEventName(call.object);
-    args = Array.isArray(call.args) ? (call.args as AnyNode[]) : [];
-  } else if (call.type === "CallExpression") {
-    const callee = isNode(call.callee) ? unwrapParens(call.callee) : null;
-    if (callee?.type === "MemberExpression" && callee.property === "Connect") {
-      event = frameEventName(callee.object);
-      args = Array.isArray(call.args) ? (call.args as AnyNode[]) : [];
-    }
-  }
-  if (!event) return null;
-  for (const arg of args) {
-    const value = unwrapParens(arg);
-    if (value?.type === "FunctionExpression") {
-      return {
-        event,
-        fn: value as unknown as FunctionExpression,
-        arg,
-        call,
-        single: args.length === 1,
-      };
-    }
-  }
-  return null;
 }
 
 function collectNames(ast: Chunk): Set<string> {
@@ -823,179 +743,6 @@ export function refactorIifes(
   };
 }
 
-interface InternalCallbackSite {
-  line: number;
-  statementStart: number;
-  statementEnd: number;
-  callStart: number;
-  callEnd: number;
-  argStart: number;
-  argEnd: number;
-  indent: string;
-  event: "render-stepped" | "heartbeat";
-  fn: FunctionExpression;
-}
-
-function callbackFunctionEnd(
-  tokens: Token[],
-  startOffset: number,
-  limitOffset: number,
-): number | null {
-  let end: number | null = null;
-  for (const token of tokens) {
-    const tokenStart = token.loc?.start.offset;
-    const tokenEnd = token.loc?.end.offset;
-    if (tokenStart === undefined || tokenEnd === undefined) continue;
-    if (tokenStart < startOffset) continue;
-    if (tokenStart >= limitOffset) break;
-    if (token.type === "Keyword" && token.value === "end") end = tokenEnd;
-  }
-  return end;
-}
-
-function hasQuantumDirectiveBefore(
-  code: string,
-  starts: number[],
-  line: number,
-): boolean {
-  for (let index = line - 2; index >= 0; index--) {
-    const start = starts[index] ?? 0;
-    const end = starts[index + 1] ?? code.length;
-    const text = code.slice(start, end).trim();
-    if (!text) continue;
-    return /^--\s*@quantum\s*:\s*(turbo|maximum)\b/i.test(text);
-  }
-  return false;
-}
-
-function collectCallbackSites(ast: Chunk, code: string, tokens: Token[]): InternalCallbackSite[] {
-  const starts = lineStartsFor(code);
-  const sites: InternalCallbackSite[] = [];
-  for (const statement of ast.body as unknown as AnyNode[]) {
-    if (statement.type !== "FunctionCallStatement") continue;
-    const call = statement.call as unknown as AnyNode;
-    const callback = frameEventCallback(call);
-    if (!callback || !callback.single) continue;
-    if (callback.fn.tier) continue;
-    const callLoc = call.loc;
-    const statementLoc = statement.loc;
-    if (!callLoc || !statementLoc) continue;
-    const arg = isNode(callback.arg) ? callback.arg : callback.fn;
-    if (!arg.loc || arg.type !== "FunctionExpression") continue;
-    const fnStart = arg.loc.start.offset;
-    let callEnd = arg.loc.end.offset;
-    while (callEnd > fnStart && code[callEnd - 1] !== ")") callEnd--;
-    if (callEnd <= fnStart) continue;
-    const fnEnd = callbackFunctionEnd(tokens, fnStart, callEnd);
-    if (fnEnd === null) continue;
-    const line = positionAt(starts, callLoc.start.offset).line;
-    if (hasQuantumDirectiveBefore(code, starts, line)) continue;
-    const lineStart = starts[line - 1] ?? 0;
-    const prefix = code.slice(lineStart, statementLoc.start.offset);
-    if (!/^[ \t]*$/.test(prefix)) continue;
-    sites.push({
-      line,
-      statementStart: statementLoc.start.offset,
-      statementEnd: statementLoc.end.offset,
-      callStart: callLoc.start.offset,
-      callEnd,
-      argStart: fnStart,
-      argEnd: fnEnd,
-      indent: prefix,
-      event: callback.event,
-      fn: callback.fn,
-    });
-  }
-  sites.sort((a, b) => a.statementStart - b.statementStart);
-  return sites;
-}
-
-export function extractCallbacks(
-  code: string,
-  options: IifeRefactorOptions = {},
-): CallbackRefactorResult {
-  const tier: IifeRefactorTier = options.tier === "maximum" ? "maximum" : "turbo";
-  const targetLine =
-    Number.isInteger(options.line) && (options.line as number) > 0
-      ? (options.line as number)
-      : null;
-  const warnings: string[] = [];
-  if (options.line !== undefined && targetLine === null) {
-    warnings.push("Invalid 'line' option; pass a positive integer.");
-    return { code, extracted: 0, remaining: 0, warnings, tier, line: null };
-  }
-
-  const initial = parseSource(code);
-  if (!initial.valid || !initial.ast) {
-    warnings.push(`Source has syntax errors; no callbacks were extracted. ${initial.error ?? ""}`.trim());
-    return { code, extracted: 0, remaining: 0, warnings, tier, line: targetLine };
-  }
-
-  const sites = collectCallbackSites(initial.ast, code, initial.lexed?.tokens ?? []);
-  let selected = sites;
-  if (targetLine !== null) {
-    const target = sites.find((site) => site.line === targetLine);
-    if (!target) {
-      warnings.push(
-        `No extractable top-level RenderStepped/Heartbeat callback starts on line ${targetLine}.`,
-      );
-      return { code, extracted: 0, remaining: sites.length, warnings, tier, line: targetLine };
-    }
-    selected = [target];
-  }
-  if (selected.length === 0) {
-    warnings.push("No extractable top-level RenderStepped/Heartbeat callback was found.");
-    return { code, extracted: 0, remaining: 0, warnings, tier, line: targetLine };
-  }
-
-  const nextName = makeNameFactory(initial.ast, "__quantum_callback_");
-  const eol = code.includes("\r\n") ? "\r\n" : "\n";
-  const edits: Edit[] = [];
-  for (const site of selected) {
-    const name = nextName();
-    const callSource = code.slice(site.callStart, site.callEnd);
-    const argStart = Math.max(0, Math.min(callSource.length, site.argStart - site.callStart));
-    const argEnd = Math.max(argStart, Math.min(callSource.length, site.argEnd - site.callStart));
-    const newCall = `${callSource.slice(0, argStart)}${name}${callSource.slice(argEnd)}`;
-    const fnSource = code.slice(site.argStart, site.argEnd);
-    const text =
-      `${site.indent}do${eol}` +
-      `${site.indent}--@quantum:${tier}${eol}` +
-      `${site.indent}local ${name} = ${fnSource}${eol}` +
-      `${site.indent}${newCall}${eol}` +
-      `${site.indent}end`;
-    edits.push({
-      offset: site.statementStart,
-      end: site.callEnd,
-      text,
-      order: 0,
-    });
-  }
-
-  edits.sort((a, b) => b.offset - a.offset || a.order - b.order);
-  let output = code;
-  for (const edit of edits) {
-    output = output.slice(0, edit.offset) + edit.text + output.slice(edit.end);
-  }
-
-  const validation = parseSource(output);
-  if (!validation.valid || !validation.ast) {
-    warnings.push(
-      `Callback extraction produced invalid code; the source was left unchanged. ${validation.error ?? ""}`.trim(),
-    );
-    return { code, extracted: 0, remaining: sites.length, warnings, tier, line: targetLine };
-  }
-
-  return {
-    code: output,
-    extracted: selected.length,
-    remaining: collectCallbackSites(validation.ast, output, validation.lexed?.tokens ?? []).length,
-    warnings,
-    tier,
-    line: targetLine,
-  };
-}
-
 export interface DoHoistResult {
   code: string;
   hoisted: number;
@@ -1196,6 +943,7 @@ export function hoistDoBlockParent(
     warnings.push("Conflicting Quantum directives above the parent block; the source was left unchanged.");
     return { code, hoisted: 0, warnings, tier, line: targetLine, parentLine };
   }
+  const resolvedTier = directive.tier ?? tier;
 
   const nextName = makeNameFactory(initial.ast, "__q_do_wrap_");
   const name = nextName();
@@ -1223,7 +971,7 @@ export function hoistDoBlockParent(
     code: output,
     hoisted: 1,
     warnings,
-    tier,
+    tier: resolvedTier,
     line: targetLine,
     parentLine,
   };

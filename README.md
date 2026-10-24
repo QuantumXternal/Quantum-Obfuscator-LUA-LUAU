@@ -313,7 +313,7 @@ The response includes `code` (unchanged when nothing was refactored), `refactore
 
 ### `POST /api/hoist-do-parent`
 
-Hoists a `do ... end` block that contains `break`, `continue`, or `return` into a tagged top-level `__quantum_do_wrap_N` wrapper. Pass a positive 1-based `line` inside the block. Unsupported parents, IIFEs, and conflicting directives are reported in `warnings` with `hoisted: false`. The response includes `code`, `hoisted`, `warnings`, `tier`, `line`, and `parentLine`.
+Hoists a `do ... end` block that contains `break`, `continue`, or `return` into a top-level `__quantum_do_wrap_N` wrapper. Add `--@quantum:turbo` above the wrapper manually. Pass a positive 1-based `line` inside the block. Unsupported parents, IIFEs, and conflicting directives are reported in `warnings` with `hoisted: false`. The response includes `code`, `hoisted`, `warnings`, `tier`, `line`, and `parentLine`.
 
 ### `POST /api/obfuscate`
 

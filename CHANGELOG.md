@@ -10,6 +10,14 @@ is the AST-only control: byte-identical before/after in every comparison.
 
 ## Unreleased — Quantum Studio (4-page web IDE)
 
+- fix(engine): remove automatic per-frame callback extraction and the nested
+  native bridge. The analyzer keeps read-only Heartbeat/RenderStepped counts;
+  nested, table, and method Turbo tags warn and stay in the VM; Parent Hoisting
+  preserves existing directives and reports the resolved tier while leaving the
+  tag insertion manual. MEASURED: build green; full suite 78 suites / 834 tests
+  green; Roblox FPS harness pending. TESTS: `tests/analyzer.test.js`,
+  `tests/callback-refactor.test.js`, `tests/nested-macros.test.js`,
+  `tests/macros.test.js`, `tests/iife-refactor.test.js`, `tests/vm-nil.test.js`.
 - fix(studio): repair analyzer apply-fix flow, auto-reanalyze after refactor, and
   remove size limits. `src/engine/analyzer.ts` no longer caps diagnostics at
   500, reports `fixable` consistently, attributes nested hot calls to their
